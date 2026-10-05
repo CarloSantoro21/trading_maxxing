@@ -1,0 +1,29 @@
+%%{init: {'gitGraph': {'mainBranchName': 'main'}} }%%
+gitGraph
+  commit id: "v0.1.0" tag: "v0.1.0"
+  branch develop
+  checkout develop
+  commit id: "setup CI"
+  branch feature/kronos-service
+  checkout feature/kronos-service
+  commit id: "forecast svc"
+  commit id: "tests"
+  checkout develop
+  merge feature/kronos-service id: "PR #12"
+  branch feature/risk-agent
+  checkout feature/risk-agent
+  commit id: "risk agent"
+  checkout develop
+  merge feature/risk-agent id: "PR #15"
+  branch release/0.2.0
+  checkout release/0.2.0
+  commit id: "bump version"
+  checkout main
+  merge release/0.2.0 id: "v0.2.0" tag: "v0.2.0"
+  checkout develop
+  merge main id: "sync"
+  checkout main
+  branch hotfix/order-qty
+  commit id: "fix qty"
+  checkout main
+  merge hotfix/order-qty id: "v0.2.1" tag: "v0.2.1"

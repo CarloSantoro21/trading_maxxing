@@ -1,0 +1,336 @@
+{
+ "labels": [
+  [
+   "frontend",
+   "1d76db",
+   "Next.js / UI"
+  ],
+  [
+   "backend",
+   "5319e7",
+   "FastAPI / API"
+  ],
+  [
+   "agents",
+   "fbca04",
+   "Agentes de IA y orquestador"
+  ],
+  [
+   "ml",
+   "d93f0b",
+   "Kronos / pronóstico"
+  ],
+  [
+   "trading-engine",
+   "0e8a16",
+   "NautilusTrader"
+  ],
+  [
+   "devops",
+   "b60205",
+   "CI/CD, Docker, AWS"
+  ],
+  [
+   "testing",
+   "c5def5",
+   "Pruebas unitarias"
+  ],
+  [
+   "docs",
+   "0075ca",
+   "Documentación / Wiki"
+  ],
+  [
+   "database",
+   "006b75",
+   "Supabase"
+  ],
+  [
+   "priority:high",
+   "e11d21",
+   "Prioridad alta"
+  ]
+ ],
+ "milestones": [
+  [
+   "M1 · Fundaciones e infraestructura",
+   "2026-10-18"
+  ],
+  [
+   "M2 · Motor y pronóstico",
+   "2026-11-01"
+  ],
+  [
+   "M3 · Agentes y API",
+   "2026-11-15"
+  ],
+  [
+   "M4 · Frontend y deployment",
+   "2026-11-29"
+  ],
+  [
+   "M5 · Cierre",
+   "2026-12-06"
+  ]
+ ],
+ "issues": [
+  {
+   "title": "Configurar repositorio, ramas y protecciones",
+   "milestone": "M1 · Fundaciones e infraestructura",
+   "labels": [
+    "devops",
+    "priority:high"
+   ],
+   "body": "## Descripción\nCrear ramas `main` y `develop`, protección de ramas (PR + 1 aprobación + CI verde), plantillas de PR/issue y CODEOWNERS.\n\n## Criterios de aceptación\n- [ ] `main` y `develop` protegidas\n- [ ] Plantillas de PR e issue\n- [ ] Conventional Commits documentado en CONTRIBUTING.md"
+  },
+  {
+   "title": "Estructura de monorepo",
+   "milestone": "M1 · Fundaciones e infraestructura",
+   "labels": [
+    "devops"
+   ],
+   "body": "## Descripción\nCrear `apps/web`, `services/api`, `services/agents`, `services/forecast`, `services/engine`, `packages/shared` con README por servicio.\n\n## Criterios de aceptación\n- [ ] Árbol de carpetas creado\n- [ ] Python 3.12 fijado (`.python-version`) y `pyproject.toml` por servicio\n- [ ] Node 20 y pnpm para `apps/web`"
+  },
+  {
+   "title": "Dockerfiles por servicio",
+   "milestone": "M1 · Fundaciones e infraestructura",
+   "labels": [
+    "devops",
+    "priority:high"
+   ],
+   "body": "## Descripción\nDockerfile multi-stage para los 5 servicios. `engine` basado en la imagen oficial de NautilusTrader.\n\n## Criterios de aceptación\n- [ ] Cada imagen construye localmente\n- [ ] Imágenes < 1.5 GB (salvo forecast)\n- [ ] Usuario no root en runtime"
+  },
+  {
+   "title": "docker-compose para desarrollo local",
+   "milestone": "M1 · Fundaciones e infraestructura",
+   "labels": [
+    "devops"
+   ],
+   "body": "## Descripción\nLevantar web, api, agents, forecast, engine y Redis con `docker compose up`.\n\n## Criterios de aceptación\n- [ ] Un comando levanta todo\n- [ ] `.env.example` documentado\n- [ ] Healthchecks en cada servicio"
+  },
+  {
+   "title": "Pipeline CI: lint y pruebas unitarias",
+   "milestone": "M1 · Fundaciones e infraestructura",
+   "labels": [
+    "devops",
+    "testing",
+    "priority:high"
+   ],
+   "body": "## Descripción\nWorkflow de GitHub Actions en cada PR: ruff + ESLint, pytest con cobertura y Vitest.\n\n## Criterios de aceptación\n- [ ] Workflow corre en PRs a develop/main\n- [ ] Falla si cobertura Python < 70 %\n- [ ] Reporte de cobertura como artefacto"
+  },
+  {
+   "title": "Proyecto Supabase y esquema inicial",
+   "milestone": "M1 · Fundaciones e infraestructura",
+   "labels": [
+    "database",
+    "backend"
+   ],
+   "body": "## Descripción\nTablas `profiles`, `goals`, `bots`, `trades`, `equity_snapshots`, `backtests` con RLS y migraciones versionadas.\n\n## Criterios de aceptación\n- [ ] Migraciones en `supabase/migrations`\n- [ ] RLS: cada usuario solo ve sus datos\n- [ ] Seed de datos de prueba"
+  },
+  {
+   "title": "Wiki: propuesta del proyecto",
+   "milestone": "M1 · Fundaciones e infraestructura",
+   "labels": [
+    "docs"
+   ],
+   "body": "## Descripción\nSubir la propuesta (MD) y diagramas a la Wiki de GitHub.\n\n## Criterios de aceptación\n- [ ] Página Home con la propuesta\n- [ ] Diagramas visibles\n- [ ] Enlace al Project Board"
+  },
+  {
+   "title": "Servicio forecast: wrapper de Kronos",
+   "milestone": "M2 · Motor y pronóstico",
+   "labels": [
+    "ml",
+    "backend",
+    "priority:high"
+   ],
+   "body": "## Descripción\nMicroservicio FastAPI que carga `Kronos-small` + `Kronos-Tokenizer-base` y expone `POST /predict` y `POST /predict/batch`.\n\n## Criterios de aceptación\n- [ ] Recibe OHLCV y devuelve velas pronosticadas\n- [ ] Modelo cargado una vez al arranque\n- [ ] Latencia < 5 s en CPU para 400 velas → 24"
+  },
+  {
+   "title": "KronosForecastService: pruebas unitarias con predictor simulado",
+   "milestone": "M2 · Motor y pronóstico",
+   "labels": [
+    "ml",
+    "testing"
+   ],
+   "body": "## Descripción\nProbar el contrato de `/predict` sin descargar pesos en CI.\n\n## Criterios de aceptación\n- [ ] Mock de `KronosPredictor`\n- [ ] Validación de columnas faltantes\n- [ ] Cobertura ≥ 80 % del servicio"
+  },
+  {
+   "title": "MarketDataService: velas históricas y streaming",
+   "milestone": "M2 · Motor y pronóstico",
+   "labels": [
+    "trading-engine",
+    "backend"
+   ],
+   "body": "## Descripción\nDescargar velas de Binance (testnet/público) y cachear en Redis; streaming de barras para el motor.\n\n## Criterios de aceptación\n- [ ] `get_bars(symbol, tf, lookback)` devuelve DataFrame\n- [ ] Cache con TTL por timeframe\n- [ ] Pruebas con respuestas grabadas"
+  },
+  {
+   "title": "Integrar NautilusTrader: TradingNode con Binance Testnet",
+   "milestone": "M2 · Motor y pronóstico",
+   "labels": [
+    "trading-engine",
+    "priority:high"
+   ],
+   "body": "## Descripción\nConfigurar `TradingNode` con el adaptador de Binance en modo testnet, con credenciales desde variables de entorno.\n\n## Criterios de aceptación\n- [ ] Nodo arranca y se conecta a testnet\n- [ ] Recibe barras de BTCUSDT\n- [ ] Logs en stdout para CloudWatch"
+  },
+  {
+   "title": "AgenticStrategy (Nautilus Strategy)",
+   "milestone": "M2 · Motor y pronóstico",
+   "labels": [
+    "trading-engine",
+    "priority:high"
+   ],
+   "body": "## Descripción\nEstrategia que escucha decisiones desde Redis y envía órdenes market/limit con stop-loss y take-profit (OTO/OCO).\n\n## Criterios de aceptación\n- [ ] `on_signal` crea las órdenes correctas\n- [ ] Registra fills en Supabase\n- [ ] Respeta `reduce_only` al cerrar"
+  },
+  {
+   "title": "BacktestService con BacktestEngine",
+   "milestone": "M2 · Motor y pronóstico",
+   "labels": [
+    "trading-engine",
+    "backend"
+   ],
+   "body": "## Descripción\nEjecutar backtests de `AgenticStrategy` con datos históricos y generar reporte (retorno, Sharpe, drawdown, # trades).\n\n## Criterios de aceptación\n- [ ] Endpoint dispara backtest asíncrono\n- [ ] Reporte guardado en Supabase/S3\n- [ ] Prueba con dataset pequeño en CI"
+  },
+  {
+   "title": "Pruebas unitarias de AgenticStrategy con BacktestEngine",
+   "milestone": "M2 · Motor y pronóstico",
+   "labels": [
+    "trading-engine",
+    "testing"
+   ],
+   "body": "## Descripción\nEscenarios deterministas: compra, venta, stop-loss alcanzado, decisión rechazada.\n\n## Criterios de aceptación\n- [ ] ≥ 4 escenarios\n- [ ] Corren en < 60 s en CI"
+  },
+  {
+   "title": "BaseAgent, Signal y TradeDecision",
+   "milestone": "M3 · Agentes y API",
+   "labels": [
+    "agents"
+   ],
+   "body": "## Descripción\nDefinir contratos comunes (Pydantic) y la clase abstracta `BaseAgent`.\n\n## Criterios de aceptación\n- [ ] Modelos tipados y serializables a JSON\n- [ ] Documentados en la Wiki"
+  },
+  {
+   "title": "ForecastAgent",
+   "milestone": "M3 · Agentes y API",
+   "labels": [
+    "agents",
+    "ml"
+   ],
+   "body": "## Descripción\nConvierte el pronóstico de Kronos (varias trayectorias) en dirección y confianza.\n\n## Criterios de aceptación\n- [ ] Confianza basada en dispersión de trayectorias\n- [ ] Pruebas unitarias con pronósticos simulados"
+  },
+  {
+   "title": "NewsSentimentAgent",
+   "milestone": "M3 · Agentes y API",
+   "labels": [
+    "agents"
+   ],
+   "body": "## Descripción\nObtiene noticias (Finnhub/CryptoPanic) y puntúa sentimiento con un LLM; veto ante noticias de alto impacto.\n\n## Criterios de aceptación\n- [ ] Sentimiento en [-1, 1]\n- [ ] Cache de resultados en Redis\n- [ ] Pruebas con LLM simulado"
+  },
+  {
+   "title": "RiskAgent",
+   "milestone": "M3 · Agentes y API",
+   "labels": [
+    "agents",
+    "priority:high"
+   ],
+   "body": "## Descripción\nDimensionamiento por nivel de riesgo, stop-loss/take-profit y bloqueo por drawdown máximo.\n\n## Criterios de aceptación\n- [ ] Tabla riesgo → % por operación\n- [ ] Rechaza decisiones que exceden límites\n- [ ] Cobertura ≥ 90 %"
+  },
+  {
+   "title": "AgentOrchestrator",
+   "milestone": "M3 · Agentes y API",
+   "labels": [
+    "agents",
+    "priority:high"
+   ],
+   "body": "## Descripción\nCiclo por cierre de vela: contexto → señales → agregación ponderada por horizonte → riesgo → publicar decisión en Redis.\n\n## Criterios de aceptación\n- [ ] Pesos configurables por horizonte\n- [ ] Rationale legible guardado con cada decisión\n- [ ] Pruebas con agentes simulados"
+  },
+  {
+   "title": "API: perfiles de inversión y metas",
+   "milestone": "M3 · Agentes y API",
+   "labels": [
+    "backend"
+   ],
+   "body": "## Descripción\nCRUD de `InvestmentProfile` y `InvestmentGoal` con validación (capital, riesgo 1–5, horizonte).\n\n## Criterios de aceptación\n- [ ] Auth con JWT de Supabase\n- [ ] Errores 422 claros\n- [ ] Pruebas con TestClient"
+  },
+  {
+   "title": "API: bots, portafolio y trades",
+   "milestone": "M3 · Agentes y API",
+   "labels": [
+    "backend"
+   ],
+   "body": "## Descripción\nEndpoints `POST /bots/{id}/start|stop`, `GET /portfolio`, `GET /trades`, `POST /backtests`.\n\n## Criterios de aceptación\n- [ ] OpenAPI documentado\n- [ ] Botón de paro de emergencia funcional"
+  },
+  {
+   "title": "Frontend: auth y onboarding de perfil",
+   "milestone": "M4 · Frontend y deployment",
+   "labels": [
+    "frontend"
+   ],
+   "body": "## Descripción\nLogin con Supabase Auth y wizard para configurar capital, horizonte, riesgo, metas e instrumentos.\n\n## Criterios de aceptación\n- [ ] Rutas protegidas\n- [ ] Validación del formulario\n- [ ] Pruebas con Vitest + RTL"
+  },
+  {
+   "title": "Frontend: dashboard en tiempo real",
+   "milestone": "M4 · Frontend y deployment",
+   "labels": [
+    "frontend",
+    "priority:high"
+   ],
+   "body": "## Descripción\nEquity, posiciones, P&L, gráfica de velas con pronóstico superpuesto y rationale por operación (Supabase Realtime).\n\n## Criterios de aceptación\n- [ ] Actualización sin recargar\n- [ ] Responsivo\n- [ ] Estados de carga y error"
+  },
+  {
+   "title": "Frontend: backtests y reportes",
+   "milestone": "M4 · Frontend y deployment",
+   "labels": [
+    "frontend"
+   ],
+   "body": "## Descripción\nLanzar backtests y visualizar métricas y curva de equity.\n\n## Criterios de aceptación\n- [ ] Formulario de configuración\n- [ ] Gráfica de equity y tabla de trades"
+  },
+  {
+   "title": "Push de imágenes a Docker Hub",
+   "milestone": "M4 · Frontend y deployment",
+   "labels": [
+    "devops",
+    "priority:high"
+   ],
+   "body": "## Descripción\nWorkflow que construye y publica las 5 imágenes con tags `sha-*`, `develop`, `X.Y.Z` y `latest`.\n\n## Criterios de aceptación\n- [ ] Secrets DOCKERHUB_USERNAME/TOKEN\n- [ ] Push solo en merge a develop o tag en main"
+  },
+  {
+   "title": "Infraestructura AWS: VPC, ALB, ECS Fargate, ElastiCache",
+   "milestone": "M4 · Frontend y deployment",
+   "labels": [
+    "devops"
+   ],
+   "body": "## Descripción\nCrear recursos (consola o IaC) según el diagrama de infraestructura; secretos en Secrets Manager.\n\n## Criterios de aceptación\n- [ ] Servicios accesibles vía ALB\n- [ ] Redis privado en la VPC\n- [ ] Logs en CloudWatch"
+  },
+  {
+   "title": "CD: deploy a staging y producción",
+   "milestone": "M4 · Frontend y deployment",
+   "labels": [
+    "devops"
+   ],
+   "body": "## Descripción\nDeploy automático a staging desde `develop` y a producción con tag + aprobación manual (GitHub Environments).\n\n## Criterios de aceptación\n- [ ] `aws ecs update-service` desde Actions\n- [ ] Rollback documentado"
+  },
+  {
+   "title": "Pruebas end-to-end en staging",
+   "milestone": "M5 · Cierre",
+   "labels": [
+    "testing"
+   ],
+   "body": "## Descripción\nFlujo completo: crear perfil → iniciar bot → recibir señal → orden en testnet → ver trade en dashboard.\n\n## Criterios de aceptación\n- [ ] Checklist E2E documentado\n- [ ] Video corto de evidencia"
+  },
+  {
+   "title": "Monitoreo y alertas",
+   "milestone": "M5 · Cierre",
+   "labels": [
+    "devops"
+   ],
+   "body": "## Descripción\nAlarmas de CloudWatch: servicio caído, errores 5xx, drawdown superado.\n\n## Criterios de aceptación\n- [ ] ≥ 3 alarmas activas\n- [ ] Notificación por correo"
+  },
+  {
+   "title": "Documentación final y demo",
+   "milestone": "M5 · Cierre",
+   "labels": [
+    "docs"
+   ],
+   "body": "## Descripción\nActualizar Wiki (arquitectura, setup local, pipeline, decisiones) y preparar la presentación final.\n\n## Criterios de aceptación\n- [ ] Wiki actualizada\n- [ ] Presentación y demo ensayadas"
+  }
+ ]
+}

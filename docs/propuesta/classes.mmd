@@ -1,0 +1,112 @@
+classDiagram
+direction TB
+class InvestmentProfile {
+  +UUID id
+  +UUID user_id
+  +Horizon horizon
+  +int risk_level
+  +Decimal capital
+  +float max_drawdown
+  +list~str~ instruments
+  +validate() bool
+  +to_risk_limits() RiskLimits
+}
+class InvestmentGoal {
+  +float target_return
+  +date deadline
+  +progress(equity) float
+}
+class AgentOrchestrator {
+  -list~BaseAgent~ agents
+  -RiskAgent risk
+  +run_cycle(profile) TradeDecision[]
+  +collect_signals(ctx) Signal[]
+  +aggregate(signals) TradeDecision[]
+}
+class BaseAgent {
+  <<abstract>>
+  +str name
+  +float weight
+  +analyze(ctx) Signal
+}
+class ForecastAgent {
+  -KronosForecastService kronos
+  +analyze(ctx) Signal
+}
+class NewsSentimentAgent {
+  -NewsProvider news
+  -LLMClient llm
+  +fetch_news(symbol) Article[]
+  +score_sentiment(articles) float
+  +analyze(ctx) Signal
+}
+class RiskAgent {
+  -RiskLimits limits
+  +evaluate(decision, portfolio) TradeDecision
+  +position_size(signal, equity) Decimal
+  +check_drawdown(portfolio) bool
+}
+class KronosForecastService {
+  -KronosPredictor predictor
+  +load_model(name)
+  +predict(ohlcv, pred_len) Forecast
+  +predict_batch(series, pred_len) Forecast[]
+}
+class Signal {
+  +str symbol
+  +Direction direction
+  +float confidence
+  +Horizon horizon
+  +str source
+}
+class TradeDecision {
+  +str symbol
+  +OrderSide side
+  +Decimal quantity
+  +Decimal stop_loss
+  +Decimal take_profit
+  +str rationale
+}
+class TradingEngineService {
+  -TradingNode node
+  +start(profile)
+  +stop()
+  +submit(decision)
+  +get_positions() Position[]
+}
+class AgenticStrategy {
+  <<nautilus Strategy>>
+  +on_start()
+  +on_bar(bar)
+  +on_signal(decision)
+  +on_order_filled(event)
+  +on_stop()
+}
+class BacktestService {
+  -BacktestEngine engine
+  +run(config) BacktestReport
+}
+class MarketDataService {
+  +get_bars(symbol, tf, lookback) DataFrame
+  +stream_bars(symbol, tf)
+}
+class TradeRepository {
+  -SupabaseClient db
+  +save_trade(trade)
+  +list_trades(user_id) Trade[]
+  +save_equity_snapshot(snap)
+}
+InvestmentProfile "1" --> "*" InvestmentGoal
+BaseAgent <|-- ForecastAgent
+BaseAgent <|-- NewsSentimentAgent
+AgentOrchestrator o-- BaseAgent
+AgentOrchestrator --> RiskAgent
+ForecastAgent --> KronosForecastService
+ForecastAgent --> MarketDataService
+BaseAgent ..> Signal
+AgentOrchestrator ..> TradeDecision
+AgentOrchestrator ..> InvestmentProfile
+TradingEngineService *-- AgenticStrategy
+AgenticStrategy ..> TradeDecision
+TradingEngineService --> TradeRepository
+BacktestService --> AgenticStrategy
