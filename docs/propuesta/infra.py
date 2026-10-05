@@ -13,7 +13,7 @@ from diagrams.programming.framework import Nextjs, Fastapi
 from diagrams.programming.language import Python
 
 ga = {"fontsize":"20","pad":"0.4","splines":"spline","nodesep":"0.7","ranksep":"1.1"}
-with Diagram("NautiKron - Infraestructura (AWS)", filename="img/infra", show=False, direction="TB", graph_attr=ga):
+with Diagram("trading_maxxing - Infraestructura (AWS)", filename="img/infra", show=False, direction="TB", graph_attr=ga):
     users = Users("Inversionistas")
     dns = Route53("Route 53")
     hub = Docker("Docker Hub\n(imagenes)")

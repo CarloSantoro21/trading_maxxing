@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Crea labels, milestones, issues y el GitHub Project (Board) de NautiKron.
+"""Crea labels, milestones, issues y el GitHub Project (Board) de trading_maxxing.
 
 Requisitos: GitHub CLI autenticado con permiso de proyectos:
     gh auth login
@@ -12,7 +12,7 @@ import json, subprocess, sys, pathlib
 
 REPO = sys.argv[1] if len(sys.argv) > 1 else "CarloSantoro21/trading_maxxing"
 OWNER = REPO.split("/")[0]
-PROJECT_TITLE = "NautiKron Roadmap"
+PROJECT_TITLE = "trading_maxxing"
 data = json.loads((pathlib.Path(__file__).parent / "issues.json").read_text(encoding="utf-8"))
 
 
