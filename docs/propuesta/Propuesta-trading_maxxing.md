@@ -141,7 +141,7 @@ En local, docker-compose.yml levanta los 5 servicios y Redis, conectados a un pr
 El pipeline corre en GitHub Actions:
 
 - En cada pull request a develop o main: lint (ruff y ESLint), pruebas de Python con pytest (cobertura mínima de 70 %) y pruebas del frontend con Vitest en paralelo, y build de las 5 imágenes sin publicarlas.
-- Al hacer merge a develop: lo anterior, más el push de las imágenes a Docker Hub con los tags develop y sha-<commit>, y deploy automático a staging.
+- Al hacer merge a develop: lo anterior, más el push de las imágenes a Docker Hub con los tags develop y `sha-<commit>`, y deploy automático a staging.
 - Al crear un tag vX.Y.Z en main: push a Docker Hub con los tags X.Y.Z y latest, y deploy a producción con aprobación manual mediante GitHub Environments.
 
 #### Pruebas unitarias
@@ -159,7 +159,7 @@ Ningún pull request se fusiona con pruebas fallidas o con cobertura de Python m
 #### Docker Hub
 
 - Una imagen por servicio, bajo la cuenta del equipo: trading-maxxing-web, trading-maxxing-api, trading-maxxing-agents, trading-maxxing-forecast y trading-maxxing-engine.
-- Tags: sha-<commit> para trazabilidad, develop para staging, y X.Y.Z y latest para producción.
+- Tags: `sha-<commit>` para trazabilidad, develop para staging, y X.Y.Z y latest para producción.
 - Builds multi-stage. La imagen engine parte de la imagen oficial de NautilusTrader y la imagen forecast descarga los pesos de Kronos durante el build para arrancar rápido.
 - Las credenciales viven en GitHub Secrets (DOCKERHUB_USERNAME y DOCKERHUB_TOKEN).
 
@@ -169,11 +169,11 @@ Ningún pull request se fusiona con pruebas fallidas o con cobertura de Python m
 
 Usamos Git Flow simplificado:
 
-- main: código en producción. Protegida; solo recibe merges de release/* y hotfix/*, y cada merge lleva un tag vX.Y.Z.
+- main: código en producción. Protegida; solo recibe merges de `release/*` y `hotfix/*`, y cada merge lleva un tag vX.Y.Z.
 - develop: rama de integración, desplegada en staging. Protegida; requiere pull request con una aprobación y CI en verde.
-- feature/<issue>-<descripcion>: nuevas funcionalidades, por ejemplo feature/18-risk-agent. Sale de develop y regresa por pull request con squash merge.
+- `feature/<issue>-<descripcion>`: nuevas funcionalidades, por ejemplo feature/18-risk-agent. Sale de develop y regresa por pull request con squash merge.
 - release/X.Y.Z: estabilización antes de liberar. Sale de develop y solo admite correcciones.
-- hotfix/<descripcion>: correcciones urgentes en producción. Sale de main y se fusiona en main y develop.
+- `hotfix/<descripcion>`: correcciones urgentes en producción. Sale de main y se fusiona en main y develop.
 
 Los commits siguen Conventional Commits (feat:, fix:, test:, ci:, docs:), cada pull request enlaza su issue (Closes #18) y las versiones siguen versionado semántico.
 
