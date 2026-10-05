@@ -57,7 +57,7 @@ NautiKron es una aplicación web en la que un usuario define su **perfil de inve
 
 ### 3.1 Diagrama de clases
 
-![Diagrama de clases](img/classes.png)
+![Diagrama de clases](https://raw.githubusercontent.com/CarloSantoro21/trading_maxxing/main/docs/propuesta/img/classes.png)
 
 ```mermaid
 classDiagram
@@ -113,7 +113,7 @@ BacktestService --> AgenticStrategy
 
 ## 5. Recursos que se van a crear (infraestructura)
 
-![Diagrama de infraestructura](img/infra.png)
+![Diagrama de infraestructura](https://raw.githubusercontent.com/CarloSantoro21/trading_maxxing/main/docs/propuesta/img/infra.png)
 
 | Recurso | Tipo | Propósito |
 |---|---|---|
@@ -132,7 +132,7 @@ Ambiente local: `docker-compose.yml` levanta los 5 servicios + Redis apuntando a
 
 ### 5.1 Diagrama de deployment (CI/CD)
 
-![Diagrama de deployment](img/deploy.png)
+![Diagrama de deployment](https://raw.githubusercontent.com/CarloSantoro21/trading_maxxing/main/docs/propuesta/img/deploy.png)
 
 **Pipeline:**
 
@@ -166,7 +166,7 @@ Regla de calidad: ningún PR se fusiona con pruebas fallidas o con cobertura de 
 
 ### 5.2 Estrategia de ramas
 
-![Estrategia de ramas](img/branches.png)
+![Estrategia de ramas](https://raw.githubusercontent.com/CarloSantoro21/trading_maxxing/main/docs/propuesta/img/branches.png)
 
 Usamos **Git Flow simplificado**:
 
