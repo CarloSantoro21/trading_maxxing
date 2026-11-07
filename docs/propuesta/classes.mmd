@@ -15,30 +15,52 @@ class InvestmentGoal {
   +float target_return
   +date deadline
   +progress(equity) float
+  +probability(sim) float
 }
 class AgentOrchestrator {
-  -list~BaseAgent~ agents
+  -list~BaseAgent~ strategies
+  -NewsAgent news
+  -SimulationGate gate
   -RiskAgent risk
   +run_cycle(profile) TradeDecision[]
   +collect_signals(ctx) Signal[]
   +aggregate(signals) TradeDecision[]
 }
+class PortfolioAllocator {
+  +weights(profile, stats) dict
+}
 class BaseAgent {
   <<abstract>>
   +str name
-  +float weight
+  +Timeframe timeframe
   +analyze(ctx) Signal
 }
-class ForecastAgent {
+class KronosAgent {
   -KronosForecastService kronos
   +analyze(ctx) Signal
+  +trajectories(ctx) ndarray
 }
-class NewsSentimentAgent {
+class TrendAgent {
+  +list~int~ lookbacks
+  +analyze(ctx) Signal
+}
+class IntradayMomentumAgent {
+  +analyze(ctx) Signal
+}
+class NewsAgent {
   -NewsProvider news
   -LLMClient llm
   +fetch_news(symbol) Article[]
-  +score_sentiment(articles) float
-  +analyze(ctx) Signal
+  +classify(articles) NewsVerdict
+  +veto(ctx) bool
+}
+class LLMClient {
+  <<interface>>
+  +complete_json(prompt, schema) dict
+}
+class SimulationGate {
+  +simulate(decision, paths) SimResult
+  +approve(sim) bool
 }
 class RiskAgent {
   -RiskLimits limits
@@ -46,11 +68,14 @@ class RiskAgent {
   +position_size(signal, equity) Decimal
   +check_drawdown(portfolio) bool
 }
+class ExplainerAgent {
+  -LLMClient llm
+  +explain(decision) str
+}
 class KronosForecastService {
   -KronosPredictor predictor
   +load_model(name)
-  +predict(ohlcv, pred_len) Forecast
-  +predict_batch(series, pred_len) Forecast[]
+  +predict(ohlcv, pred_len, samples) Forecast
 }
 class Signal {
   +str symbol
@@ -65,6 +90,7 @@ class TradeDecision {
   +Decimal quantity
   +Decimal stop_loss
   +Decimal take_profit
+  +SimResult sim
   +str rationale
 }
 class TradingEngineService {
@@ -85,9 +111,14 @@ class AgenticStrategy {
 class BacktestService {
   -BacktestEngine engine
   +run(config) BacktestReport
+  +walk_forward(config) BacktestReport[]
+}
+class MonteCarloService {
+  +reshuffle(trades, n) MCReport
+  +goal_probability(stats, goal) float
 }
 class MarketDataService {
-  +get_bars(symbol, tf, lookback) DataFrame
+  +get_bars(symbol, tf, start, end) DataFrame
   +stream_bars(symbol, tf)
 }
 class TradeRepository {
@@ -97,12 +128,20 @@ class TradeRepository {
   +save_equity_snapshot(snap)
 }
 InvestmentProfile "1" --> "*" InvestmentGoal
-BaseAgent <|-- ForecastAgent
-BaseAgent <|-- NewsSentimentAgent
+BaseAgent <|-- KronosAgent
+BaseAgent <|-- TrendAgent
+BaseAgent <|-- IntradayMomentumAgent
 AgentOrchestrator o-- BaseAgent
+AgentOrchestrator --> NewsAgent
+AgentOrchestrator --> PortfolioAllocator
+AgentOrchestrator --> SimulationGate
 AgentOrchestrator --> RiskAgent
-ForecastAgent --> KronosForecastService
-ForecastAgent --> MarketDataService
+AgentOrchestrator --> ExplainerAgent
+NewsAgent --> LLMClient
+ExplainerAgent --> LLMClient
+KronosAgent --> KronosForecastService
+SimulationGate ..> KronosAgent : trayectorias
+BaseAgent ..> MarketDataService
 BaseAgent ..> Signal
 AgentOrchestrator ..> TradeDecision
 AgentOrchestrator ..> InvestmentProfile
@@ -110,3 +149,5 @@ TradingEngineService *-- AgenticStrategy
 AgenticStrategy ..> TradeDecision
 TradingEngineService --> TradeRepository
 BacktestService --> AgenticStrategy
+BacktestService --> MonteCarloService
+PortfolioAllocator ..> MonteCarloService
