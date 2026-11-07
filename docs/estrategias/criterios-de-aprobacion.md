@@ -5,7 +5,7 @@ Antes de recibir capital, una estrategia tiene que pasar tres pruebas en el labo
 | # | Criterio | Pregunta que responde |
 |---|---|---|
 | 1 | **Sharpe out-of-sample > 0.5** | ¿Gana de forma consistente, o solo con sustos enormes? |
-| 2 | **Drawdown p95 < límite del perfil** | En un año malo pero realista, ¿cuánto cae? ¿Lo aguanta el usuario? |
+| 2 | **Drawdown p95 < techo global de 40 %** | En un año malo pero realista, ¿cuánto cae? Cada usuario invierte la fracción que cabe en su tolerancia |
 | 3 | **Suficientes trades** | ¿El resultado es estadísticamente creíble o pudo ser suerte? |
 
 Los tres se calculan **solo con datos que la estrategia no vio al ajustarse** (out-of-sample) e **incluyen comisiones**: 0.1 % por lado en Binance Spot.
@@ -83,7 +83,7 @@ Con comisiones incluidas y medido solo out-of-sample, un Sharpe de 0.5 sostenido
 
 ---
 
-## Criterio 2: drawdown p95 por debajo del límite del perfil
+## Criterio 2: drawdown p95 por debajo del techo global (y exposición por usuario)
 
 ### Drawdown
 La **peor caída desde un máximo**. Si tu cuenta llegó a $12,000 y luego bajó a $9,000, el drawdown fue de 25 %, aunque después se recupere.
@@ -97,7 +97,10 @@ El backtest muestra **un solo orden** de las operaciones. Si los 5 peores trades
 3. El **p95** es el valor que el 95 % de esas simulaciones **no rebasa**. Es "un año malo, pero realista". El **p99** es "un año muy malo".
 
 ### El criterio
-Si el perfil dice "no tolero caer más de 20 %" y el p95 es 28 %, en un año malo la estrategia va a sacar al usuario de su zona. **Se rechaza aunque gane dinero.**
+Como el laboratorio es **uno solo para todos los usuarios**, el criterio se aplica en dos niveles:
+
+1. **Aprobación global:** el p95 a tamaño completo debe quedar por debajo de un **techo de 40 %** (el drawdown del nivel de riesgo más agresivo). Si no, la estrategia se rechaza para todos, aunque gane dinero.
+2. **Por usuario:** cada portafolio invierte solo la fracción de cada sleeve que cabe en su tolerancia: `exposición = min(1, drawdown máximo de su nivel ÷ p95 de la estrategia)`. Ejemplo: si la estrategia tiene un p95 de 28 % y el usuario es nivel 3 (20 %), invierte 20/28 ≈ 71 % de ese sleeve y el resto queda en USDT. En spot el drawdown escala casi en proporción a lo invertido.
 
 ### ¿Depende de cuánto duran los trades? Sí
 **Lo que dura cada trade importa, y mucho.** Hay dos efectos:
@@ -152,7 +155,7 @@ El criterio 3 es **"al menos 100 trades, o, para estrategias de baja frecuencia,
 | Criterio | Se calcula sobre | Umbral |
 |---|---|---|
 | Sharpe | Retornos diarios out-of-sample del sleeve (16 tramos del walk-forward) | > 0.5, y mayor que el de comprar y mantener* |
-| Drawdown p95 | Monte Carlo (block bootstrap) de los retornos diarios del sleeve | < `max_drawdown` del perfil |
+| Drawdown p95 | Monte Carlo (block bootstrap) de los retornos diarios del sleeve | < 40 % global; la exposición por usuario se ajusta a su nivel |
 | Evidencia | Número de trades y años out-of-sample | ≥ 100 trades, o ≥ 30 trades y ≥ 3 años |
 
 \* La comparación contra comprar y mantener también es una propuesta y queda pendiente de aprobación.
