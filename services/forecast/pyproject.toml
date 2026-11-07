@@ -17,6 +17,10 @@ dependencies = [
     "tqdm>=4.66",
 ]
 
+[project.optional-dependencies]
+# Script scripts/precompute.py: lee las velas locales con tm_marketdata (y pyarrow)
+precompute = ["tm-marketdata"]
+
 # PyTorch: en Linux (CI y Docker) ruedas de CPU, sin CUDA; en macOS, PyPI (trae MPS)
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
