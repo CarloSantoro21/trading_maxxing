@@ -61,12 +61,12 @@ describe("validateOnboarding", () => {
     expect(errorsOf({ ...valid, riskLevel }).riskLevel).toMatch(/entre 1 y 5/);
   });
 
-  it.each(["0", "-1", "100.1"])("rechaza drawdown %s %% (check 0 < x <= 1)", (maxDrawdownPct) => {
+  it.each(["0", "-1", "100", "100.1"])("rechaza drawdown %s %% (check 0 < x < 1)", (maxDrawdownPct) => {
     expect(errorsOf({ ...valid, maxDrawdownPct }).maxDrawdownPct).toMatch(/drawdown máximo/);
   });
 
-  it("acepta drawdown de 100 %", () => {
-    expect(validateOnboarding({ ...valid, maxDrawdownPct: "100" }).success).toBe(true);
+  it("acepta drawdown de 99.9 %", () => {
+    expect(validateOnboarding({ ...valid, maxDrawdownPct: "99.9" }).success).toBe(true);
   });
 
   it("exige al menos un instrumento soportado y sin repetir", () => {

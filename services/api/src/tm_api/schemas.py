@@ -22,7 +22,7 @@ RiskLevel = Annotated[int, Field(ge=1, le=5, description="Tolerancia al riesgo, 
 Capital = Annotated[Decimal, Field(gt=0, description="Capital en USDT, mayor que 0")]
 MaxDrawdown = Annotated[
     Decimal,
-    Field(gt=0, le=1, description="Drawdown máximo como fracción: 0.2 = 20 %"),
+    Field(gt=0, lt=1, description="Drawdown máximo como fracción en (0, 1): 0.2 = 20 %"),
 ]
 TargetReturn = Annotated[
     Decimal, Field(gt=0, description="Retorno objetivo como fracción: 0.15 = 15 %")

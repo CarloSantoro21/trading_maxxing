@@ -37,6 +37,7 @@ def test_segundo_perfil_da_409(client, alice):
         ("capital", "0"),
         ("capital", "-5"),
         ("max_drawdown", "0"),
+        ("max_drawdown", "1"),
         ("max_drawdown", "1.5"),
         ("horizon", "forever"),
         ("instruments", []),

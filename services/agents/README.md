@@ -153,7 +153,7 @@ registry.record_lab_report("trend", {"sharpe_oos": 0.8, "max_drawdown_p95": 0.22
 registry.transition("trend", StrategyState.SHADOW, SYSTEM_ACTOR, "pasa los criterios")
 registry.transition("trend", StrategyState.ACTIVE, user_id, "7 días en shadow sin fallas")
 registry.active(), registry.shadow(), registry.trading()  # trading = active + probation
-registry.history("trend")  # [StrategyTransition(from_state, to_state, actor, reason, created_at), ...]
+registry.history("trend")  # [StrategyTransition(from_state, to_state, actor, ...), ...]
 ```
 
 - `transition(name, to, actor, reason)` solo acepta las transiciones de `ALLOWED_TRANSITIONS` y lanza `TransitionError` en cualquier otra. Las promociones `shadow → active` y `probation → active` exigen un actor humano (el `user_id`, UUID); con `SYSTEM_ACTOR` fallan. Las degradaciones y los retiros pueden ser automáticos o manuales. La razón es obligatoria.
