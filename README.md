@@ -54,6 +54,8 @@ make down        # detener
 
 Copia `.env.example` a `.env` (`make up` lo hace la primera vez) y llena las llaves.
 
+Base de datos: Supabase local con su CLI (`supabase start`, `supabase db reset`, `supabase test db`). Detalles, usuario demo y esquema en [supabase/README.md](supabase/README.md).
+
 Cómo contribuir: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Proyecto académico. Opera solo en entornos de prueba y no es asesoría financiera.
