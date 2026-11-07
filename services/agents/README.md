@@ -78,3 +78,22 @@ verdict.approved, verdict.reasons
 - **Trayectorias externas**: `(samples, pasos)` de cierres o `(samples, pasos, OHLC[V])` como `Forecast.paths` de Kronos. `external_weight` es el peso total de esa fuente, sin importar cuántas trayectorias traiga.
 - **Regla conservadora**: si en la misma vela se tocan SL y TP, cuenta como SL.
 - `fee_rate` (comisión por lado) se descuenta del resultado en R. 10,000 trayectorias de 96 pasos tardan decenas de milisegundos.
+
+## KronosAgent (`strategies/kronos.py`, registrado como `kronos`)
+
+Usa velas de 4 h: las toma del contexto (`Timeframe.H4`) o las remuestrea de 15m, 30m o 1m
+con `tm_marketdata.resample_ohlcv` (solo velas completas, sin look-ahead). En cada cierre pide
+`n_trajectories` trayectorias (default 20) de `pred_len` velas (default 6) a
+`POST {FORECAST_URL}/predict` (default `http://localhost:8001`, timeout `FORECAST_TIMEOUT`
+de 120 s).
+
+- **Dirección**: mediana de los retornos finales de las trayectorias. En spot: `long` si es
+  mayor que `min_return`, si no `flat` (nunca cortos, salvo `allow_short=True`).
+- **Confianza**: fracción de trayectorias que coinciden con la dirección.
+- **metadata**: mediana, media, percentiles 5 y 95, `p_up` y la probabilidad de tocar primero
+  TP o SL con `stop_loss_pct` y `take_profit_pct`.
+- **`trajectories(ctx)`**: arreglo `(n, pred_len, 5)` OHLCV para
+  `PathSet.from_array` de la SimulationGate. El pronóstico del mismo `(symbol, now)` se pide
+  una sola vez.
+- Si forecast no responde (timeout, error HTTP o respuesta inválida) o no hay 32 velas de
+  4 h, la señal es `flat` con confianza 0 y el error en `metadata["error"]`.

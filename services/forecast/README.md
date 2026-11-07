@@ -102,6 +102,39 @@ Consecuencia: cualquier evaluación de Kronos en el walk-forward debe usar perio
 **a partir de julio de 2024**. Las ventanas de 2020 a junio de 2024 ya las vio el modelo, así
 que un backtest de Kronos ahí está contaminado.
 
+## Precálculo para el backtest (`scripts/precompute.py`)
+
+El backtest del sleeve Kronos no llama al servicio en cada vela: lee pronósticos ya
+calculados. El script recorre cada cierre de vela de 4 h del 2024-07-01 al 2025-12-31
+(después del corte de preentrenamiento), toma las últimas 400 velas de 4 h cerradas
+(remuestreadas de 15m con `tm_marketdata.resample_ohlcv`), pide 20 trayectorias de 6 velas
+(24 h) a `KronosForecastService` en proceso y guarda un Parquet por símbolo y día en
+`data/forecasts/{SYMBOL}/4h/{YYYY-MM-DD}.parquet` (formato largo: `decision_time`, `sample`,
+`step`, `timestamp`, OHLCV, `last_close`, `context_len`; los parámetros van en los metadatos).
+
+Es **reanudable**: los días que ya tienen archivo se saltan y cada archivo se escribe a un
+temporal y se renombra, así que cortarlo con Ctrl-C no deja archivos rotos. Necesita las
+velas de 15m en `--bars-dir` (o `TM_DATA_DIR`) y el extra `precompute` (lo instala
+`uv sync --all-packages`).
+
+Verificación sobre 2 días (BTCUSDT y ETHUSDT, Mac M5, dispositivo automático): ~9 s por símbolo y día
+(6 decisiones × 20 trayectorias), unos 39 s en total con la descarga de pesos en cache:
+
+```bash
+uv run python services/forecast/scripts/precompute.py \
+    --bars-dir data/bars --out-dir data/forecasts \
+    --start 2024-07-01 --end 2024-07-02
+```
+
+Corrida completa (sin `--start`/`--end` usa 2024-07-01 → 2025-12-31; con ese ritmo son unas
+3 h, aunque puede tardar más si el equipo se calienta; se puede cortar y relanzar):
+
+```bash
+uv run python services/forecast/scripts/precompute.py --bars-dir data/bars
+```
+
+Para leerlos: `read_forecasts("data/forecasts", "BTCUSDT")` del mismo script.
+
 ## Pruebas
 
 Las pruebas (`tests/`) usan un predictor simulado: no descargan pesos ni usan red.

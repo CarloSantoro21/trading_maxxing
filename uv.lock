@@ -849,15 +849,19 @@ name = "tm-agents"
 version = "0.1.0"
 source = { editable = "services/agents" }
 dependencies = [
+    { name = "httpx" },
     { name = "numpy" },
     { name = "pandas" },
+    { name = "tm-marketdata" },
     { name = "tm-shared" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.28" },
     { name = "numpy", specifier = ">=2.1" },
     { name = "pandas", specifier = ">=2.2" },
+    { name = "tm-marketdata", editable = "packages/marketdata" },
     { name = "tm-shared", editable = "packages/shared" },
 ]
 
@@ -923,6 +927,11 @@ dependencies = [
     { name = "uvicorn", extra = ["standard"] },
 ]
 
+[package.optional-dependencies]
+precompute = [
+    { name = "tm-marketdata" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "einops", specifier = ">=0.8" },
@@ -931,12 +940,14 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "pandas", specifier = ">=2.2" },
     { name = "safetensors", specifier = ">=0.4" },
+    { name = "tm-marketdata", marker = "extra == 'precompute'", editable = "packages/marketdata" },
     { name = "tm-shared", editable = "packages/shared" },
     { name = "torch", marker = "sys_platform != 'linux'", specifier = ">=2.5" },
     { name = "torch", marker = "sys_platform == 'linux'", specifier = ">=2.5", index = "https://download.pytorch.org/whl/cpu" },
     { name = "tqdm", specifier = ">=4.66" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
 ]
+provides-extras = ["precompute"]
 
 [[package]]
 name = "tm-marketdata"
