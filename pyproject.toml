@@ -28,8 +28,8 @@ tm-marketdata = { workspace = true }
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-# Scripts de diagramas y del board: utilidades sueltas, fuera del lint
-extend-exclude = ["docs/propuesta", "scripts/board"]
+# Scripts de diagramas y del board (utilidades sueltas) y código de Kronos (vendor): fuera del lint
+extend-exclude = ["docs/propuesta", "scripts/board", "services/forecast/src/tm_forecast/kronos"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
@@ -41,6 +41,8 @@ testpaths = ["packages", "services"]
 [tool.coverage.run]
 source = ["packages/shared/src", "packages/marketdata/src", "services/api/src", "services/agents/src", "services/forecast/src", "services/engine/src"]
 branch = true
+# Código de Kronos incorporado tal cual (vendor): no cuenta para la cobertura
+omit = ["services/forecast/src/tm_forecast/kronos/*"]
 
 [tool.coverage.report]
 fail_under = 70
