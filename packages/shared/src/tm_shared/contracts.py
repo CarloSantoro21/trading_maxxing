@@ -36,6 +36,7 @@ class Timeframe(StrEnum):
     M1 = "1m"
     M15 = "15m"
     M30 = "30m"
+    H4 = "4h"
     D1 = "1d"
 
 

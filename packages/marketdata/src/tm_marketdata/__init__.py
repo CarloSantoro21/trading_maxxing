@@ -1,6 +1,7 @@
 """Velas de Binance para trading_maxxing: histórico en Parquet, REST, cache y streaming."""
 
 from tm_marketdata.cache import BarCache, NullCache, RedisCache, cache_from_env
+from tm_marketdata.resample import resample_ohlcv
 from tm_marketdata.rest import BinanceRestClient
 from tm_marketdata.service import MarketDataService
 from tm_marketdata.storage import ParquetStore
@@ -19,5 +20,6 @@ __all__ = [
     "ParquetStore",
     "RedisCache",
     "cache_from_env",
+    "resample_ohlcv",
     "stream_bars",
 ]

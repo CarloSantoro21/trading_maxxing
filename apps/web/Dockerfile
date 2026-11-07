@@ -17,6 +17,12 @@ FROM ${NODE_IMAGE} AS build
 WORKDIR /app
 RUN corepack enable
 ENV NEXT_TELEMETRY_DISABLED=1
+# Variables públicas de Supabase: Next.js las incrusta en el bundle durante el build.
+# Sin ellas la imagen se construye igual y la app muestra un aviso de configuración.
+ARG NEXT_PUBLIC_SUPABASE_URL=""
+ARG NEXT_PUBLIC_SUPABASE_ANON_KEY=""
+ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
+    NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN pnpm build
