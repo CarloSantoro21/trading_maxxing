@@ -137,3 +137,26 @@ de 120 s).
   una sola vez.
 - Si forecast no responde (timeout, error HTTP o respuesta inválida) o no hay 32 velas de
   4 h, la señal es `flat` con confianza 0 y el error en `metadata["error"]`.
+
+## StrategyRegistry (ciclo de vida)
+
+`tm_agents.registry.StrategyRegistry` guarda el estado de cada estrategia (`research → lab → shadow → active → probation → retired`, con revalidación `retired → lab`) y su historial, sobre las tablas `strategies` y `strategy_transitions` de Supabase (ver `supabase/README.md`).
+
+```python
+from tm_agents.registry import SYSTEM_ACTOR, InMemoryBackend, PostgRESTBackend, StrategyRegistry
+from tm_agents.strategy_stats import StrategyState
+
+registry = StrategyRegistry(PostgRESTBackend.from_env())  # o StrategyRegistry(InMemoryBackend())
+registry.ensure("trend", {"lookbacks": [20, 50, 100]})  # nace en research
+registry.transition("trend", StrategyState.LAB, SYSTEM_ACTOR, "entra al laboratorio")
+registry.record_lab_report("trend", {"sharpe_oos": 0.8, "max_drawdown_p95": 0.22})
+registry.transition("trend", StrategyState.SHADOW, SYSTEM_ACTOR, "pasa los criterios")
+registry.transition("trend", StrategyState.ACTIVE, user_id, "7 días en shadow sin fallas")
+registry.active(), registry.shadow(), registry.trading()  # trading = active + probation
+registry.history("trend")  # [StrategyTransition(from_state, to_state, actor, ...), ...]
+```
+
+- `transition(name, to, actor, reason)` solo acepta las transiciones de `ALLOWED_TRANSITIONS` y lanza `TransitionError` en cualquier otra. Las promociones `shadow → active` y `probation → active` exigen un actor humano (el `user_id`, UUID); con `SYSTEM_ACTOR` fallan. Las degradaciones y los retiros pueden ser automáticos o manuales. La razón es obligatoria.
+- Si el estado cambió entre la lectura y la escritura (otro proceso llegó antes), se lanza `StaleStateError`; la base exige que `from_state` sea el estado actual.
+- La base vuelve a validar todo (checks y triggers), así que las reglas se respetan aunque otro servicio escriba directo con la llave `service_role`.
+- `PostgRESTBackend.from_env()` lee `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` (la llave `service_role` en JWT o la nueva `sb_secret_...`; ambas salen de `supabase status -o env`). Las pruebas usan `InMemoryBackend` y `respx`, sin red.

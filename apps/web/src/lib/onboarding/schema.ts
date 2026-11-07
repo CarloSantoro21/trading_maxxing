@@ -6,7 +6,7 @@ import { z } from "zod";
  * Las reglas reflejan los checks de supabase/migrations/20261107000100_tables.sql:
  *   - profiles.capital > 0
  *   - profiles.risk_level entre 1 y 5
- *   - profiles.max_drawdown > 0 y <= 1 (en la UI se captura como porcentaje: 0 < x <= 100)
+ *   - profiles.max_drawdown > 0 y < 1 (en la UI se captura como porcentaje: 0 < x < 100)
  *   - profiles.instruments no vacío y subconjunto de {BTCUSDT, ETHUSDT}
  *   - goals.target_return > 0 (en la UI, porcentaje)
  *   - goals.deadline es una fecha (aquí además se exige que sea futura)
@@ -82,8 +82,8 @@ export const onboardingSchema = z.object({
     (v) => Number.isInteger(v) && v >= 1 && v <= 5,
     { message: "El nivel de riesgo debe ser un entero entre 1 y 5." },
   ),
-  maxDrawdownPct: numberField("Escribe el drawdown máximo.").refine((v) => v > 0 && v <= 100, {
-    message: "El drawdown máximo debe ser mayor que 0 % y como máximo 100 %.",
+  maxDrawdownPct: numberField("Escribe el drawdown máximo.").refine((v) => v > 0 && v < 100, {
+    message: "El drawdown máximo debe ser mayor que 0 % y menor que 100 %.",
   }),
   instruments: z
     .array(z.enum(SYMBOLS, { error: "Instrumento no soportado." }))

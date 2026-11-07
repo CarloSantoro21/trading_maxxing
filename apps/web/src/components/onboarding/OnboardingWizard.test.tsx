@@ -50,7 +50,7 @@ describe("OnboardingWizard", () => {
     await user.clear(dd);
     await user.type(dd, "150");
     await next();
-    expect(screen.getByText(/como máximo 100 %/)).toBeInTheDocument();
+    expect(screen.getByText(/menor que 100 %/)).toBeInTheDocument();
     await user.clear(dd);
     await user.type(dd, "10");
     await next();
