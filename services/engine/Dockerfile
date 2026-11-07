@@ -33,4 +33,6 @@ WORKDIR /app
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1
 USER app
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import os,sys,time; sys.exit(time.time() - os.path.getmtime('/tmp/heartbeat') > 60)"
 CMD ["python", "-m", "tm_engine"]
