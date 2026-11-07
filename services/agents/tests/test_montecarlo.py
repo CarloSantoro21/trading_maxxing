@@ -343,7 +343,7 @@ def test_evaluate_reports_every_failing_criterion():
     joined = " | ".join(result.reasons)
     assert "Sharpe out-of-sample de 0.50" in joined
     assert "39.5%" in joined
-    assert "50 trades (se requieren al menos 100)" in joined
+    assert "50 trades (se requieren al menos 100, o 30 con 3 años out-of-sample)" in joined
 
 
 def test_evaluate_uses_custom_criteria_and_strict_thresholds():
