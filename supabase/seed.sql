@@ -136,3 +136,31 @@ values (
   now() - interval '1 day 1 hour',
   now() - interval '1 day'
 );
+
+-- Estrategias de la biblioteca y su historial. El estado solo cambia insertando en
+-- strategy_transitions: trend llega a active (aprobada por el usuario demo), kronos se queda
+-- en shadow e intraday_momentum en el laboratorio.
+insert into public.strategies (id, name, params, created_at) values
+  ('44444444-4444-4444-4444-444444444401', 'trend',
+   '{"lookbacks": [20, 50, 100], "timeframe": "1d"}', now() - interval '20 days'),
+  ('44444444-4444-4444-4444-444444444402', 'kronos',
+   '{"model": "Kronos-small", "timeframe": "4h", "samples": 20}', now() - interval '20 days'),
+  ('44444444-4444-4444-4444-444444444403', 'intraday_momentum',
+   '{"timeframe": "30m"}', now() - interval '20 days');
+
+insert into public.strategy_transitions (strategy_id, from_state, to_state, actor, reason, created_at) values
+  ('44444444-4444-4444-4444-444444444401', 'research', 'lab', 'system', 'entra al laboratorio', now() - interval '19 days'),
+  ('44444444-4444-4444-4444-444444444401', 'lab', 'shadow', 'system', 'pasa los criterios del laboratorio', now() - interval '18 days'),
+  ('44444444-4444-4444-4444-444444444401', 'shadow', 'active', '11111111-1111-1111-1111-111111111111', '7 días en shadow sin fallas', now() - interval '10 days'),
+  ('44444444-4444-4444-4444-444444444402', 'research', 'lab', 'system', 'entra al laboratorio', now() - interval '12 days'),
+  ('44444444-4444-4444-4444-444444444402', 'lab', 'shadow', 'system', 'pasa los criterios del laboratorio', now() - interval '5 days'),
+  ('44444444-4444-4444-4444-444444444403', 'research', 'lab', 'system', 'entra al laboratorio', now() - interval '2 days');
+
+update public.strategies
+set lab_report = '{"sharpe_oos": 0.82, "max_drawdown_p95": 0.24, "max_drawdown_p99": 0.31, "trades": 143, "approved": true}',
+    live_metrics = '{"drawdown": 0.03, "sharpe_last_30": 0.9, "trades": 12}'
+where name = 'trend';
+
+update public.strategies
+set lab_report = '{"sharpe_oos": 0.66, "max_drawdown_p95": 0.21, "max_drawdown_p99": 0.28, "trades": 118, "approved": true}'
+where name = 'kronos';
