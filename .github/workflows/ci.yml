@@ -39,6 +39,7 @@ jobs:
           if-no-files-found: ignore
 
   web:
+    # El nombre se conserva por si es un check requerido; también construye el export.
     name: Web (eslint + tsc + vitest)
     runs-on: ubuntu-latest
     defaults:
@@ -61,6 +62,10 @@ jobs:
         run: pnpm typecheck
       - name: Pruebas
         run: pnpm test
+      - name: Export estático (out/)
+        run: pnpm build
+      - name: Rutas del export
+        run: pnpm check:export
 
   docker:
     name: Docker build (${{ matrix.service }})
