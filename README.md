@@ -34,6 +34,26 @@ cd apps/web && pnpm install
 pnpm test && pnpm lint && pnpm dev
 ```
 
+## Levantar todo en local
+
+```bash
+make up          # Supabase (CLI) + Redis + api + agents + engine + forecast (CPU)
+make up-mps      # igual, con forecast nativo en la Mac (Metal); luego `make forecast-mps`
+make web         # frontend con hot reload
+make ps          # estado y health
+make down        # detener
+```
+
+| Servicio | URL |
+|---|---|
+| web | http://localhost:3000 |
+| api | http://localhost:8000/health |
+| forecast | http://localhost:8001/health |
+| Redis | localhost:6379 |
+| Supabase (API / Studio) | http://localhost:54321 · http://localhost:54323 |
+
+Copia `.env.example` a `.env` (`make up` lo hace la primera vez) y llena las llaves.
+
 Base de datos: Supabase local con su CLI (`supabase start`, `supabase db reset`, `supabase test db`). Detalles, usuario demo y esquema en [supabase/README.md](supabase/README.md).
 
 Cómo contribuir: [CONTRIBUTING.md](CONTRIBUTING.md).

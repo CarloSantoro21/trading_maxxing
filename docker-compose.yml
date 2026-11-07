@@ -1,0 +1,81 @@
+# Entorno local de trading_maxxing. Todo corre en localhost (ver docs/propuesta, sección 5.0).
+#
+#   make up        # Supabase (CLI) + Redis + api + agents + engine + forecast en contenedor
+#   make up-mps    # igual, pero forecast corre nativo en la Mac con aceleración Metal (MPS)
+#   make web       # frontend con hot reload (pnpm dev) en http://localhost:3000
+#
+# Supabase NO está aquí: lo levanta su CLI (`supabase start`) con su propio stack de Docker.
+# Los contenedores lo alcanzan en host.docker.internal:54321.
+
+name: trading-maxxing
+
+x-python-service: &python-service
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    REDIS_URL: redis://redis:6379/0
+    SUPABASE_URL: ${SUPABASE_URL:-http://host.docker.internal:54321}
+    FORECAST_URL: ${FORECAST_URL:-http://forecast:8001}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  depends_on:
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["127.0.0.1:6379:6379"]
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  api:
+    <<: *python-service
+    image: trading-maxxing-api:local
+    build: { context: ., dockerfile: services/api/Dockerfile }
+    ports: ["127.0.0.1:8000:8000"]
+
+  agents:
+    <<: *python-service
+    image: trading-maxxing-agents:local
+    build: { context: ., dockerfile: services/agents/Dockerfile }
+    volumes: ["./data:/app/data:ro"]
+
+  engine:
+    <<: *python-service
+    image: trading-maxxing-engine:local
+    build: { context: ., dockerfile: services/engine/Dockerfile }
+    volumes: ["./data:/app/data:ro"]
+
+  # Perfil "forecast-docker": se apaga con `make up-mps` para correr Kronos nativo con MPS.
+  forecast:
+    <<: *python-service
+    profiles: ["forecast-docker"]
+    image: trading-maxxing-forecast:local
+    build: { context: ., dockerfile: services/forecast/Dockerfile }
+    ports: ["127.0.0.1:8001:8001"]
+    environment:
+      FORECAST_DEVICE: cpu
+      HF_HOME: /app/.cache/huggingface
+    volumes: [hf-cache:/app/.cache/huggingface]
+
+  # Perfil "web": frontend en contenedor (build de producción). Para desarrollar usa `make web`.
+  web:
+    profiles: ["web"]
+    image: trading-maxxing-web:local
+    build: { context: apps/web }
+    ports: ["127.0.0.1:3000:3000"]
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  hf-cache:

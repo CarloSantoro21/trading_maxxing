@@ -1,12 +1,44 @@
-"""Punto de entrada del worker engine (se completa en los issues de M2 y M3)."""
+"""Worker engine: ciclo principal con heartbeat (la lógica real llega en los issues de M2 y M3).
 
+python -m tm_engine           # corre en bucle
+python -m tm_engine --once    # imprime su estado y termina
+"""
+
+from __future__ import annotations
+
+import argparse
 import json
+import os
+import signal
+import time
+from pathlib import Path
 
 from tm_shared.health import health
 
+HEARTBEAT = Path(os.environ.get("HEARTBEAT_FILE", "/tmp/heartbeat"))
+INTERVAL = float(os.environ.get("HEARTBEAT_INTERVAL", "10"))
 
-def main() -> None:
-    print(json.dumps(health("engine").model_dump()))
+
+def beat() -> None:
+    HEARTBEAT.write_text(str(time.time()))
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = argparse.ArgumentParser(prog="tm_engine").parse_known_args(argv)[1]
+    print(json.dumps(health("engine").model_dump()), flush=True)
+    if "--once" in args:
+        return
+    running = True
+
+    def stop(*_: object) -> None:
+        nonlocal running
+        running = False
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    while running:
+        beat()
+        time.sleep(INTERVAL)
 
 
 if __name__ == "__main__":
