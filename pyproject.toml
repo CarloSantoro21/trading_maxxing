@@ -11,16 +11,19 @@ dev = [
     "pytest-cov>=6.0",
     "httpx>=0.28",
     "ruff>=0.8",
+    "respx>=0.22",
+    "fakeredis>=2.26",
 ]
 
 [tool.uv]
 package = false
 
 [tool.uv.workspace]
-members = ["packages/shared", "services/*"]
+members = ["packages/*", "services/*"]
 
 [tool.uv.sources]
 tm-shared = { workspace = true }
+tm-marketdata = { workspace = true }
 
 [tool.ruff]
 line-length = 100
@@ -36,7 +39,7 @@ addopts = "-q --import-mode=importlib"
 testpaths = ["packages", "services"]
 
 [tool.coverage.run]
-source = ["packages/shared/src", "services/api/src", "services/agents/src", "services/forecast/src", "services/engine/src"]
+source = ["packages/shared/src", "packages/marketdata/src", "services/api/src", "services/agents/src", "services/forecast/src", "services/engine/src"]
 branch = true
 
 [tool.coverage.report]

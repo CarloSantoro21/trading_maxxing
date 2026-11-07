@@ -1,0 +1,19 @@
+[project]
+name = "tm-marketdata"
+version = "0.1.0"
+description = "Velas de Binance: histórico en Parquet, REST, cache en Redis y streaming"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "httpx>=0.28",
+    "pandas>=2.2",
+    "pyarrow>=17.0",
+    "redis>=5.0",
+    "websockets>=13.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tm_marketdata"]
