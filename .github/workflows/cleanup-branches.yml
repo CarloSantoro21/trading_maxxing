@@ -1,0 +1,44 @@
+name: Limpiar ramas fusionadas
+
+# El repo ya borra la rama al hacer merge de un PR (delete_branch_on_merge).
+# Este job cubre lo que se escapa: ramas cuyo PR se fusionó y siguen vivas.
+on:
+  schedule:
+    - cron: "0 9 * * 1" # lunes 03:00 CDMX
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Solo listar, sin borrar"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+    steps:
+      - name: Borrar ramas con PR fusionado y sin commits nuevos
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY}"
+          gh api --paginate "repos/$repo/branches" --jq '.[] | "\(.name) \(.commit.sha)"' |
+          while read -r branch sha; do
+            case "$branch" in main|develop) continue ;; esac
+            # PR fusionado cuyo último commit coincide con la punta de la rama
+            merged=$(gh pr list --repo "$repo" --head "$branch" --state merged \
+                     --json headRefOid --jq "[.[] | select(.headRefOid == \"$sha\")] | length")
+            open=$(gh pr list --repo "$repo" --head "$branch" --state open --json number --jq 'length')
+            if [ "$merged" -gt 0 ] && [ "$open" -eq 0 ]; then
+              if [ "$DRY_RUN" = "true" ]; then
+                echo "[dry-run] se borraría: $branch"
+              else
+                gh api -X DELETE "repos/$repo/git/refs/heads/$branch" && echo "borrada: $branch"
+              fi
+            fi
+          done
