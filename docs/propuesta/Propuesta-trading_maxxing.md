@@ -102,8 +102,8 @@ El código fuente del diagrama está en [classes.mmd](classes.mmd).
 Fase 1, laboratorio (antes de que una estrategia opere):
 
 1. MarketDataService descarga la historia de BTC/USDT y ETH/USDT de Binance.
-2. BacktestService corre la estrategia en el periodo in-sample (2020–2023) con comisiones y slippage. Aquí se ajustan sus parámetros.
-3. Con los parámetros congelados, se prueba en el periodo out-of-sample (2024–2025).
+2. BacktestService corre un walk-forward con comisiones y slippage: optimiza en 12 meses (in-sample), prueba en los 3 siguientes (out-of-sample) y avanza 3 meses, de 2020 a 2024. Los tramos out-of-sample se concatenan en una sola curva.
+3. Al final se corre una sola vez sobre el holdout (2025), que nunca se usa durante el desarrollo.
 4. MonteCarloService reordena las operaciones 10,000 veces y obtiene la distribución del drawdown máximo y la probabilidad de ruina.
 5. La estrategia se aprueba solo si cumple criterios fijos: Sharpe out-of-sample mayor a 0.5, drawdown del percentil 95 por debajo del límite y al menos 100 operaciones. Al aprobarse, recibe un peso en el PortfolioAllocator.
 
@@ -123,12 +123,12 @@ Monte Carlo se usa en tres puntos: en el laboratorio (remuestreo de operaciones)
 
 ## 4. Stack tecnológico
 
-- Frontend: Next.js 15 (App Router), TypeScript, Tailwind, shadcn/ui y Recharts.
+- Frontend: Next.js 15 (App Router), TypeScript, Tailwind, shadcn/ui y Recharts; se publica como sitio estático en Cloudflare Pages (plan gratuito).
 - Backend: FastAPI con Pydantic sobre Python 3.12.
 - Estrategias y agentes: worker en Python 3.12 con numpy y pandas. LLM vía Groq (gpt-oss-20b) detrás de una interfaz LLMClient, y noticias de CryptoPanic.
 - Pronóstico: Kronos-small con PyTorch en CPU, servido con FastAPI.
 - Motor de trading: NautilusTrader.
-- Base de datos y autenticación: Supabase (Postgres, Auth, Realtime y Row Level Security).
+- Base de datos y autenticación: Supabase (Postgres, Auth, Realtime y Row Level Security), local con su CLI durante el desarrollo y en el plan gratuito para la entrega.
 - Mensajería y cache: Redis (ElastiCache en la nube, contenedor en local).
 - Contenedores: Docker y Docker Compose, con las imágenes publicadas en Docker Hub.
 - Infraestructura como código: Terraform, con el estado en S3 y bloqueo con DynamoDB.
@@ -141,6 +141,15 @@ Por qué ECS Fargate y no Kubernetes. Son 5 servicios sin requisitos de orquesta
 Por qué Terraform. Toda la infraestructura queda versionada y revisada por pull request. El CI corre `terraform plan` en cada PR que toca `infra/`, y staging se puede destruir y recrear para ahorrar costos.
 
 ## 5. Recursos que se van a crear
+
+### 5.0 Local primero
+
+Hasta demostrar que el sistema es funcional y rentable, **todo corre en localhost** (una Mac con Apple M5 y 16 GB): `docker compose` levanta api, agents, engine y Redis; Supabase corre con su CLI local; el frontend con `pnpm dev`; y el servicio forecast puede correr nativo para usar la aceleración Metal (MPS) de PyTorch. El paper trading continuo contra Binance Testnet se hace desde ahí.
+
+La nube solo se usa para la entrega final o si la validación go/no-go da **go** (criterios: ≥ 5 días de paper trading sin caídas, estrategias aprobadas por walk-forward y Monte Carlo, y P&L neto positivo con drawdown dentro del límite). Los issues de despliegue llevan la etiqueta `deploy-diferido`.
+
+Costo estimado del despliegue en AWS (us-east-1, ECS Fargate ARM, solo producción 24/7 y staging bajo demanda): ~100–120 USD al mes. Como solo se necesita alrededor de la entrega, se cubre con los créditos de AWS Academy o de una cuenta nueva, con una alerta de presupuesto y `terraform destroy` después de la demo. El frontend (Cloudflare Pages) y Supabase (plan gratuito) cuestan 0.
+
 
 ![Diagrama de infraestructura](https://raw.githubusercontent.com/CarloSantoro21/trading_maxxing/main/docs/propuesta/img/infra.png)
 
@@ -168,8 +177,8 @@ Todo lo de AWS se define en `infra/` con Terraform, con un módulo por recurso y
 El pipeline corre en GitHub Actions:
 
 - En cada pull request a develop o main: lint (ruff y ESLint), pruebas de Python con pytest (cobertura mínima de 70 %) y pruebas del frontend con Vitest en paralelo, y build de las 5 imágenes sin publicarlas. Si el PR toca `infra/`, también corre `terraform fmt`, `validate` y `plan`.
-- Al hacer merge a develop: lo anterior, más el push de las imágenes a Docker Hub con los tags develop y `sha-<commit>`, y deploy automático a staging.
-- Al crear un tag vX.Y.Z en main: push a Docker Hub con los tags X.Y.Z y latest, y deploy a producción con aprobación manual mediante GitHub Environments.
+- Al hacer merge a develop: lo anterior, más el push de las imágenes a Docker Hub con los tags develop y `sha-<commit>`. No hay deploy automático mientras el proyecto esté en modo local.
+- Al crear un tag vX.Y.Z en main: push a Docker Hub con los tags X.Y.Z y latest. El deploy a AWS y a Cloudflare Pages es un workflow manual con aprobación (GitHub Environments), reservado para la entrega final.
 
 #### Pruebas unitarias
 
@@ -213,8 +222,8 @@ El plan está en el GitHub Project Board del repositorio (https://github.com/use
 - M1, Fundaciones e infraestructura (hasta el 11 de noviembre): ramas protegidas, estructura del monorepo, Docker Compose, CI básico, Supabase y Wiki.
 - M2, Motor, pronóstico y estrategias (hasta el 18 de noviembre): datos de mercado, servicio de Kronos, integración con Nautilus, TrendAgent, IntradayMomentumAgent y laboratorio de backtest con Monte Carlo.
 - M3, Agentes, simulación y API (hasta el 24 de noviembre): KronosAgent, NewsAgent, SimulationGate, RiskAgent, orquestador, PortfolioAllocator y API REST.
-- M4, Frontend y deployment (hasta el 1 de diciembre): dashboard, onboarding, backtests en la interfaz, Terraform y CD a AWS con Docker Hub.
-- M5, Cierre (hasta el 6 de diciembre): pruebas end-to-end, monitoreo, documentación y demo final.
+- M4, Frontend y validación local (hasta el 1 de diciembre): dashboard, onboarding, backtests en la interfaz, pruebas end-to-end en local y validación go/no-go con paper trading continuo.
+- M5, Entrega: deploy y demo (hasta el 6 de diciembre): Terraform, CD a AWS, frontend en Cloudflare Pages, monitoreo, documentación y demo final.
 
 Issues: https://github.com/CarloSantoro21/trading_maxxing/issues
 
@@ -222,9 +231,10 @@ Issues: https://github.com/CarloSantoro21/trading_maxxing/issues
 
 - La API de NautilusTrader v2 puede cambiar entre versiones: fijamos la versión exacta y la imagen base por digest.
 - Kronos puede ser lento en CPU, sobre todo con 100 trayectorias: usamos Kronos-small, predict_batch, cache de pronósticos por vela y, si hace falta, menos trayectorias.
-- Sobreajuste de estrategias: separación estricta entre in-sample y out-of-sample, parámetros congelados antes de la prueba y criterios de aprobación fijados de antemano.
+- Sobreajuste de estrategias: walk-forward, holdout final intocable y criterios de aprobación fijados de antemano.
+- Contaminación de Kronos: su ventana de prueba debe quedar después del corte de sus datos de preentrenamiento.
 - Señales malas pueden generar pérdidas: operamos solo en testnet, la SimulationGate bloquea operaciones con valor esperado negativo y el RiskAgent aplica el drawdown máximo y un botón de paro.
-- Costos de AWS: tareas de Fargate mínimas, staging destruido con `terraform destroy` fuera de horario y uso del Free Tier.
+- Costos de AWS: desarrollo y validación 100 % en local; en la nube, tareas Fargate ARM mínimas, sin NAT Gateway, alerta de presupuesto y `terraform destroy` después de la demo.
 - Límites de las APIs de noticias y del LLM: cache en Redis, llamadas solo al cierre de vela y una interfaz LLMClient para cambiar de proveedor.
 - Calendario ajustado: las estrategias deterministas se implementan antes que las dependientes de modelos, y el ExplainerAgent y la proyección de metas son opcionales si falta tiempo.
 
