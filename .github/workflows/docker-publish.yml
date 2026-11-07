@@ -1,0 +1,91 @@
+name: Docker publish
+
+# Construye las 5 imágenes (amd64 + arm64) y las publica en Docker Hub.
+# Sin los secrets DOCKERHUB_USERNAME y DOCKERHUB_TOKEN solo construye y lo avisa.
+on:
+  push:
+    branches: [develop]
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  pull_request:
+    branches: [develop]
+    paths:
+      - ".github/workflows/docker-publish.yml"
+
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Imagen ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { service: api, context: ., dockerfile: services/api/Dockerfile }
+          - { service: agents, context: ., dockerfile: services/agents/Dockerfile }
+          - { service: forecast, context: ., dockerfile: services/forecast/Dockerfile }
+          - { service: engine, context: ., dockerfile: services/engine/Dockerfile }
+          - { service: web, context: apps/web, dockerfile: apps/web/Dockerfile }
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Decidir si se publica
+        id: mode
+        run: |
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ] && [ "${{ github.event_name }}" = "push" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "### ${{ matrix.service }}: publicando en Docker Hub" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### ${{ matrix.service }}: solo construcción, NO se publicó"
+              echo "Falta DOCKERHUB_USERNAME/DOCKERHUB_TOKEN o el evento es un pull request."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login en Docker Hub
+        if: steps.mode.outputs.publish == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Nombre de la imagen
+        id: image
+        run: |
+          owner="${DOCKERHUB_USERNAME:-local}"
+          echo "name=${owner}/trading-maxxing-${{ matrix.service }}" >> "$GITHUB_OUTPUT"
+
+      - name: Tags y labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=sha,prefix=sha-,format=long,enable=${{ github.ref_type == 'branch' }}
+            type=raw,value=develop,enable=${{ github.ref == 'refs/heads/develop' }}
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+
+      - name: Build y push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: ${{ steps.mode.outputs.publish == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=publish-${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=publish-${{ matrix.service }}

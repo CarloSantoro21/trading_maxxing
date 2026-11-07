@@ -1,0 +1,15 @@
+# Override para usar las imágenes publicadas en Docker Hub en lugar de construirlas.
+#   export DOCKERHUB_USERNAME=<usuario> TM_TAG=develop
+#   docker compose -f docker-compose.yml -f docker-compose.hub.yml pull
+#   docker compose -f docker-compose.yml -f docker-compose.hub.yml up -d
+services:
+  api:
+    image: ${DOCKERHUB_USERNAME:?define DOCKERHUB_USERNAME}/trading-maxxing-api:${TM_TAG:-develop}
+  agents:
+    image: ${DOCKERHUB_USERNAME:?define DOCKERHUB_USERNAME}/trading-maxxing-agents:${TM_TAG:-develop}
+  engine:
+    image: ${DOCKERHUB_USERNAME:?define DOCKERHUB_USERNAME}/trading-maxxing-engine:${TM_TAG:-develop}
+  forecast:
+    image: ${DOCKERHUB_USERNAME:?define DOCKERHUB_USERNAME}/trading-maxxing-forecast:${TM_TAG:-develop}
+  web:
+    image: ${DOCKERHUB_USERNAME:?define DOCKERHUB_USERNAME}/trading-maxxing-web:${TM_TAG:-develop}
