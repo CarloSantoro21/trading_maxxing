@@ -23,11 +23,25 @@ class AgentOrchestrator {
   -SimulationGate gate
   -RiskAgent risk
   +run_cycle(profile) TradeDecision[]
-  +collect_signals(ctx) Signal[]
-  +aggregate(signals) TradeDecision[]
+  +run_sleeve(sleeve, ctx) TradeDecision
 }
 class PortfolioAllocator {
-  +weights(profile, stats) dict
+  +allocate(profile, strategies) dict
+}
+class Sleeve {
+  +str strategy
+  +Decimal capital
+  +bool shadow
+  +Position position
+}
+class StrategyRegistry {
+  +get(name) StrategyRecord
+  +transition(name, to, reason)
+  +active() StrategyRecord[]
+  +shadow() StrategyRecord[]
+}
+class LifecycleMonitor {
+  +check(strategy, live_stats, mc_report) Transition
 }
 class BaseAgent {
   <<abstract>>
@@ -134,6 +148,11 @@ BaseAgent <|-- IntradayMomentumAgent
 AgentOrchestrator o-- BaseAgent
 AgentOrchestrator --> NewsAgent
 AgentOrchestrator --> PortfolioAllocator
+AgentOrchestrator "1" *-- "*" Sleeve
+Sleeve --> BaseAgent
+PortfolioAllocator --> StrategyRegistry
+LifecycleMonitor --> StrategyRegistry
+LifecycleMonitor ..> MonteCarloService
 AgentOrchestrator --> SimulationGate
 AgentOrchestrator --> RiskAgent
 AgentOrchestrator --> ExplainerAgent
