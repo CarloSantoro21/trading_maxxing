@@ -41,11 +41,15 @@ from tm_agents.allocator import PortfolioAllocator
 from tm_agents.strategy_stats import StrategyState, StrategyStats
 
 stats = [
-    StrategyStats("trend", StrategyState.ACTIVE, volatility=0.30, oos_sharpe=0.9, horizon=Horizon.LONG),
+    StrategyStats(
+        "trend", StrategyState.ACTIVE, volatility=0.30, oos_sharpe=0.9, horizon=Horizon.LONG
+    ),
     StrategyStats("kronos", StrategyState.PROBATION, volatility=0.45, oos_sharpe=0.7),
     StrategyStats("momentum", StrategyState.SHADOW, volatility=0.25, oos_sharpe=1.1),
 ]
-allocator = PortfolioAllocator()  # pesos por horizonte, penalización y nocional mínimo configurables
+allocator = (
+    PortfolioAllocator()
+)  # pesos por horizonte, penalización y nocional mínimo configurables
 allocator.allocate(Decimal("1000"), Horizon.MEDIUM, stats, max_drawdown=0.20)
 res = allocator.allocate_detailed(Decimal("1000"), Horizon.MEDIUM, stats)
 res.sleeves, res.unallocated, res.weights, res.excluded
