@@ -1,0 +1,37 @@
+name: DB
+
+# Pruebas de la base de datos (migraciones, seed y pgTAP) con Supabase local.
+# Solo corre cuando cambia algo en supabase/ (o este mismo workflow).
+on:
+  pull_request:
+    branches: [develop, main]
+    paths:
+      - "supabase/**"
+      - ".github/workflows/db.yml"
+  push:
+    branches: [develop, main]
+    paths:
+      - "supabase/**"
+      - ".github/workflows/db.yml"
+
+concurrency:
+  group: db-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pgtap:
+    name: Supabase (migraciones + pgTAP)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          # Misma versión que se usa en local; súbela a propósito, no por accidente.
+          version: 2.117.0
+      - name: Levantar Postgres con migraciones y seed
+        run: supabase db start
+      - name: Pruebas pgTAP
+        run: supabase test db
