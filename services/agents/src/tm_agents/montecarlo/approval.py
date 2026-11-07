@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from decimal import Decimal
 
 from tm_agents.montecarlo.report import MCReport
 
@@ -30,6 +31,29 @@ class ApprovalCriteria:
             raise ValueError("max_drawdown_p95 debe estar en el intervalo (0, 1]")
         if self.min_trades < 1:
             raise ValueError("min_trades debe ser mayor o igual a 1")
+
+    @classmethod
+    def for_profile(
+        cls,
+        max_drawdown: float | Decimal,
+        *,
+        min_oos_sharpe: float = 0.5,
+        min_trades: int = 100,
+    ) -> ApprovalCriteria:
+        """Criterios cuyo límite de drawdown p95 es el ``max_drawdown`` del perfil.
+
+        Así una estrategia solo se aprueba (y recibe capital) si en el 95 % de las
+        simulaciones su drawdown queda por debajo de lo que el usuario tolera.
+
+        Args:
+            max_drawdown: drawdown máximo del perfil como fracción (0.20 = 20 %),
+                tal como lo guarda ``profiles.max_drawdown`` y ``RiskLimits``.
+        """
+        return cls(
+            min_oos_sharpe=min_oos_sharpe,
+            max_drawdown_p95=float(max_drawdown),
+            min_trades=min_trades,
+        )
 
 
 @dataclass(frozen=True, slots=True)
