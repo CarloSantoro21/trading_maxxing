@@ -5,6 +5,7 @@ description = "Estrategias, orquestador, simulación y riesgo"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "tm-shared",
+    "tm-marketdata",
     "httpx>=0.28",
     "numpy>=2.1",
     "pandas>=2.2",

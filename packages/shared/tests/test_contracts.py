@@ -160,3 +160,9 @@ class TestTradeDecision:
             rationale=r,
         )
         assert TradeDecision.model_validate_json(d.model_dump_json()) == d
+
+
+def test_timeframe_h4_roundtrip():
+    sig = make_signal(timeframe=Timeframe.H4)
+    assert Timeframe("4h") is Timeframe.H4
+    assert Signal.model_validate_json(sig.model_dump_json()).timeframe is Timeframe.H4
