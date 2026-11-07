@@ -142,8 +142,8 @@ La tabla de arriba muestra que el TrendAgent hace **muy pocos trades**. Sus peri
 
 Esto no significa que sea una mala estrategia. Significa que **contar trades no es la mejor forma de medir la evidencia de una estrategia lenta**: sus 4 años out-of-sample son unos 1,460 días de exposición al mercado, y cada día aporta información.
 
-### Ajuste propuesto (pendiente de aprobación)
-Que el criterio 3 sea **"al menos 100 trades, o, para estrategias de baja frecuencia, al menos 30 trades y 3 años out-of-sample con exposición diaria"**. El Sharpe y el drawdown se calcularían sobre los retornos diarios en ambos casos.
+### Alternativa para estrategias de baja frecuencia (aprobada el 7 de noviembre de 2026)
+El criterio 3 es **"al menos 100 trades, o, para estrategias de baja frecuencia, al menos 30 trades y 3 años out-of-sample con exposición diaria"**. Está implementado en `evaluate(..., oos_years=...)`. El Sharpe y el drawdown se calcularían sobre los retornos diarios en ambos casos.
 
 ---
 
@@ -153,7 +153,7 @@ Que el criterio 3 sea **"al menos 100 trades, o, para estrategias de baja frecue
 |---|---|---|
 | Sharpe | Retornos diarios out-of-sample del sleeve (16 tramos del walk-forward) | > 0.5, y mayor que el de comprar y mantener* |
 | Drawdown p95 | Monte Carlo (block bootstrap) de los retornos diarios del sleeve | < `max_drawdown` del perfil |
-| Evidencia | Número de trades y años out-of-sample | ≥ 100 trades, o ≥ 30 trades y ≥ 3 años (propuesto) |
+| Evidencia | Número de trades y años out-of-sample | ≥ 100 trades, o ≥ 30 trades y ≥ 3 años |
 
 \* La comparación contra comprar y mantener también es una propuesta y queda pendiente de aprobación.
 

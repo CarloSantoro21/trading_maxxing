@@ -343,7 +343,7 @@ def test_evaluate_reports_every_failing_criterion():
     joined = " | ".join(result.reasons)
     assert "Sharpe out-of-sample de 0.50" in joined
     assert "39.5%" in joined
-    assert "50 trades (se requieren al menos 100)" in joined
+    assert "50 trades (se requieren al menos 100, o 30 con 3 años out-of-sample)" in joined
 
 
 def test_evaluate_uses_custom_criteria_and_strict_thresholds():
@@ -391,3 +391,34 @@ def test_performance_10k_simulations_of_500_trades(method):
     elapsed = time.perf_counter() - start
     assert report.n_simulations == 10_000
     assert elapsed < 4.0, f"{method}: {elapsed:.2f} s para 10,000 x 500"
+
+
+# --- Alternativa de baja frecuencia (docs/estrategias/criterios-de-aprobacion.md) ---
+
+
+@pytest.mark.parametrize(
+    "n_trades,oos_years,expected",
+    [
+        (40, 4.0, True),  # trend following: pocos trades, años suficientes
+        (30, 3.0, True),  # justo en los umbrales
+        (29, 4.0, False),  # muy pocos trades
+        (40, 2.5, False),  # pocos años
+        (40, None, False),  # sin años no aplica la alternativa
+        (120, None, True),  # la regla normal sigue funcionando
+    ],
+)
+def test_low_frequency_alternative(n_trades, oos_years, expected):
+    report = reshuffle(np.full(150, 0.01), 100, seed=0)
+    result = evaluate(report, oos_sharpe=0.9, n_trades=n_trades, oos_years=oos_years)
+    check = next(c for c in result.checks if c.name == "min_trades")
+    assert check.passed is expected
+    assert "o 30 con 3 años out-of-sample" in check.reason
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"low_freq_min_trades": 0}, {"low_freq_min_trades": 200}, {"low_freq_min_oos_years": 0}],
+)
+def test_low_frequency_criteria_validation(kwargs):
+    with pytest.raises(ValueError):
+        ApprovalCriteria(**kwargs)
