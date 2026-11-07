@@ -689,15 +689,21 @@ name = "tm-agents"
 version = "0.1.0"
 source = { editable = "services/agents" }
 dependencies = [
+    { name = "httpx" },
     { name = "numpy" },
     { name = "pandas" },
+    { name = "pydantic" },
+    { name = "redis" },
     { name = "tm-shared" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.28" },
     { name = "numpy", specifier = ">=2.1" },
     { name = "pandas", specifier = ">=2.2" },
+    { name = "pydantic", specifier = ">=2.9" },
+    { name = "redis", specifier = ">=5.0" },
     { name = "tm-shared", editable = "packages/shared" },
 ]
 

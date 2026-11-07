@@ -5,8 +5,11 @@ description = "Estrategias, orquestador, simulación y riesgo"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "tm-shared",
+    "httpx>=0.28",
     "numpy>=2.1",
     "pandas>=2.2",
+    "pydantic>=2.9",
+    "redis>=5.0",
 ]
 
 [build-system]
