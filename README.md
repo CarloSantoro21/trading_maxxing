@@ -34,6 +34,8 @@ cd apps/web && pnpm install
 pnpm test && pnpm lint && pnpm dev
 ```
 
+Base de datos: Supabase local con su CLI (`supabase start`, `supabase db reset`, `supabase test db`). Detalles, usuario demo y esquema en [supabase/README.md](supabase/README.md).
+
 Cómo contribuir: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Proyecto académico. Opera solo en entornos de prueba y no es asesoría financiera.
