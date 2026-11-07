@@ -1,0 +1,21 @@
+# Contexto de build = raíz del repo (workspace de uv). Solo entra lo necesario.
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+**/node_modules
+**/.next
+**/coverage
+.coverage
+coverage.xml
+.git
+.github
+docs
+scripts
+data
+models
+infra
+apps
+**/.env
+**/.env.*
