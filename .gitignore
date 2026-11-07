@@ -38,3 +38,6 @@ models/
 
 # Sistema
 .DS_Store
+
+# Claude Code (worktrees de agentes, configuración local)
+.claude/
