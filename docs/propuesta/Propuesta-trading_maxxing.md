@@ -23,7 +23,7 @@ Solución. Un sistema que:
 1. Mantiene una biblioteca de estrategias intercambiables. Todas cumplen el mismo contrato (`analyze(ctx) -> Signal`) y solo se incluyen las que tienen evidencia publicada en criptomonedas, además de Kronos.
 2. Valida cada estrategia antes de dejarla operar: backtest in-sample, prueba out-of-sample y Monte Carlo sobre la secuencia de operaciones. Solo las que pasan criterios fijos reciben capital.
 3. Asigna a cada estrategia su propio bolsillo de capital (sleeve) según el horizonte del perfil y los resultados de su validación. Cada estrategia opera su bolsillo de forma independiente, con su propio P&L.
-4. Simula cada operación antes de ejecutarla con dos fuentes: las trayectorias que genera Kronos y trayectorias históricas reconstruidas por bootstrap. Si el valor esperado no es positivo, la bloquea.
+4. Simula cada operación antes de ejecutarla con trayectorias históricas reconstruidas por bootstrap; en el sleeve de Kronos se suman las trayectorias que genera el propio modelo. Si el valor esperado no es positivo, la bloquea.
 5. Controla el riesgo con reglas deterministas: tamaño de posición, stop-loss y take-profit, drawdown máximo y botón de paro.
 6. Ejecuta sobre NautilusTrader en Binance Spot Testnet y muestra en un dashboard el portafolio, el P&L, la justificación de cada operación y la probabilidad de alcanzar la meta.
 
@@ -35,7 +35,7 @@ Una estrategia entra a la biblioteca solo si tiene evidencia publicada en cripto
 
 | Estrategia | Agente | Evidencia | Timeframe |
 |---|---|---|---|
-| Pronóstico con Kronos | KronosAgent | Shi et al., *Kronos: A Foundation Model for the Language of Financial Markets*, AAAI 2026. En zero-shot, su RankIC de precio es ~93 % mayor que el del mejor modelo base | 15 min |
+| Pronóstico con Kronos | KronosAgent | Shi et al., *Kronos: A Foundation Model for the Language of Financial Markets*, AAAI 2026. En zero-shot, su RankIC de precio es ~93 % mayor que el del mejor modelo base. Sus datos de preentrenamiento llegan a junio de 2024 (apéndice D del paper) | 4 h |
 | Trend following (canales Donchian en varios periodos) | TrendAgent | Liu, Tsyvinski y Goldstein, *Risks and Returns of Cryptocurrency*, Review of Financial Studies, 2021 (momentum de serie de tiempo en BTC, ETH y XRP). Zarattini, Pagani y Barbon, *Catching Crypto Trends*, SFI 25-80, 2025 | 1 día |
 | Momentum intradía | IntradayMomentumAgent | Shen, Urquhart y Wang, *Bitcoin intraday time-series momentum*, Financial Review, 2022: el retorno de la primera media hora predice el de la última, in-sample y out-of-sample | 30 min |
 
@@ -52,7 +52,7 @@ NautilusTrader (https://github.com/nautechsystems/nautilus_trader, licencia LGPL
 Kronos (https://github.com/shiyu-coder/Kronos, licencia MIT)
 
 - Qué aporta: un modelo fundacional para velas financieras. Se usa con KronosTokenizer, Kronos y KronosPredictor, cuyos métodos predict() y predict_batch() reciben un DataFrame OHLCV. Es generativo: con `sample_count` devuelve varias trayectorias posibles del precio.
-- Cómo lo usamos: lo envolvemos en un microservicio FastAPI (forecast). Usamos Kronos-small (24.7M parámetros, corre en CPU, contexto de 512 velas). El KronosAgent convierte las trayectorias en dirección, confianza y probabilidades de tocar el stop o el objetivo, que alimentan la simulación previa a cada operación.
+- Cómo lo usamos: lo envolvemos en un microservicio FastAPI (forecast). Usamos Kronos-small (24.7M parámetros, contexto de 512 velas) sobre velas de 4 horas, con unas 20 trayectorias por decisión. Medido en una Mac M5, cada trayectoria tarda unos 0.6 s con aceleración Metal (MPS) y 1.1 s en CPU, porque la implementación no tiene caché de KV; por eso el sleeve de Kronos decide cada 4 horas y sus pronósticos del backtest se precalculan una vez y se guardan en Parquet. El KronosAgent convierte las trayectorias en dirección, confianza y probabilidades de tocar el stop o el objetivo.
 
 Por qué encajan. NautilusTrader resuelve la parte crítica (ejecución, órdenes, riesgo y backtest determinista), pero no incluye interfaz, orquestación ni IA. Kronos aporta el pronóstico, pero su señal por sí sola es débil y no ejecuta operaciones. trading_maxxing construye lo que falta: la biblioteca de estrategias, la validación, la simulación, la configuración por perfil, la interfaz y la infraestructura.
 
@@ -106,16 +106,17 @@ Fase 1, laboratorio (antes de que una estrategia opere):
 1. MarketDataService descarga la historia de BTC/USDT y ETH/USDT de Binance.
 2. BacktestService corre un walk-forward con comisiones y slippage: optimiza en 12 meses (in-sample), prueba en los 3 siguientes (out-of-sample) y avanza 3 meses, de 2020 a 2024. Los tramos out-of-sample se concatenan en una sola curva.
 3. Al final se corre una sola vez sobre el holdout (2025), que nunca se usa durante el desarrollo.
+   - Excepción, Kronos: como ya vio datos hasta junio de 2024, no se evalúa antes de esa fecha. No se reentrena, así que solo se ajustan sus umbrales con julio–diciembre de 2024, y 2025 es su holdout.
 4. MonteCarloService reordena las operaciones 10,000 veces y obtiene la distribución del drawdown máximo y la probabilidad de ruina.
 5. La estrategia se aprueba solo si cumple criterios fijos: Sharpe out-of-sample mayor a 0.5, drawdown del percentil 95 por debajo del límite del perfil y al menos 100 operaciones. Si los cumple, pasa a **shadow** (sección 3.3).
 
 Fase 2, producción (en cada cierre de vela):
 
 1. El orquestador arma el contexto: velas recientes, portafolio y perfil.
-2. Cada estrategia activa o en shadow corre en su propio sleeve, en paralelo, cuando cierra una vela de su timeframe: TrendAgent una vez al día, IntradayMomentumAgent cada 30 minutos y KronosAgent cada 15 minutos. Cada una emite su señal para su propio bolsillo.
+2. Cada estrategia activa o en shadow corre en su propio sleeve, en paralelo, cuando cierra una vela de su timeframe: TrendAgent una vez al día, IntradayMomentumAgent cada 30 minutos y KronosAgent cada 4 horas. Cada una emite su señal para su propio bolsillo.
 3. NewsAgent clasifica las noticias recientes y puede vetar nuevas entradas. Ante un impacto alto veta el símbolo afectado durante 4 horas, y ante uno crítico (pérdida de paridad de una stablecoin o colapso de un exchange) veta todo el mercado durante 24 horas. Las posiciones abiertas conservan su SL y TP.
 4. Una señal `long` sin posición abre una compra en el sleeve; una señal `flat` con posición la cierra. Los sleeves en shadow solo registran lo que habrían hecho.
-5. SimulationGate calcula, con los SL y TP propuestos, la probabilidad de llegar al objetivo antes que al stop. Usa las 100 trayectorias de Kronos y 10,000 trayectorias históricas reconstruidas por bootstrap. Si el valor esperado no es positivo, bloquea la operación.
+5. SimulationGate calcula, con los SL y TP propuestos, la probabilidad de llegar al objetivo antes que al stop con 10,000 trayectorias históricas reconstruidas por bootstrap (velas reales de la misma hora del día en los últimos 60 días). En el sleeve de Kronos se combinan con sus ~20 trayectorias. Si el valor esperado no es positivo, bloquea la operación.
 6. RiskAgent calcula el tamaño de la posición dentro del capital del sleeve, fija SL y TP y revisa los límites del sleeve y del portafolio completo (exposición total y drawdown). Responde PASS o BLOCK con la razón.
 7. La decisión se publica en Redis. AgenticStrategy envía una orden bracket a Binance Testnet.
 8. La operación se guarda en Supabase, el ExplainerAgent redacta la justificación y el dashboard se actualiza con Supabase Realtime.
@@ -255,9 +256,10 @@ Issues: https://github.com/CarloSantoro21/trading_maxxing/issues
 ## 7. Riesgos y mitigaciones
 
 - La API de NautilusTrader v2 puede cambiar entre versiones: fijamos la versión exacta y la imagen base por digest.
-- Kronos puede ser lento en CPU, sobre todo con 100 trayectorias: usamos Kronos-small, predict_batch, cache de pronósticos por vela y, si hace falta, menos trayectorias.
+- Kronos es lento: medido en la Mac M5, 100 trayectorias tardan 65 s en MPS y 132 s en CPU. Mitigación: decisiones cada 4 horas con ~20 trayectorias, pronósticos del backtest precalculados en Parquet y, como mejora opcional, agregar caché de KV a la implementación del modelo.
 - Sobreajuste de estrategias: walk-forward, holdout final intocable y criterios de aprobación fijados de antemano.
-- Contaminación de Kronos: su ventana de prueba debe quedar después del corte de sus datos de preentrenamiento.
+- Contaminación de Kronos: sus datos de preentrenamiento llegan a junio de 2024, así que solo se evalúa de julio de 2024 en adelante.
+- Comisiones: en Binance Spot cada operación cuesta ~0.1 % por lado. Una estrategia que opera a diario puede perder buena parte de su ventaja en comisiones; el laboratorio las incluye siempre y compara cada estrategia contra comprar y mantener.
 - Señales malas pueden generar pérdidas: operamos solo en testnet, la SimulationGate bloquea operaciones con valor esperado negativo y el RiskAgent aplica el drawdown máximo y un botón de paro.
 - Costos de AWS: desarrollo y validación 100 % en local; en la nube, tareas Fargate ARM mínimas, sin NAT Gateway, alerta de presupuesto y `terraform destroy` después de la demo.
 - Límites de las APIs de noticias y del LLM: cache en Redis, llamadas solo al cierre de vela y una interfaz LLMClient para cambiar de proveedor.
