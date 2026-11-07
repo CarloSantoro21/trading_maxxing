@@ -1,0 +1,17 @@
+[project]
+name = "tm-forecast"
+version = "0.1.0"
+description = "Servicio de pronóstico con Kronos (FastAPI)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "tm-shared",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tm_forecast"]
