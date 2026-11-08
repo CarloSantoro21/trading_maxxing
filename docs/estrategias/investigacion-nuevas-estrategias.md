@@ -237,7 +237,7 @@ No la calculamos. Los pronósticos precalculados (`data/forecasts/<SYMBOL>/4h/`,
 
 ## 6. Siguientes pasos
 
-1. Un issue por cada estrategia del ranking (milestone M4, label `agents`). Cada una entra en estado **research**.
+1. Un issue por cada estrategia del ranking (milestone M4, label `agents`): #81 (TsmomAgent), #82 (MovingAverageAgent) y #83 (volatility targeting). Cada una entra en estado **research**.
 2. Implementarlas como `BaseAgent` y pasarlas por el laboratorio (#13): walk-forward de 16 tramos con los parámetros elegidos dentro de cada tramo, Monte Carlo con block bootstrap y holdout 2025.
 3. El laboratorio debe reportar la correlación entre sleeves. Si el TSMOM o la SMA pasan, pero con correlación > 0.8 con el trend, conviene integrarlos como votos del conjunto en lugar de darles capital propio.
 
