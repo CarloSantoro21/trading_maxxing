@@ -1,7 +1,17 @@
 import json
 import threading
 
+import fakeredis
+import pytest
+import redis
 from tm_agents import __main__ as worker
+
+
+@pytest.fixture(autouse=True)
+def _no_services(monkeypatch):
+    """Ninguna prueba debe conectarse al Redis o al Supabase del desarrollador."""
+    for var in ("REDIS_URL", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"):
+        monkeypatch.delenv(var, raising=False)
 
 
 def test_once_prints_health(capsys):
@@ -23,3 +33,96 @@ def test_loop_writes_heartbeat_and_stops(tmp_path, monkeypatch):
     t.join(timeout=2)
     assert not t.is_alive()
     assert float(hb.read_text()) > 0
+
+
+def test_reference_service_needs_redis_and_supabase(monkeypatch):
+    assert worker.reference_service_from_env() is None
+    assert worker.reference_service_from_env({"REDIS_URL": "redis://x"}) is None
+    monkeypatch.setattr(redis.Redis, "from_url", staticmethod(lambda _url: fakeredis.FakeRedis()))
+    svc = worker.reference_service_from_env(
+        {
+            "REDIS_URL": "redis://x",
+            "SUPABASE_URL": "http://supabase.test",
+            "SUPABASE_SERVICE_ROLE_KEY": "sb_secret_x",
+        }
+    )
+    assert type(svc).__name__ == "ReferenceService"
+    assert svc.source.last_id == "0-0"
+
+
+def test_loop_runs_reference_cycle_and_survives_errors(tmp_path, monkeypatch):
+    monkeypatch.setattr(worker, "HEARTBEAT", tmp_path / "hb")
+    monkeypatch.setattr(worker, "INTERVAL", 0.01)
+    handlers = {}
+    monkeypatch.setattr(worker.signal, "signal", lambda sig, fn: handlers.__setitem__(sig, fn))
+    calls = []
+
+    class Flaky:
+        def run_once(self):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("sin red")
+            if len(calls) >= 3:
+                handlers[worker.signal.SIGTERM]()
+
+    monkeypatch.setattr(worker, "reference_service_from_env", lambda: Flaky())
+    worker.main([])
+    assert len(calls) == 3
+
+
+def test_loop_keeps_heartbeat_when_reference_setup_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(worker, "HEARTBEAT", tmp_path / "hb")
+    monkeypatch.setattr(worker, "INTERVAL", 0.01)
+    handlers = {}
+    monkeypatch.setattr(worker.signal, "signal", lambda sig, fn: handlers.__setitem__(sig, fn))
+
+    def broken():
+        raise ConnectionError("redis caído")
+
+    beats = []
+
+    def beat():
+        beats.append(1)
+        handlers[worker.signal.SIGTERM]()
+
+    monkeypatch.setattr(worker, "reference_service_from_env", broken)
+    monkeypatch.setattr(worker, "beat", beat)
+    worker.main([])
+    assert beats == [1]
+
+
+def test_reference_service_can_be_disabled():
+    env = {
+        "REDIS_URL": "redis://x",
+        "SUPABASE_URL": "http://supabase.test",
+        "SUPABASE_SERVICE_ROLE_KEY": "sb_secret_x",
+        "REFERENCE_SERVICE": "0",
+    }
+    assert worker.reference_service_from_env(env) is None
+
+
+def test_loop_runs_orchestrator_and_reference_together(tmp_path, monkeypatch):
+    """Las tres piezas en el mismo proceso: el orquestador cada tick y la referencia cada
+    heartbeat."""
+    monkeypatch.setattr(worker, "HEARTBEAT", tmp_path / "hb")
+    monkeypatch.setattr(worker, "INTERVAL", 0.0)
+    monkeypatch.setattr(worker, "TICK", 0.0)
+    handlers = {}
+    monkeypatch.setattr(worker.signal, "signal", lambda sig, fn: handlers.__setitem__(sig, fn))
+    calls = []
+
+    class Worker:
+        def tick(self):
+            calls.append("tick")
+
+    class Reference:
+        def run_once(self):
+            calls.append("reference")
+            if calls.count("reference") == 2:
+                handlers[worker.signal.SIGTERM]()
+
+    monkeypatch.setattr(worker, "build_worker", lambda: Worker())
+    monkeypatch.setattr(worker, "reference_service_from_env", lambda: Reference())
+    worker.main([])
+    assert calls == ["reference", "tick", "reference", "tick"]
+    assert (tmp_path / "hb").exists()

@@ -18,8 +18,18 @@ from tm_shared.health import Health, health
 from tm_api.auth import JWTVerifier
 from tm_api.commands import CommandBus
 from tm_api.db import Database, PostgrestClient
-from tm_api.routers import backtests, bots, goals, portfolio, profiles, trades
+from tm_api.routers import (
+    backtests,
+    bots,
+    goals,
+    portfolio,
+    profiles,
+    strategies,
+    trades,
+    users,
+)
 from tm_api.settings import Settings
+from tm_api.users import UserAdmin
 
 DESCRIPTION = """
 API REST de **trading_maxxing**: perfiles de inversión, metas, bots (sleeves por
@@ -31,6 +41,9 @@ RLS decide qué filas ve y modifica cada usuario.
 
 **Comandos**: arrancar, detener y el paro de emergencia publican en el stream de Redis
 `tm:commands`; los backtests se encolan en `tm:backtests`.
+
+**Roles**: cada usuario es `admin` o `member` (tabla `app_roles`). Promover o retirar
+estrategias y dar de alta usuarios son acciones de admin: un member recibe 403.
 """
 
 TAGS = [
@@ -40,6 +53,8 @@ TAGS = [
     {"name": "portfolio", "description": "Equity y posiciones por sleeve y en total."},
     {"name": "trades", "description": "Historial paginado de operaciones."},
     {"name": "backtests", "description": "Jobs de backtest (`tm:backtests`)."},
+    {"name": "strategies", "description": "Catálogo compartido; promover y retirar (admin)."},
+    {"name": "users", "description": "Usuario actual y alta de usuarios del equipo (admin)."},
     {"name": "health", "description": "Estado del servicio."},
 ]
 
@@ -50,6 +65,7 @@ def create_app(
     db: Database | None = None,
     bus: CommandBus | None = None,
     verifier: JWTVerifier | None = None,
+    user_admin: UserAdmin | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
 
@@ -58,11 +74,17 @@ def create_app(
         async with AsyncExitStack() as stack:
             app.state.settings = settings
             app.state.verifier = verifier or JWTVerifier(settings)
-            if db is None:
+            service_key = settings.supabase_service_role_key
+            http: httpx.AsyncClient | None = None
+            if db is None or (user_admin is None and service_key):
                 http = await stack.enter_async_context(httpx.AsyncClient(timeout=10.0))
-                app.state.db = PostgrestClient(http, settings.rest_url, settings.supabase_anon_key)
-            else:
-                app.state.db = db
+            app.state.db = db or PostgrestClient(
+                http, settings.rest_url, settings.supabase_anon_key
+            )
+            # Sin llave de servicio no hay alta de usuarios: POST /admin/users responde 503.
+            app.state.user_admin = user_admin
+            if user_admin is None and service_key and http is not None:
+                app.state.user_admin = UserAdmin(http, settings.supabase_url, service_key)
             if bus is None:
                 redis = Redis.from_url(settings.redis_url)
                 stack.push_async_callback(redis.aclose)
@@ -78,7 +100,7 @@ def create_app(
         openapi_tags=TAGS,
         lifespan=lifespan,
     )
-    for module in (profiles, goals, bots, portfolio, trades, backtests):
+    for module in (users, profiles, goals, bots, portfolio, trades, backtests, strategies):
         app.include_router(module.router)
 
     @app.get("/health", response_model=Health, tags=["health"])

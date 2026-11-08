@@ -2,7 +2,9 @@
 .DEFAULT_GOAL := help
 COMPOSE := docker compose
 
-.PHONY: help up up-mps down logs ps web forecast-mps supabase-up supabase-down test lint fmt
+.PHONY: help up up-mps down logs ps web forecast-mps supabase-up supabase-down user test lint fmt
+
+ROLE ?= member
 
 help: ## Lista los comandos
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -15,6 +17,17 @@ supabase-up: ## Levanta Supabase local (Postgres, Auth, Realtime)
 
 supabase-down: ## Detiene Supabase local
 	@if [ -d supabase ]; then supabase stop; fi
+
+# Sin SUPABASE_SERVICE_ROLE_KEY en el entorno, toma la URL y la llave de `supabase status`
+# (stack local). Para la nube: SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... make user ...
+user: ## Da de alta un usuario con contraseña temporal: make user EMAIL=ana@x.dev ROLE=member|admin
+	@if [ -z "$(EMAIL)" ]; then echo "Uso: make user EMAIL=correo ROLE=member|admin"; exit 1; fi
+	@if [ -z "$$SUPABASE_SERVICE_ROLE_KEY" ]; then \
+	  eval "$$(supabase status -o env 2>/dev/null | grep -E '^(API_URL|SERVICE_ROLE_KEY)=')"; \
+	  if [ -z "$$SERVICE_ROLE_KEY" ]; then echo "Supabase local no está corriendo (make supabase-up)"; exit 1; fi; \
+	  export SUPABASE_URL="$$API_URL" SUPABASE_SERVICE_ROLE_KEY="$$SERVICE_ROLE_KEY"; \
+	fi; \
+	uv run --package tm-api python -m tm_api.users --email "$(EMAIL)" --role "$(ROLE)"
 
 up: .env supabase-up ## Todo en contenedores (forecast en CPU)
 	COMPOSE_PROFILES=forecast-docker $(COMPOSE) up -d --build --wait

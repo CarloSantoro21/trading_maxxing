@@ -12,10 +12,7 @@ import type { OnboardingValues } from "./schema";
 
 const values: OnboardingValues = {
   capital: 10000,
-  horizon: "long",
   riskLevel: 2,
-  maxDrawdownPct: 15,
-  instruments: ["BTCUSDT"],
   goals: [
     { targetReturnPct: 12, deadline: "2099-06-30" },
     { targetReturnPct: 30, deadline: "2100-01-01" },
@@ -23,15 +20,12 @@ const values: OnboardingValues = {
 };
 
 describe("toDbRows", () => {
-  it("usa los nombres de columna de la base y guarda proporciones como fracción", () => {
+  it("solo manda nivel y capital (la base deriva el drawdown) y metas como fracción", () => {
     expect(toDbRows("u1", values)).toEqual({
       profile: {
         user_id: "u1",
-        horizon: "long",
         risk_level: 2,
         capital: 10000,
-        max_drawdown: 0.15,
-        instruments: ["BTCUSDT"],
       },
       goals: [
         { target_return: 0.12, deadline: "2099-06-30" },
@@ -45,34 +39,25 @@ describe("profileToForm", () => {
   it("convierte un perfil de la base (numeric como texto) al estado del formulario", () => {
     const row: ProfileRow = {
       id: "p1",
-      horizon: "short",
       risk_level: 4,
       capital: "2500.50",
-      max_drawdown: "0.2",
-      instruments: ["ETHUSDT", "XRPUSDT"],
+      max_drawdown: "0.3",
       goals: [{ target_return: "0.07", deadline: "2099-01-01" }],
     };
     expect(profileToForm(row)).toEqual({
       capital: "2500.5",
-      horizon: "short",
       riskLevel: "4",
-      maxDrawdownPct: "20",
-      instruments: ["ETHUSDT"],
       goals: [{ targetReturnPct: "7", deadline: "2099-01-01" }],
     });
   });
 
   it("deja una meta vacía si el perfil no tiene metas", () => {
-    const form = profileToForm({
-      id: "p1",
-      horizon: "medium",
-      risk_level: 3,
-      capital: 1,
-      max_drawdown: 0.1,
-      instruments: [],
-      goals: null,
-    });
+    const form = profileToForm({ id: "p1", risk_level: 3, capital: 500, goals: null });
     expect(form.goals).toEqual([{ targetReturnPct: "", deadline: "" }]);
+  });
+
+  it("usa el nivel 3 si el perfil trae un nivel fuera de 1..5", () => {
+    expect(profileToForm({ id: "p1", risk_level: 9, capital: 500 }).riskLevel).toBe("3");
   });
 });
 
@@ -85,6 +70,7 @@ describe("fetchProfile", () => {
     expect(query.table).toBe("profiles");
     expect(query.calls.map((c) => c.method)).toEqual(["select", "eq", "maybeSingle"]);
     expect(query.calls[0].args[0]).toContain("goals(target_return, deadline)");
+    expect(query.calls[0].args[0]).not.toMatch(/horizon|instruments/);
     expect(query.calls[1].args).toEqual(["user_id", "u1"]);
   });
 

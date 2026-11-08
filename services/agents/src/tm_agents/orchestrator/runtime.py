@@ -26,10 +26,10 @@ import pandas as pd
 from tm_shared.contracts import DecisionEnvelope
 
 from tm_agents.orchestrator.bot import BotCommand, BotRunner
-from tm_agents.orchestrator.events import SignalEvent
 from tm_agents.orchestrator.shared import SharedSignalLayer, bar_close_instants
-from tm_agents.orchestrator.streams import MemorySink, SignalSource
+from tm_agents.orchestrator.streams import MemorySink
 from tm_agents.orchestrator.supervisor import BotSupervisor, CommandListener
+from tm_agents.signals import SignalEvent, SignalSource
 
 log = logging.getLogger(__name__)
 

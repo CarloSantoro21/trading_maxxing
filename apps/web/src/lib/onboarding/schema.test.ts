@@ -2,8 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
   EMPTY_FORM,
   errorsForStep,
+  formatUsd,
   fractionToPct,
+  isRiskLevel,
+  maxLossUsd,
+  MIN_CAPITAL,
+  parseCapital,
   pctToFraction,
+  RISK_LEVELS,
+  RISK_TABLE,
+  STEPS,
   todayIso,
   validateOnboarding,
   type OnboardingFormState,
@@ -11,10 +19,7 @@ import {
 
 const valid: OnboardingFormState = {
   capital: "10000",
-  horizon: "medium",
   riskLevel: "3",
-  maxDrawdownPct: "20",
-  instruments: ["BTCUSDT", "ETHUSDT"],
   goals: [{ targetReturnPct: "15", deadline: "2099-12-31" }],
 };
 
@@ -31,10 +36,7 @@ describe("validateOnboarding", () => {
     if (!result.success) return;
     expect(result.data).toEqual({
       capital: 10000,
-      horizon: "medium",
       riskLevel: 3,
-      maxDrawdownPct: 20,
-      instruments: ["BTCUSDT", "ETHUSDT"],
       goals: [{ targetReturnPct: 15, deadline: "2099-12-31" }],
     });
   });
@@ -47,35 +49,19 @@ describe("validateOnboarding", () => {
   it.each([
     ["", "Escribe el capital inicial."],
     ["abc", "Escribe el capital inicial."],
-    ["0", "El capital debe ser mayor que 0."],
-    ["-5", "El capital debe ser mayor que 0."],
-  ])("rechaza capital %j (check capital > 0)", (capital, message) => {
+    ["0", "El capital mínimo es de 500 USDT."],
+    ["-5", "El capital mínimo es de 500 USDT."],
+    ["499.99", "El capital mínimo es de 500 USDT."],
+  ])("rechaza capital %j (check capital >= 500)", (capital, message) => {
     expect(errorsOf({ ...valid, capital }).capital).toBe(message);
   });
 
-  it("exige horizonte short, medium o long", () => {
-    expect(errorsOf({ ...valid, horizon: "" }).horizon).toBe("Elige un horizonte de inversión.");
+  it("acepta exactamente el capital mínimo", () => {
+    expect(validateOnboarding({ ...valid, capital: String(MIN_CAPITAL) }).success).toBe(true);
   });
 
-  it.each(["0", "6", "2.5"])("rechaza nivel de riesgo %s (check 1..5 entero)", (riskLevel) => {
-    expect(errorsOf({ ...valid, riskLevel }).riskLevel).toMatch(/entre 1 y 5/);
-  });
-
-  it.each(["0", "-1", "100", "100.1"])("rechaza drawdown %s %% (check 0 < x < 1)", (maxDrawdownPct) => {
-    expect(errorsOf({ ...valid, maxDrawdownPct }).maxDrawdownPct).toMatch(/drawdown máximo/);
-  });
-
-  it("acepta drawdown de 99.9 %", () => {
-    expect(validateOnboarding({ ...valid, maxDrawdownPct: "99.9" }).success).toBe(true);
-  });
-
-  it("exige al menos un instrumento soportado y sin repetir", () => {
-    expect(errorsOf({ ...valid, instruments: [] }).instruments).toBe("Elige al menos un instrumento.");
-    expect(errorsOf({ ...valid, instruments: ["BTCUSDT", "BTCUSDT"] }).instruments).toBe(
-      "Hay instrumentos repetidos.",
-    );
-    const unsupported = { ...valid, instruments: ["SOLUSDT"] } as unknown as OnboardingFormState;
-    expect(errorsOf(unsupported)["instruments.0"]).toBe("Instrumento no soportado.");
+  it.each(["0", "6", "2.5", ""])("rechaza nivel de riesgo %j (check 1..5 entero)", (riskLevel) => {
+    expect(errorsOf({ ...valid, riskLevel }).riskLevel).toMatch(/nivel de riesgo/);
   });
 
   it("valida cada meta: retorno > 0 y fecha futura", () => {
@@ -103,23 +89,61 @@ describe("validateOnboarding", () => {
     expect(errorsOf({ ...valid, goals: six }).goals).toMatch(/hasta 5 metas/);
   });
 
-  it("el formulario vacío falla en capital, horizonte y metas", () => {
+  it("el formulario vacío falla en capital y metas, no en el riesgo (3 por defecto)", () => {
     const errors = errorsOf(EMPTY_FORM);
     expect(Object.keys(errors)).toEqual(
-      expect.arrayContaining(["capital", "horizon", "goals.0.targetReturnPct", "goals.0.deadline"]),
+      expect.arrayContaining(["capital", "goals.0.targetReturnPct", "goals.0.deadline"]),
     );
     expect(errors.riskLevel).toBeUndefined();
-    expect(errors.maxDrawdownPct).toBeUndefined();
+  });
+
+  it("ya no captura horizonte, drawdown ni instrumentos", () => {
+    expect(Object.keys(EMPTY_FORM).sort()).toEqual(["capital", "goals", "riskLevel"]);
   });
 });
 
-describe("errorsForStep", () => {
-  it("filtra los errores por los campos del paso", () => {
-    const errors = { capital: "a", riskLevel: "b", "goals.0.deadline": "c", instruments: "d" };
+describe("pasos", () => {
+  it("son tres: capital, nivel de riesgo y metas", () => {
+    expect(STEPS.map((s) => s.id)).toEqual(["capital", "risk", "goals"]);
+  });
+
+  it("errorsForStep filtra los errores por los campos del paso", () => {
+    const errors = { capital: "a", riskLevel: "b", "goals.0.deadline": "c" };
     expect(errorsForStep(errors, 0)).toEqual({ capital: "a" });
     expect(errorsForStep(errors, 1)).toEqual({ riskLevel: "b" });
-    expect(errorsForStep(errors, 2)).toEqual({ instruments: "d" });
-    expect(errorsForStep(errors, 3)).toEqual({ "goals.0.deadline": "c" });
+    expect(errorsForStep(errors, 2)).toEqual({ "goals.0.deadline": "c" });
+  });
+});
+
+describe("niveles de riesgo", () => {
+  it("coinciden con la tabla de la propuesta (sección 3.4)", () => {
+    expect(RISK_LEVELS.map((l) => RISK_TABLE[l].maxDrawdownPct)).toEqual([10, 15, 20, 30, 40]);
+    expect(RISK_LEVELS.map((l) => RISK_TABLE[l].riskPerTradePct)).toEqual([0.25, 0.5, 1, 1.5, 2]);
+    expect(RISK_LEVELS.map((l) => RISK_TABLE[l].maxExposurePct)).toEqual([20, 35, 50, 70, 90]);
+    for (const l of RISK_LEVELS) expect(RISK_TABLE[l].summary.length).toBeGreaterThan(10);
+  });
+
+  it("isRiskLevel solo acepta 1..5", () => {
+    expect(RISK_LEVELS.every(isRiskLevel)).toBe(true);
+    expect([0, 6, 2.5, Number.NaN].some(isRiskLevel)).toBe(false);
+  });
+
+  it("calcula la caída máxima en dólares para el capital", () => {
+    expect(maxLossUsd(500, 1)).toBe(50);
+    expect(maxLossUsd(10000, 3)).toBe(2000);
+    expect(maxLossUsd(1234.56, 5)).toBe(493.82);
+  });
+
+  it("formatea montos con separador de miles", () => {
+    expect(formatUsd(10000)).toBe("10,000");
+    expect(formatUsd(1234.567)).toBe("1,234.57");
+  });
+
+  it("parseCapital da null si el texto no es un monto positivo", () => {
+    expect(parseCapital("1500,5")).toBe(1500.5);
+    expect(parseCapital("")).toBeNull();
+    expect(parseCapital("abc")).toBeNull();
+    expect(parseCapital("-3")).toBeNull();
   });
 });
 

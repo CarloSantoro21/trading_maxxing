@@ -39,12 +39,13 @@ select throws_ok(
   '23514', null, 'capital 0 falla'
 );
 select throws_ok(
-  $$ update public.profiles set max_drawdown = 0 where id = 'aaaaaaaa-0000-0000-0000-0000000000a1' $$,
-  '23514', null, 'max_drawdown 0 falla'
+  $$ update public.profiles set capital = 499.99 where id = 'aaaaaaaa-0000-0000-0000-0000000000a1' $$,
+  '23514', null, 'capital menor a 500 falla'
 );
-select throws_ok(
-  $$ update public.profiles set max_drawdown = 1.5 where id = 'aaaaaaaa-0000-0000-0000-0000000000a1' $$,
-  '23514', null, 'max_drawdown mayor a 1 falla'
+-- max_drawdown ya no se captura: el trigger lo deriva de risk_level (06 lo prueba a fondo).
+select is(
+  (select max_drawdown from public.profiles where id = 'aaaaaaaa-0000-0000-0000-0000000000a1'),
+  0.40, 'max_drawdown sale del nivel (5 -> 40 %), no del valor insertado'
 );
 select throws_ok(
   $$ update public.profiles set instruments = array['DOGEUSDT'] where id = 'aaaaaaaa-0000-0000-0000-0000000000a1' $$,
@@ -56,12 +57,12 @@ select throws_ok(
 );
 select throws_ok(
   $$ insert into public.profiles (user_id, horizon, risk_level, capital, max_drawdown)
-     values ('aaaaaaaa-0000-0000-0000-000000000001', 'long', 2, 100, 0.2) $$,
+     values ('aaaaaaaa-0000-0000-0000-000000000001', 'long', 2, 500, 0.2) $$,
   '23505', null, 'un usuario no puede tener dos perfiles'
 );
 select throws_ok(
   $$ insert into public.profiles (user_id, horizon, risk_level, capital, max_drawdown)
-     values ('aaaaaaaa-0000-0000-0000-000000000001', 'forever', 2, 100, 0.2) $$,
+     values ('aaaaaaaa-0000-0000-0000-000000000001', 'forever', 2, 500, 0.2) $$,
   '22P02', null, 'horizon fuera del enum falla'
 );
 

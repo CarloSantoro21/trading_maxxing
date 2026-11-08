@@ -58,6 +58,19 @@ def recorder_from_env() -> Any | None:
     return SupabaseTradeRecorder(bot_id)
 
 
+def sleeve_guard_from_env() -> Any | None:
+    """Guardia de sleeves con el registro de Supabase: shadow nunca envía órdenes.
+
+    Sin Supabase no hay registro que consultar y el motor no filtra (modo de desarrollo).
+    """
+    if not os.environ.get("SUPABASE_URL") or not os.environ.get("SUPABASE_SERVICE_ROLE_KEY"):
+        return None
+    from tm_agents.reference import TradingSleeveGuard
+    from tm_agents.registry import PostgRESTBackend, StrategyRegistry
+
+    return TradingSleeveGuard(StrategyRegistry(PostgRESTBackend.from_env()))
+
+
 def main(argv: list[str] | None = None) -> None:
     args = argparse.ArgumentParser(prog="tm_engine").parse_known_args(argv)[1]
     logging.basicConfig(
@@ -68,7 +81,11 @@ def main(argv: list[str] | None = None) -> None:
     if "--once" in args:
         return
 
-    service = TradingEngineService(redis_client=redis_from_env(), recorder=recorder_from_env())
+    service = TradingEngineService(
+        redis_client=redis_from_env(),
+        recorder=recorder_from_env(),
+        sleeve_guard=sleeve_guard_from_env(),
+    )
     service.start(EngineProfile.from_env())
     running = True
 

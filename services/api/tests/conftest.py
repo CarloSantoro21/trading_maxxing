@@ -49,9 +49,21 @@ def auth(sub: uuid.UUID = ALICE) -> dict[str, str]:
     return {"Authorization": f"Bearer {make_token(sub, email=f'{sub}@test.local')}"}
 
 
+# Drawdown máximo por nivel: lo que hace el trigger profiles_derive_max_drawdown.
+RISK_LEVEL_MAX_DRAWDOWN = {1: 0.10, 2: 0.15, 3: 0.20, 4: 0.30, 5: 0.40}
+# Transiciones del ciclo de vida que acepta el trigger de strategy_transitions.
+_ALLOWED_TRANSITIONS = {
+    "research": {"lab", "retired"},
+    "lab": {"shadow", "research", "retired"},
+    "shadow": {"active", "lab", "retired"},
+    "active": {"probation", "retired"},
+    "probation": {"active", "retired"},
+    "retired": {"lab"},
+}
+
 # Valores por defecto de cada tabla (los que pondría PostgreSQL).
 _DEFAULTS: dict[str, Callable[[], Row]] = {
-    "profiles": lambda: {"instruments": ["BTCUSDT", "ETHUSDT"]},
+    "profiles": lambda: {"horizon": "medium", "instruments": ["BTCUSDT", "ETHUSDT"]},
     "goals": dict,
     "bots": lambda: {
         "status": "stopped",
@@ -76,9 +88,18 @@ _DEFAULTS: dict[str, Callable[[], Row]] = {
         "closed_at": None,
     },
     "equity_snapshots": lambda: {"positions_value": 0, "drawdown": 0},
+    "app_roles": lambda: {"role": "member"},
+    "strategies": lambda: {
+        "state": "research",
+        "params": {},
+        "lab_report": None,
+        "live_metrics": {},
+        "state_changed_at": datetime.now(UTC).isoformat(),
+    },
+    "strategy_transitions": dict,
 }
 # Tablas que el rol authenticated puede escribir (según las migraciones de RLS).
-_USER_INSERT = {"profiles", "goals", "bots", "backtests"}
+_USER_INSERT = {"profiles", "goals", "bots", "backtests", "strategy_transitions"}
 _USER_UPDATE = {"profiles", "goals", "bots"}
 _USER_DELETE = {"profiles", "goals", "bots", "backtests"}
 _CHILDREN = {
@@ -115,9 +136,16 @@ class FakeDatabase:
             for b in self.tables["bots"]
         )
 
+    def _is_admin(self, uid: str) -> bool:
+        return any(
+            str(r["user_id"]) == uid and r["role"] == "admin" for r in self.tables["app_roles"]
+        )
+
     def _visible(self, table: str, uid: str, row: Row) -> bool:
-        if table == "profiles":
+        if table in ("profiles", "app_roles"):
             return str(row["user_id"]) == uid
+        if table in ("strategies", "strategy_transitions"):
+            return True
         if table in ("goals", "bots", "backtests"):
             return self._owns_profile(uid, row["profile_id"])
         return self._owns_bot(uid, row["bot_id"])
@@ -193,8 +221,12 @@ class FakeDatabase:
             "created_at": now,
             "updated_at": now,
         }
+        if table == "strategy_transitions":
+            return self._apply_transition(uid, full)
         if not self._visible(table, uid, full):
             raise _forbidden()
+        if table == "profiles":
+            self._derive_profile(full)
         if table == "profiles" and any(
             str(p["user_id"]) == str(full["user_id"]) for p in self.tables["profiles"]
         ):
@@ -211,6 +243,8 @@ class FakeDatabase:
         rows = self._query(table, token, filters)
         for r in rows:
             r.update(values, updated_at=datetime.now(UTC).isoformat())
+            if table == "profiles":
+                self._derive_profile(r)
         return [dict(r) for r in rows]
 
     async def delete(self, table: str, token: str, filters: dict[str, str]) -> list[Row]:
@@ -222,6 +256,38 @@ class FakeDatabase:
             self._cascade(table, r)
             self.tables[table].remove(r)
         return [dict(r) for r in rows]
+
+    # --- triggers y checks de la base --------------------------------------------
+    @staticmethod
+    def _check_violation(message: str) -> HTTPException:
+        return HTTPException(status_code=422, detail={"message": message, "code": "23514"})
+
+    def _derive_profile(self, row: Row) -> None:
+        """Trigger profiles_derive_max_drawdown y check profiles_capital_min."""
+        if row.get("risk_level") not in RISK_LEVEL_MAX_DRAWDOWN:
+            raise self._check_violation("risk_level")
+        if float(row["capital"]) < 500:
+            raise self._check_violation("profiles_capital_min")
+        row["max_drawdown"] = RISK_LEVEL_MAX_DRAWDOWN[row["risk_level"]]
+
+    def _apply_transition(self, uid: str, row: Row) -> Row:
+        """Política strategy_transitions_insert_admin + trigger apply_strategy_transition."""
+        strategy = next(
+            (s for s in self.tables["strategies"] if str(s["id"]) == str(row["strategy_id"])),
+            None,
+        )
+        if strategy is None:
+            raise HTTPException(status_code=422, detail={"message": "fk", "code": "23503"})
+        if strategy["state"] != row["from_state"]:
+            raise HTTPException(status_code=409, detail={"message": "stale", "code": "40001"})
+        if row["to_state"] not in _ALLOWED_TRANSITIONS[row["from_state"]]:
+            raise self._check_violation("transición no permitida")
+        if not self._is_admin(uid) or row["actor"] != uid:
+            raise _forbidden()
+        strategy["state"] = row["to_state"]
+        strategy["state_changed_at"] = row["created_at"]
+        self.tables["strategy_transitions"].append(row)
+        return dict(row)
 
     def _cascade(self, table: str, row: Row) -> None:
         for child, fk in _CHILDREN.get(table, []):
@@ -267,6 +333,16 @@ def client(
     app = create_app(settings, db=fake_db, bus=bus)
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture
+def make_admin(fake_db: FakeDatabase) -> Callable[..., Row]:
+    """Da el rol de admin a un usuario (como lo haría `make user ... ROLE=admin`)."""
+
+    def _make(user_id: uuid.UUID = ALICE) -> Row:
+        return fake_db.seed("app_roles", user_id=str(user_id), role="admin")
+
+    return _make
 
 
 @pytest.fixture

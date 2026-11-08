@@ -11,8 +11,8 @@ from decimal import Decimal
 
 import pytest
 from tm_agents.orchestrator.bot import BotConfig, BotProfile, BotRunner
-from tm_agents.orchestrator.events import SignalEvent, StrategySnapshot, VetoInfo, event_id
 from tm_agents.orchestrator.streams import MemorySink
+from tm_agents.signals import SignalEvent, StrategySnapshot, VetoInfo, event_id
 from tm_agents.strategy_stats import StrategyState
 from tm_shared.contracts import Direction, Horizon, Signal, SimResult, Timeframe
 

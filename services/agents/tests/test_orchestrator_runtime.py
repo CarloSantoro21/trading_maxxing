@@ -14,7 +14,6 @@ import pytest
 from tm_agents import __main__ as worker_main
 from tm_agents.montecarlo import ONE_YEAR_DAYS, bootstrap
 from tm_agents.orchestrator.bot import BotCommand, BotConfig, BotProfile, BotStatus, CommandType
-from tm_agents.orchestrator.events import StrategySnapshot
 from tm_agents.orchestrator.exposure import (
     CONSERVATIVE_DD_FACTOR,
     TREND_SENSITIVITY,
@@ -28,10 +27,7 @@ from tm_agents.orchestrator.runtime import OrchestratorWorker, memory_sinks
 from tm_agents.orchestrator.streams import (
     COMMANDS_STREAM,
     DECISIONS_STREAM,
-    SIGNALS_STREAM,
-    ListSignalSource,
     MemorySink,
-    RedisSignalSource,
     RedisStreamSink,
     StreamReader,
 )
@@ -43,6 +39,14 @@ from tm_agents.orchestrator.supervisor import (
     bot_from_row,
 )
 from tm_agents.registry import StrategyRecord
+from tm_agents.risk import RISK_TABLE
+from tm_agents.signals import (
+    SIGNALS_STREAM,
+    ListSignalSource,
+    RedisSignalSink,
+    RedisSignalSource,
+    StrategySnapshot,
+)
 from tm_agents.strategy_stats import StrategyState
 from tm_shared.contracts import DecisionEnvelope
 
@@ -59,7 +63,7 @@ def test_signals_round_trip_through_redis(make_event):
     client = fakeredis.FakeRedis()
     client.xadd(SIGNALS_STREAM, {"data": "viejo"})  # antes de arrancar: no se lee
     source = RedisSignalSource(client)
-    sink = RedisStreamSink(client, SIGNALS_STREAM)
+    sink = RedisSignalSink(client)
     ev = make_event(1.0)
     assert "-" in sink.publish(ev)
     client.xadd(SIGNALS_STREAM, {"data": "{no es json"})
@@ -336,6 +340,12 @@ def test_exposure_edges():
     assert sensitivity_for("trend", [(1.0, 0.4)]) == [(1.0, 0.4)]
     with pytest.raises(ValueError):
         level_drawdown(6)
+    with pytest.raises(ValueError):
+        level_drawdown("alto")  # type: ignore[arg-type]
+    # el drawdown de cada nivel sale de la tabla única del RiskAgent (#86)
+    assert {lvl: level_drawdown(lvl) for lvl in RISK_TABLE} == {
+        lvl: float(spec.max_drawdown) for lvl, spec in RISK_TABLE.items()
+    }
 
 
 def test_snapshot_from_record_reads_the_lab_report():

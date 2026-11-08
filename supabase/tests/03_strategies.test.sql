@@ -164,10 +164,11 @@ select throws_ok(
 );
 
 -- ===========================================================================
--- Usuario autenticado: solo lectura
+-- Usuario autenticado sin rol de admin (member): solo lectura. Las transiciones de un
+-- admin se prueban en 05_app_roles.test.sql.
 -- ===========================================================================
 select set_config('request.jwt.claims',
-  '{"sub": "11111111-1111-1111-1111-111111111111", "role": "authenticated"}', true);
+  '{"sub": "99999999-9999-9999-9999-999999999999", "role": "authenticated"}', true);
 set local role authenticated;
 
 select ok((select count(*) from public.strategies) >= 4, 'authenticated lee strategies');
@@ -183,8 +184,8 @@ select throws_ok(
 select throws_ok(
   $$ insert into public.strategy_transitions (strategy_id, from_state, to_state, actor, reason)
      values ('dddddddd-0000-0000-0000-000000000001', 'lab', 'shadow',
-             '11111111-1111-1111-1111-111111111111', 'desde el navegador') $$,
-  '42501', null, 'authenticated no inserta transiciones directamente'
+             '99999999-9999-9999-9999-999999999999', 'desde el navegador') $$,
+  '42501', null, 'un member no inserta transiciones'
 );
 
 -- ===========================================================================

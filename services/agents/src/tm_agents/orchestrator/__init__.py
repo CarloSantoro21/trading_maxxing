@@ -1,7 +1,8 @@
 """AgentOrchestrator (#19): capa compartida de señales y un BotRunner por bot.
 
 - :mod:`~tm_agents.orchestrator.shared`: señales, vetos y SimulationGate una vez para todos;
-  publica :class:`~tm_agents.orchestrator.events.SignalEvent` en ``tm:signals``.
+  publica :class:`~tm_agents.signals.SignalEvent` en ``tm:signals`` (el formato y su
+  lectura y escritura viven en :mod:`tm_agents.signals`).
 - :mod:`~tm_agents.orchestrator.bot`: cada bot dimensiona esas señales con su capital y su
   nivel de riesgo y publica ``DecisionEnvelope`` en ``tm:decisions`` (``tm:shadow`` para las
   estrategias en shadow).
@@ -20,7 +21,6 @@ from tm_agents.orchestrator.bot import (
     BotStatus,
     CommandType,
 )
-from tm_agents.orchestrator.events import SignalEvent, StrategySnapshot
 from tm_agents.orchestrator.exposure import exposure_for_level
 from tm_agents.orchestrator.runtime import OfflineResult, OrchestratorWorker, run_offline
 from tm_agents.orchestrator.shared import FrameBarsProvider, SharedSignalLayer
@@ -28,11 +28,10 @@ from tm_agents.orchestrator.streams import (
     COMMANDS_STREAM,
     DECISIONS_STREAM,
     SHADOW_STREAM,
-    SIGNALS_STREAM,
-    ListSignalSource,
     MemorySink,
 )
 from tm_agents.orchestrator.supervisor import BotSupervisor, InMemoryBotRepository
+from tm_agents.signals import SIGNALS_STREAM, ListSignalSource, SignalEvent, StrategySnapshot
 
 __all__ = [
     "COMMANDS_STREAM",

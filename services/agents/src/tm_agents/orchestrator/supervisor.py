@@ -29,13 +29,13 @@ from tm_agents.orchestrator.bot import (
     BotStatus,
     CommandType,
 )
-from tm_agents.orchestrator.events import SignalEvent
 from tm_agents.orchestrator.streams import (
     COMMANDS_STREAM,
     DecisionSink,
     StreamReader,
     decode_fields,
 )
+from tm_agents.signals import SignalEvent
 
 log = logging.getLogger(__name__)
 

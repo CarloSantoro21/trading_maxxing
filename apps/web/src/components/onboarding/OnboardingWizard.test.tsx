@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { createFakeSupabase, type Responder } from "@/test/fakeSupabase";
@@ -17,67 +17,78 @@ function setup(respond: Responder = ok) {
 
 async function fillAll({ user, next }: ReturnType<typeof setup>) {
   await user.type(screen.getByLabelText("Capital inicial (USDT)"), "10000");
-  await user.click(screen.getByRole("radio", { name: /Mediano plazo/ }));
   await next();
-  await user.click(screen.getByRole("radio", { name: /4 · Agresivo/ }));
-  const dd = screen.getByLabelText("Drawdown máximo (%)");
-  await user.clear(dd);
-  await user.type(dd, "25");
-  await next();
-  await user.click(screen.getByRole("checkbox", { name: "ETH/USDT" }));
+  await user.click(screen.getByRole("radio", { name: /4 · Decidido/ }));
   await next();
   await user.type(screen.getByLabelText("Retorno objetivo (%) · meta 1"), "12");
   fireEvent.change(screen.getByLabelText("Fecha límite · meta 1"), { target: { value: "2099-12-31" } });
 }
 
 describe("OnboardingWizard", () => {
-  it("no avanza si el paso tiene errores y los anuncia en cada campo", async () => {
-    const { next } = setup();
-    await next();
-    expect(screen.getByRole("heading", { name: "Capital y horizonte" })).toBeInTheDocument();
-    expect(screen.getByText("Escribe el capital inicial.")).toBeInTheDocument();
-    expect(screen.getByText("Elige un horizonte de inversión.")).toBeInTheDocument();
-    expect(screen.getByLabelText("Capital inicial (USDT)")).toHaveAttribute("aria-invalid", "true");
+  it("tiene tres pasos y no pide horizonte, drawdown ni instrumentos", () => {
+    setup();
+    const steps = within(screen.getByRole("navigation", { name: "Progreso del onboarding" })).getAllByRole(
+      "listitem",
+    );
+    expect(steps.map((s) => s.textContent)).toEqual([
+      "Paso 1Capital",
+      "Paso 2Nivel de riesgo",
+      "Paso 3Metas",
+    ]);
+    expect(screen.queryByText(/horizonte/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   });
 
-  it("valida el drawdown y los instrumentos en sus pasos", async () => {
+  it("no avanza si el capital falta o es menor a 500 USDT", async () => {
     const { user, next } = setup();
-    await user.type(screen.getByLabelText("Capital inicial (USDT)"), "500");
-    await user.click(screen.getByRole("radio", { name: /Corto plazo/ }));
     await next();
+    expect(screen.getByRole("heading", { name: "Capital" })).toBeInTheDocument();
+    expect(screen.getByText("Escribe el capital inicial.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Capital inicial (USDT)")).toHaveAttribute("aria-invalid", "true");
 
-    const dd = screen.getByLabelText("Drawdown máximo (%)");
-    await user.clear(dd);
-    await user.type(dd, "150");
+    await user.type(screen.getByLabelText("Capital inicial (USDT)"), "499");
     await next();
-    expect(screen.getByText(/menor que 100 %/)).toBeInTheDocument();
-    await user.clear(dd);
-    await user.type(dd, "10");
-    await next();
-
-    await user.click(screen.getByRole("checkbox", { name: "BTC/USDT" }));
-    await user.click(screen.getByRole("checkbox", { name: "ETH/USDT" }));
-    await next();
-    expect(screen.getByText("Elige al menos un instrumento.")).toBeInTheDocument();
+    expect(screen.getByText("El capital mínimo es de 500 USDT.")).toBeInTheDocument();
   });
 
-  it("guarda el perfil y las metas en Supabase con los valores convertidos", async () => {
+  it("explica cada nivel con la caída máxima en dólares para el capital", async () => {
+    const { user, next } = setup();
+    await user.type(screen.getByLabelText("Capital inicial (USDT)"), "10000");
+    await next();
+    expect(screen.getByRole("heading", { name: "Nivel de riesgo" })).toHaveFocus();
+
+    // Cada opción muestra su caída máxima en % y en USDT.
+    expect(screen.getByRole("radio", { name: /1 · Conservador.*10 % \(1,000 USDT\)/ })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /5 · Agresivo.*40 % \(4,000 USDT\)/ })).toBeInTheDocument();
+
+    // El 3 viene elegido por defecto y se explica en lenguaje simple.
+    expect(screen.getByRole("radio", { name: /3 · Moderado/ })).toBeChecked();
+    const explanation = () => screen.getByRole("heading", { name: /Nivel \d · / }).closest("section")!;
+    expect(explanation()).toHaveTextContent("Con tus 10,000 USDT");
+    expect(explanation()).toHaveTextContent("2,000 USDT (20 %)");
+    expect(explanation()).toHaveTextContent("100 USDT (1 %)");
+    expect(explanation()).toHaveTextContent("5,000 USDT (50 %)");
+
+    await user.click(screen.getByRole("radio", { name: /1 · Conservador/ }));
+    expect(explanation()).toHaveTextContent("Nivel 1 · Conservador");
+    expect(explanation()).toHaveTextContent("1,000 USDT (10 %)");
+    expect(explanation()).toHaveTextContent("25 USDT (0.25 %)");
+  });
+
+  it("guarda solo capital y nivel en el perfil, y las metas", async () => {
     const ctx = setup();
     await fillAll(ctx);
-    expect(screen.getByText("10000 USDT")).toBeInTheDocument();
+    const summary = screen.getByRole("heading", { name: "Resumen" }).closest("section")!;
+    expect(summary).toHaveTextContent("10,000 USDT");
+    expect(summary).toHaveTextContent("4 · Decidido");
+    expect(summary).toHaveTextContent("30 % (3,000 USDT)");
+    expect(summary).toHaveTextContent("BTC/USDT y ETH/USDT");
     await ctx.user.click(screen.getByRole("button", { name: "Guardar perfil" }));
 
     expect(await screen.findByRole("heading", { name: "¡Perfil guardado!" })).toBeInTheDocument();
     expect(ctx.onSaved).toHaveBeenCalledWith("p1");
     const [profile, , goals] = ctx.fake.queries;
-    expect(profile.calls[0].args[0]).toEqual({
-      user_id: "user-1",
-      horizon: "medium",
-      risk_level: 4,
-      capital: 10000,
-      max_drawdown: 0.25,
-      instruments: ["BTCUSDT"],
-    });
+    expect(profile.calls[0].args[0]).toEqual({ user_id: "user-1", risk_level: 4, capital: 10000 });
     expect(goals.calls[0].args[0]).toEqual([
       { target_return: 0.12, deadline: "2099-12-31", profile_id: "p1" },
     ]);
@@ -110,31 +121,41 @@ describe("OnboardingWizard", () => {
   it("Atrás regresa al paso anterior conservando lo capturado", async () => {
     const { user, next } = setup();
     await user.type(screen.getByLabelText("Capital inicial (USDT)"), "750");
-    await user.click(screen.getByRole("radio", { name: /Largo plazo/ }));
     await next();
-    expect(screen.getByRole("heading", { name: "Riesgo" })).toHaveFocus();
     await user.click(screen.getByRole("button", { name: "Atrás" }));
     expect(screen.getByLabelText("Capital inicial (USDT)")).toHaveValue(750);
     await waitFor(() => expect(screen.getByRole("button", { name: "Atrás" })).toBeDisabled());
   });
 
-  it("se prellena con un perfil existente", () => {
+  it("se prellena con un perfil existente", async () => {
     const fake = createFakeSupabase();
+    const user = userEvent.setup();
     render(
       <OnboardingWizard
         supabase={fake.client}
         userId="user-1"
-        initial={{
-          capital: "2000",
-          horizon: "long",
-          riskLevel: "1",
-          maxDrawdownPct: "5",
-          instruments: ["ETHUSDT"],
-          goals: [{ targetReturnPct: "8", deadline: "2099-01-01" }],
-        }}
+        initial={{ capital: "2000", riskLevel: "1", goals: [{ targetReturnPct: "8", deadline: "2099-01-01" }] }}
       />,
     );
     expect(screen.getByLabelText("Capital inicial (USDT)")).toHaveValue(2000);
-    expect(screen.getByRole("radio", { name: /Largo plazo/ })).toBeChecked();
+    await user.click(screen.getByRole("button", { name: "Siguiente" }));
+    expect(screen.getByRole("radio", { name: /1 · Conservador.*\(200 USDT\)/ })).toBeChecked();
+  });
+
+  it("si el nivel guardado no es válido, pide elegir uno", async () => {
+    const fake = createFakeSupabase();
+    const user = userEvent.setup();
+    render(
+      <OnboardingWizard
+        supabase={fake.client}
+        userId="user-1"
+        initial={{ capital: "", riskLevel: "", goals: [{ targetReturnPct: "", deadline: "" }] }}
+      />,
+    );
+    await user.type(screen.getByLabelText("Capital inicial (USDT)"), "600");
+    await user.click(screen.getByRole("button", { name: "Siguiente" }));
+    expect(screen.queryByRole("heading", { name: /Nivel \d · / })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Siguiente" }));
+    expect(screen.getByText(/nivel de riesgo/)).toBeInTheDocument();
   });
 });

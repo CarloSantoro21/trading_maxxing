@@ -32,10 +32,7 @@ from collections.abc import Mapping, Sequence
 from itertools import pairwise
 from types import MappingProxyType
 
-#: Drawdown máximo tolerado por nivel de riesgo (tabla de la sección 3.4).
-LEVEL_MAX_DRAWDOWN: Mapping[int, float] = MappingProxyType(
-    {1: 0.10, 2: 0.15, 3: 0.20, 4: 0.30, 5: 0.40}
-)
+from tm_agents.risk import get_risk_level
 
 #: Factor conservador cuando no hay curva: el p95 con exposición k se toma como 1.3 k p95.
 CONSERVATIVE_DD_FACTOR = 1.3
@@ -80,10 +77,12 @@ KNOWN_SENSITIVITY: Mapping[str, tuple[tuple[float, float], ...]] = MappingProxyT
 
 
 def level_drawdown(risk_level: int) -> float:
+    """Drawdown máximo del nivel; sale de la tabla única :data:`tm_agents.risk.RISK_TABLE`."""
     try:
-        return LEVEL_MAX_DRAWDOWN[int(risk_level)]
-    except (KeyError, TypeError, ValueError):
+        level = int(risk_level)
+    except (TypeError, ValueError):
         raise ValueError("risk_level debe estar entre 1 y 5") from None
+    return float(get_risk_level(level).max_drawdown)
 
 
 def exposure_for_level(
@@ -171,7 +170,6 @@ def _invert(curve: list[tuple[float, float]], ratio: float) -> float:
 __all__ = [
     "CONSERVATIVE_DD_FACTOR",
     "KNOWN_SENSITIVITY",
-    "LEVEL_MAX_DRAWDOWN",
     "SENSITIVITY_GRID",
     "TREND_SENSITIVITY",
     "TREND_VOL_SENSITIVITY",

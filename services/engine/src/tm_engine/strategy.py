@@ -23,6 +23,11 @@ Cada orden lleva los tags `sleeve:<nombre>`, `role:<entry|sl|tp|exit|reduce>` y,
 trae bot, `bot:<id>`, para atribuir los fills y el P&L a su bot y sleeve (ver `SleeveLedger`).
 Las decisiones `shadow` se rechazan siempre.
 
+Con un `sleeve_guard` (en vivo, `tm_agents.reference.TradingSleeveGuard`) solo se envían
+órdenes de los sleeves cuya estrategia opera con capital (`active` o `probation`). Las
+estrategias en `shadow` nunca llegan al exchange: su decisión se rechaza aquí y su
+desempeño solo se lleva en el ledger de referencia.
+
 Binance Spot no acepta listas de órdenes ligadas (OCO) desde el adaptador de Nautilus, así que
 en vivo los hijos se emulan localmente (`emulation_trigger`) y la estrategia gestiona las
 contingencias (`manage_contingent_orders=True`). En el venue simulado del backtest el motor de
@@ -32,6 +37,7 @@ matching soporta OTO/OUO de forma nativa.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
@@ -131,9 +137,11 @@ class AgenticStrategy(Strategy):
         config: AgenticStrategyConfig,
         source: DecisionSource | None = None,
         recorder: FillRecorder | None = None,
+        sleeve_guard: Callable[[str], bool] | None = None,
     ) -> None:
         super().__init__(config)
         self._source = source
+        self._sleeve_guard = sleeve_guard
         self.recorder: FillRecorder = recorder or MemoryFillRecorder()
         self.ledger = SleeveLedger()
         self.rejections: list[Rejection] = []
@@ -182,6 +190,10 @@ class AgenticStrategy(Strategy):
         decision = envelope.decision
         if envelope.shadow:
             return self._reject(envelope, "decisión de una estrategia en shadow: no se ejecuta")
+        if self._sleeve_guard is not None and not self._sleeve_guard(envelope.sleeve):
+            reason = getattr(self._sleeve_guard, "reason", None)
+            why = reason(envelope.sleeve) if callable(reason) else "el sleeve no opera capital"
+            return self._reject(envelope, f"sin órdenes reales: {why}")
         risk = decision.rationale.risk
         if risk is not None and not risk.approved:
             return self._reject(envelope, "bloqueada por RiskAgent: " + "; ".join(risk.reasons))

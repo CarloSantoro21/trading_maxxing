@@ -21,10 +21,21 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Protocol
 
-from tm_agents.montecarlo import MCReport
+from tm_agents.montecarlo.report import DistributionSummary
 from tm_agents.strategy_stats import StrategyState
+
+
+class DrawdownReference(Protocol):
+    """Lo que el monitor usa del Monte Carlo: la distribución del drawdown máximo.
+
+    ``MCReport`` lo cumple; también ``tm_agents.reference.DrawdownBand``, que se arma con el
+    ``lab_report`` guardado en la base (sin los arreglos del Monte Carlo).
+    """
+
+    @property
+    def max_drawdown(self) -> DistributionSummary: ...
 
 
 @dataclass(frozen=True)
@@ -146,7 +157,10 @@ class LifecycleMonitor:
         self.thresholds = thresholds or LifecycleThresholds()
 
     def check(
-        self, strategy_state: StrategyState, live_stats: LiveStats, mc_report: MCReport
+        self,
+        strategy_state: StrategyState,
+        live_stats: LiveStats,
+        mc_report: DrawdownReference,
     ) -> Transition | None:
         """Devuelve la transición que corresponde o ``None`` si la estrategia sigue igual.
 
@@ -159,7 +173,7 @@ class LifecycleMonitor:
             return self._check_probation(live_stats, mc_report)
         return None
 
-    def _check_active(self, live: LiveStats, mc: MCReport) -> Transition | None:
+    def _check_active(self, live: LiveStats, mc: DrawdownReference) -> Transition | None:
         th = self.thresholds
         dd = live.drawdown
         p95 = mc.max_drawdown.p95
@@ -180,7 +194,7 @@ class LifecycleMonitor:
             )
         return None
 
-    def _check_probation(self, live: LiveStats, mc: MCReport) -> Transition | None:
+    def _check_probation(self, live: LiveStats, mc: DrawdownReference) -> Transition | None:
         th = self.thresholds
         dd = live.drawdown
         p95, p99 = mc.max_drawdown.p95, mc.max_drawdown.p99

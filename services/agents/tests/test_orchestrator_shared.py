@@ -12,7 +12,6 @@ from tm_agents.base import AgentContext, BaseAgent
 from tm_agents.news.models import Impact, Veto
 from tm_agents.news.veto import InMemoryVetoStore
 from tm_agents.orchestrator.bot import BotCommand, CommandType
-from tm_agents.orchestrator.events import parse_event
 from tm_agents.orchestrator.policy import SleevePolicy, policy_for, sell_levels
 from tm_agents.orchestrator.runtime import run_offline
 from tm_agents.orchestrator.shared import (
@@ -26,6 +25,7 @@ from tm_agents.orchestrator.shared import (
 )
 from tm_agents.orchestrator.streams import MemorySink
 from tm_agents.registry import InMemoryBackend, StrategyRecord, StrategyRegistry
+from tm_agents.signals import parse_signal
 from tm_agents.simulation_gate import GateConfig, SimulationGate
 from tm_agents.strategy_stats import StrategyState
 from tm_shared.contracts import Direction, Horizon, OrderSide, Signal, Timeframe
@@ -134,8 +134,8 @@ def test_publishes_one_event_per_strategy_and_symbol(frames, gate):
     # no hay evento del Trend fuera del cierre diario
     assert layer.on_bar_close(now + timedelta(hours=4)) == []
     # ida y vuelta por el formato del stream
-    assert parse_event({"data": ev.to_json()}) == ev
-    assert parse_event({b"data": b"{malformado"}) is None
+    assert parse_signal({"data": ev.to_json()}) == ev
+    assert parse_signal({b"data": b"{malformado"}) is None
 
 
 def test_kronos_is_called_once_per_symbol_and_shadow_is_published(frames, gate):

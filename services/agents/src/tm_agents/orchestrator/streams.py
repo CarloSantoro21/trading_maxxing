@@ -1,6 +1,7 @@
 """Streams de Redis del orquestador y sus versiones en memoria (backtest y pruebas).
 
-- `tm:signals`: lo escribe la capa compartida y lo lee cada BotRunner. `SignalEvent`.
+- `tm:signals`: lo escribe la capa compartida y lo leen cada BotRunner y el ReferenceService.
+  El evento y su lectura y escritura viven en un solo módulo, :mod:`tm_agents.signals`.
 - `tm:decisions`: lo escribe el BotRunner y lo lee el engine (`AgenticStrategy`).
   `DecisionEnvelope` con `bot_id`, `sleeve` y `target_quantity`.
 - `tm:shadow`: lo escribe el BotRunner; dashboard y auditoría. `DecisionEnvelope` con
@@ -16,16 +17,11 @@ otro `last_id`, y leen sin bloquear.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any, Protocol
 
 from tm_shared.contracts import DecisionEnvelope
 
-from tm_agents.orchestrator.events import SignalEvent, parse_event
-
-SIGNALS_STREAM = "tm:signals"
 DECISIONS_STREAM = "tm:decisions"
 SHADOW_STREAM = "tm:shadow"
 COMMANDS_STREAM = "tm:commands"
@@ -33,10 +29,6 @@ DEFAULT_MAXLEN = 10_000
 
 
 # --- escritura ---------------------------------------------------------------------------
-class EventSink(Protocol):
-    def publish(self, event: SignalEvent) -> str | None: ...
-
-
 class DecisionSink(Protocol):
     def publish(self, envelope: DecisionEnvelope) -> str | None: ...
 
@@ -53,14 +45,14 @@ class MemorySink[T]:
 
 
 class RedisStreamSink:
-    """`XADD <stream> MAXLEN ~ n * data <json>` para eventos o sobres de decisión."""
+    """`XADD <stream> MAXLEN ~ n * data <json>` para sobres de `tm:decisions` y `tm:shadow`."""
 
     def __init__(self, client: Any, stream: str, *, maxlen: int = DEFAULT_MAXLEN) -> None:
         self._client = client
         self.stream = stream
         self._maxlen = maxlen
 
-    def publish(self, item: SignalEvent | DecisionEnvelope) -> str:
+    def publish(self, item: DecisionEnvelope) -> str:
         entry = self._client.xadd(
             self.stream, {"data": item.to_json()}, maxlen=self._maxlen, approximate=True
         )
@@ -91,43 +83,6 @@ class StreamReader:
         return out
 
 
-class SignalSource(Protocol):
-    """De dónde saca un BotRunner los eventos: Redis en vivo o una lista en backtest."""
-
-    def poll(self, now: datetime | None = None) -> list[SignalEvent]: ...
-
-
-class RedisSignalSource:
-    def __init__(self, client: Any, stream: str = SIGNALS_STREAM, *, last_id: str = "$"):
-        self._reader = StreamReader(client, stream, last_id=last_id)
-        self.invalid = 0
-
-    def poll(self, now: datetime | None = None) -> list[SignalEvent]:
-        out: list[SignalEvent] = []
-        for _id, fields in self._reader.read():
-            event = parse_event(fields)
-            if event is None:
-                self.invalid += 1
-                continue
-            out.append(event)
-        return out
-
-
-class ListSignalSource:
-    """Eventos fijos que se liberan cuando `now >= bar_close` (en orden)."""
-
-    def __init__(self, events: Iterable[SignalEvent]) -> None:
-        self._pending = sorted(events, key=lambda e: (e.bar_close, e.strategy, e.symbol))
-
-    def poll(self, now: datetime | None = None) -> list[SignalEvent]:
-        if now is None:
-            ready, self._pending = self._pending, []
-            return ready
-        ready = [e for e in self._pending if e.bar_close <= now]
-        self._pending = self._pending[len(ready) :]
-        return ready
-
-
 def _to_str(value: Any) -> str:
     return value.decode() if isinstance(value, bytes) else str(value)
 
@@ -140,15 +95,11 @@ def decode_fields(fields: dict[Any, Any]) -> dict[str, str]:
 __all__ = [
     "COMMANDS_STREAM",
     "DECISIONS_STREAM",
+    "DEFAULT_MAXLEN",
     "SHADOW_STREAM",
-    "SIGNALS_STREAM",
     "DecisionSink",
-    "EventSink",
-    "ListSignalSource",
     "MemorySink",
-    "RedisSignalSource",
     "RedisStreamSink",
-    "SignalSource",
     "StreamReader",
     "decode_fields",
 ]

@@ -8,6 +8,8 @@ calcula una vez para todos y lo que es **de cada usuario** lo calcula su bot.
  velas cerradas ─▶ estrategia viva → Signal → veto de noticias → SimulationGate │──▶ tm:signals
  (MarketData)    └────────────────────────────────────────────────────────────┘
                                                                      │
+                                  ReferenceService (#57) ◀───────────┤  ledger de referencia
+                                  y LifecycleMonitor                 │  por estrategia
                  ┌──────────── capa por usuario (un BotRunner por bot) ───────┐
  tm:commands ───▶│ peso del sleeve × exposición del nivel × confianza          │──▶ tm:decisions
  (API, #21)      │ → RiskAgent con los límites del nivel                       │──▶ tm:shadow
@@ -16,17 +18,19 @@ calcula una vez para todos y lo que es **de cada usuario** lo calcula su bot.
                                          engine (AgenticStrategy) ◀──┘  órdenes por bot y sleeve
 ```
 
-Código: `services/agents/src/tm_agents/orchestrator/`.
+Código: `services/agents/src/tm_agents/orchestrator/`. El formato de `tm:signals` y su
+lectura y escritura viven en un solo módulo, `services/agents/src/tm_agents/signals.py`, que
+comparten el orquestador y el `ReferenceService` de `tm_agents.reference` (#57).
 
 | Módulo | Qué hace |
 |---|---|
 | `shared.py` | `SharedSignalLayer`: estrategias `active`, `probation` y `shadow` del registro; señal, veto y gate por estrategia y símbolo |
-| `events.py` | `SignalEvent` (formato de `tm:signals`) y `StrategySnapshot` (lo que el bot necesita del `lab_report`) |
 | `policy.py` | Niveles de cada operación por estrategia: stop de catástrofe (salida por señal) o stop real (Kronos), y horizonte del gate |
 | `exposure.py` | Exposición de cada sleeve por nivel de riesgo, con la curva de sensibilidad del laboratorio |
 | `bot.py` | `BotRunner`: posición objetivo, compras y ventas parciales, libro virtual, comandos |
 | `supervisor.py` | `BotSupervisor`: un runner por bot en `running` (tabla `bots`), comandos de `tm:commands` |
-| `streams.py` | Lectura y escritura de los streams de Redis y sus versiones en memoria |
+| `streams.py` | `tm:decisions`, `tm:shadow` y `tm:commands` en Redis y sus versiones en memoria |
+| `../signals.py` | `tm:signals`: `SignalEvent`, `StrategySnapshot` (lo que el bot necesita del `lab_report`), `publish_signal` / `RedisSignalSink`, `RedisSignalSource` / `ListSignalSource` |
 | `runtime.py` | `OrchestratorWorker` (en vivo) y `run_offline` (backtest) |
 
 ## Capa compartida
@@ -50,7 +54,9 @@ detiene a las demás.
 
 ### Formato de `tm:signals`
 
-Un solo campo `data` con el JSON del evento (igual que `tm:decisions`):
+Es la única definición del stream (`tm_agents.signals.SignalEvent`); el ledger de referencia
+del #57 usa el mismo modelo. Un solo campo `data` con el JSON del evento (igual que
+`tm:decisions`):
 
 ```
 XADD tm:signals MAXLEN ~ 10000 * data '<SignalEvent en JSON>'
@@ -63,7 +69,7 @@ XADD tm:signals MAXLEN ~ 10000 * data '<SignalEvent en JSON>'
   "state": "active",                            // active | probation | shadow
   "symbol": "BTCUSDT",
   "bar_close": "2024-03-01T00:00:00Z",
-  "price": "61234.5",                           // último cierre
+  "price": "61234.5",                           // cierre de la vela (tamaño y fill simulado)
   "signal": { /* Signal de tm_shared */ },
   "veto": null,                                 // o {scope, impact, reason, expires_at}
   "sim": { /* SimResult */ },                   // null si la señal no es long
@@ -76,6 +82,22 @@ XADD tm:signals MAXLEN ~ 10000 * data '<SignalEvent en JSON>'
 
 `catalog` viaja en cada evento para que el bot calcule sus pesos sin volver a leer el
 registro: el evento basta para reproducir la decisión.
+
+Publicar: `publish_signal(client, event)` o `RedisSignalSink` (el sink de la capa compartida).
+Consumir: `RedisSignalSource` (lee con `XREAD` desde su propio último id, así que cada
+consumidor ve todas las entradas; con `checkpoint_key` retoma tras un reinicio) o
+`ListSignalSource` en backtest y pruebas. `SignalEvent.from_signal(signal, price)` arma un
+evento sin veto ni gate (backtests y pruebas).
+
+Consumidores:
+
+| Consumidor | Cursor | Qué usa del evento |
+|---|---|---|
+| `BotSupervisor` → cada `BotRunner` | en memoria (`$` al arrancar) | todo: `catalog`, `veto`, `sim`, niveles |
+| `ReferenceService` (#57) | `tm:reference:last_signal_id` en Redis | `strategy`, `symbol`, `bar_close`, `price`, `signal` |
+
+`services/agents/tests/test_signals_integration.py` publica una señal una vez y comprueba que
+la consumen tanto un BotRunner como el `ReferenceService`.
 
 ## Capa por usuario
 
@@ -137,12 +159,36 @@ Con vol targeting (#83) la `confidence` del TrendAgent ya es la exposición obje
 que el voto de los canales.
 
 No hay topes manuales del administrador: todo sale del perfil, del laboratorio y del estado.
+El drawdown tolerado de cada nivel sale de la tabla única `tm_agents.risk.RISK_TABLE` (#86),
+la misma que usan el RiskAgent, la base (`profiles.max_drawdown`) y el onboarding.
+
+### LifecycleMonitor y curvas de sensibilidad
+
+Las dos cosas leen el mismo `lab_report`, pero no se pisan:
+
+- El **LifecycleMonitor** corre dentro del `ReferenceService` (#57). Juzga el ledger de
+  referencia de la estrategia, a tamaño completo (`k = 1`), contra el p95 y el p99 del Monte
+  Carlo del laboratorio, que también son a `k = 1`. Solo escribe `strategies.state` (con
+  `actor='system'`) y `strategies.live_metrics`.
+- Las **curvas de sensibilidad** las usa cada BotRunner para elegir su `k` por nivel. Salen de
+  `lab_report["exposure_sensitivity"]` o de las curvas medidas por nombre, y el p95 de
+  `lab_report.montecarlo.max_drawdown` (o del formato plano `max_drawdown_p95`, el mismo que
+  acepta el monitor).
+
+Nadie reescribe `lab_report` desde el ciclo en vivo, así que la degradación de una estrategia
+solo cambia su `state` en el `catalog` del siguiente evento (por ejemplo, `active` →
+`probation` cambia su peso en el PortfolioAllocator) y no su curva ni su p95. Lo comprueba
+`test_signals_integration.py::test_lifecycle_monitor_and_sensitivity_curves_do_not_overlap`.
 
 ### Shadow
 
 Las estrategias en `shadow` hacen todo el ciclo con el peso que tendrían si fueran activas,
 sobre un libro virtual aparte, y se publican en `tm:shadow` con `shadow=true`. Nunca llegan a
-`tm:decisions`, y el motor rechaza cualquier sobre con `shadow=true` por si acaso.
+`tm:decisions`, y el motor rechaza cualquier sobre con `shadow=true` por si acaso. Además, en
+vivo el motor consulta el `TradingSleeveGuard` (#57) antes de cada orden: solo los sleeves de
+estrategias en `active` o `probation` envían órdenes; `shadow`, `research`, `lab`, `retired` o
+un error del registro se rechazan (falla cerrado). El ledger de referencia de una estrategia
+en shadow lo lleva el `ReferenceService`, no el bot.
 
 ### Comandos (`tm:commands`)
 
@@ -177,7 +223,7 @@ Las mismas clases corren en los dos modos; solo cambian la fuente de velas y los
 |---|---|---|
 | Velas | `MarketDataBarsProvider` | `FrameBarsProvider` (DataFrames) |
 | Estrategias | `StrategyRegistry` con `PostgRESTBackend` | `StrategyRegistry` con `InMemoryBackend` |
-| `tm:signals` | `RedisStreamSink` / `RedisSignalSource` | `run_offline` (en memoria) o `ListSignalSource` |
+| `tm:signals` | `RedisSignalSink` / `RedisSignalSource` (`tm_agents.signals`) | `run_offline` (en memoria) o `ListSignalSource` |
 | `tm:decisions` | `RedisStreamSink` | `MemorySink` → `ScheduledDecisionSource` del engine |
 
 ```python
@@ -190,11 +236,19 @@ la posición de cada bot en el motor coincide con su libro virtual.
 
 ## Despliegue
 
-El servicio `agents` de `docker-compose.yml` corre las dos capas en el mismo proceso
-(`python -m tm_agents`), comunicadas por Redis igual que si estuvieran separadas. Con
-`ORCHESTRATOR_SHARED=0` o `ORCHESTRATOR_BOTS=0` se apaga una de las dos para correrlas en
-contenedores distintos. Variables: `REDIS_URL`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
-`TM_DATA_DIR`, `ORCHESTRATOR_SYMBOLS` y `FORECAST_URL` (Kronos).
+El servicio `agents` de `docker-compose.yml` corre las dos capas y el `ReferenceService` en el
+mismo proceso (`python -m tm_agents`), comunicados por Redis igual que si estuvieran
+separados. Cada pieza se apaga con su variable para correrla en otro contenedor:
+
+| Variable | Por omisión | Qué apaga con `0` | Necesita |
+|---|---|---|---|
+| `ORCHESTRATOR_SHARED` | `1` | capa compartida (publica `tm:signals`) | `REDIS_URL` |
+| `ORCHESTRATOR_BOTS` | `1` | capa por usuario (`tm:signals` → `tm:decisions`) | `REDIS_URL` |
+| `REFERENCE_SERVICE` | `1` | ledger de referencia y LifecycleMonitor | `REDIS_URL`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` |
+
+Otras variables: `TM_DATA_DIR`, `ORCHESTRATOR_SYMBOLS`, `ORCHESTRATOR_TICK_SECONDS` (1 s),
+`HEARTBEAT_INTERVAL` (10 s; también es la cadencia del `ReferenceService`) y `FORECAST_URL`
+(Kronos). Están en `.env.example`.
 
 ## Limitaciones conocidas
 

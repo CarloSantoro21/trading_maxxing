@@ -11,7 +11,7 @@ para cada símbolo:
 4. si la señal es ``long``, corre la SimulationGate con los niveles de la estrategia
    (:mod:`tm_agents.orchestrator.policy`) sobre el bootstrap histórico, combinado con las
    trayectorias de Kronos cuando aplica;
-5. publica un :class:`~tm_agents.orchestrator.events.SignalEvent` en ``tm:signals``.
+5. publica un :class:`~tm_agents.signals.SignalEvent` en ``tm:signals``.
 
 Nada de esto depende del usuario: el tamaño, el riesgo y las órdenes son de la capa por bot
 (:mod:`tm_agents.orchestrator.bot`). La misma clase corre en vivo (velas de
@@ -31,17 +31,17 @@ import pandas as pd
 from tm_shared.contracts import Direction, OrderSide, Timeframe
 
 from tm_agents.base import AgentContext, BaseAgent, registered_strategies
-from tm_agents.orchestrator.events import (
+from tm_agents.orchestrator.policy import SleevePolicy, policy_for
+from tm_agents.registry import StrategyRecord, StrategyRegistry
+from tm_agents.signals import (
     LIVE_STATES,
     SignalEvent,
+    SignalSink,
     StrategySnapshot,
     VetoInfo,
     catalog_from_records,
     event_id,
 )
-from tm_agents.orchestrator.policy import SleevePolicy, policy_for
-from tm_agents.orchestrator.streams import EventSink
-from tm_agents.registry import StrategyRecord, StrategyRegistry
 from tm_agents.simulation_gate import GateConfig, Levels, PathSet, SimulationGate
 
 log = logging.getLogger(__name__)
@@ -178,7 +178,7 @@ class SharedSignalLayer:
         self,
         registry: StrategyRegistry,
         bars: BarsProvider,
-        sink: EventSink,
+        sink: SignalSink,
         *,
         symbols: Sequence[str] = ("BTCUSDT", "ETHUSDT"),
         news: VetoProvider | None = None,

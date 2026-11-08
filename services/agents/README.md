@@ -6,6 +6,8 @@ Worker con la biblioteca de estrategias (KronosAgent, TrendAgent, IntradayMoment
 uv run --package tm-agents python -m tm_agents
 ```
 
+El worker corre en el mismo proceso la capa compartida del orquestador (publica `tm:signals`), los BotRunner (leen `tm:signals`, publican `tm:decisions`) y el `ReferenceService` (lee `tm:signals` con su propio cursor). Cada pieza se apaga con `ORCHESTRATOR_SHARED=0`, `ORCHESTRATOR_BOTS=0` o `REFERENCE_SERVICE=0`; todas necesitan `REDIS_URL` y el `ReferenceService` además `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY`. Sin `REDIS_URL` solo escribe el heartbeat. Ver `.env.example` y `docs/arquitectura/orquestador.md`.
+
 ## MonteCarloService (laboratorio)
 
 `tm_agents.montecarlo` remuestrea los retornos por trade de un backtest y aplica los criterios de aprobación (propuesta, sección 3.2, fase 1).
@@ -99,6 +101,20 @@ res.sleeves, res.unallocated, res.weights, res.excluded
 - `active` recibe su peso completo, `probation` la mitad (lo liberado pasa a las activas; si no hay activas queda en `unallocated`), y `research`, `lab`, `shadow` y `retired` reciben 0. También quedan en 0 las de volatilidad no positiva, Sharpe OOS ≤ 0 o drawdown p95 ≥ `max_drawdown` del perfil.
 - Un sleeve por debajo del nocional mínimo (10 USDT) se elimina y su capital se redistribuye. Los montos se redondean hacia abajo a 0.01 USDT y los centavos sobrantes se reparten por residuos mayores, así que `sum(sleeves) + unallocated == capital`.
 
+## Niveles de riesgo (`tm_agents.risk.RISK_TABLE`)
+
+Tabla única de la capa por usuario (propuesta, sección 3.4; issue #78). El usuario solo elige el nivel y su capital (mínimo `MIN_CAPITAL` = 500 USDT):
+
+| Nivel | Nombre | Drawdown máximo | Riesgo por operación | Exposición máxima |
+| --- | --- | --- | --- | --- |
+| 1 | Conservador | 10 % | 0.25 % | 20 % |
+| 2 | Prudente | 15 % | 0.5 % | 35 % |
+| 3 | Moderado | 20 % | 1 % | 50 % |
+| 4 | Decidido | 30 % | 1.5 % | 70 % |
+| 5 | Agresivo | 40 % | 2 % | 90 % |
+
+`RiskLimits.from_profile(risk_level)` toma los tres límites de la tabla (el `max_drawdown` explícito solo sirve para forzar otro valor en pruebas o backtests) y `get_risk_level(n).max_loss(capital)` da la caída máxima en USDT. La migración `20261109000100_profiles_risk_levels.sql` (que deriva `profiles.max_drawdown`) y `apps/web/src/lib/onboarding/schema.ts` copian la tabla; `tests/test_risk_levels_sync.py` falla si alguna se desalinea.
+
 ## SimulationGate (antes de cada operación)
 
 `tm_agents.simulation_gate` estima, para una decisión con SL y TP, P(TP primero), P(SL primero), P(abierta al final del horizonte) y el valor esperado en R, y bloquea si es ≤ 0.
@@ -160,3 +176,28 @@ registry.history("trend")  # [StrategyTransition(from_state, to_state, actor, ..
 - Si el estado cambió entre la lectura y la escritura (otro proceso llegó antes), se lanza `StaleStateError`; la base exige que `from_state` sea el estado actual.
 - La base vuelve a validar todo (checks y triggers), así que las reglas se respetan aunque otro servicio escriba directo con la llave `service_role`.
 - `PostgRESTBackend.from_env()` lee `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` (la llave `service_role` en JWT o la nueva `sb_secret_...`; ambas salen de `supabase status -o env`). Las pruebas usan `InMemoryBackend` y `respx`, sin red.
+
+## Portafolio de referencia y modo shadow (`tm_agents.reference`)
+
+Cada estrategia en `shadow`, `active` o `probation` tiene un **ledger de referencia** a nivel app (capa compartida, propuesta, sección 3.4). Corre a tamaño completo (100 % del sleeve, 100,000 USDT nominales repartidos por igual entre BTCUSDT y ETHUSDT) con las mismas señales que reciben los bots. El LifecycleMonitor juzga a la estrategia con este portafolio y no con el P&L de ningún usuario.
+
+```python
+from tm_agents.reference import REFERENCE_CHECKPOINT, PostgRESTReferenceStore, ReferenceService
+from tm_agents.registry import PostgRESTBackend, StrategyRegistry
+from tm_agents.signals import RedisSignalSource
+
+svc = ReferenceService(
+    StrategyRegistry(PostgRESTBackend.from_env()),
+    PostgRESTReferenceStore.from_env(),
+    RedisSignalSource(redis_client, checkpoint_key=REFERENCE_CHECKPOINT),
+)
+svc.run_once()  # el worker `python -m tm_agents` lo llama cada HEARTBEAT_INTERVAL (REFERENCE_SERVICE=0 lo apaga)
+```
+
+- **Señales** (`tm_agents.signals`, el único módulo de `tm:signals`): el servicio lee el mismo `SignalEvent` que publica la capa compartida del orquestador (#19) y que consumen los BotRunner (formato en `docs/arquitectura/orquestador.md`). Del evento usa `strategy`, `symbol`, `bar_close`, `price` (el cierre de la vela, precio del fill) y `signal`; ignora el veto, el gate y el `catalog`, porque mide a la estrategia y no a un usuario. Lee con su propio cursor (`RedisSignalSource` con `checkpoint_key=REFERENCE_CHECKPOINT`, `tm:reference:last_signal_id`), así que no le quita entradas a los bots, y tras un reinicio retoma desde la última señal confirmada. Para publicar a mano: `publish_signal(client, SignalEvent.from_signal(signal, price))`; en pruebas, `ListSignalSource`.
+- **Ejecución** (`ledger.py`): fill al cierre de la vela con 0.1 % de comisión por lado. Solo se opera cuando cambia la exposición objetivo: `long` = comprado y `flat` (o `short`, que en spot no se opera) = USDT. La exposición es la del laboratorio de cada estrategia: `trend` usa la `confidence` (fracción de canales Donchian en largo) y las demás invierten todo el sub-sleeve. Un trade va de posición 0 a posición 0 y su retorno es `pnl / costo`, igual que en el laboratorio. Una prueba compara el ledger con `simulate_sleeve` y obtiene el mismo equity y los mismos trades.
+- **Métricas** (comparables con las del laboratorio): equity, drawdown actual y máximo, retorno, CAGR (desde 30 días), Sharpe diario anualizado con 365 días, trades, win rate, comisiones y Sharpe de los últimos 30 trades. Junto a ellas van el Sharpe OOS y el p95/p99 del drawdown del laboratorio (`lab.drawdown_vs_p95`). Se guardan en `strategies.live_metrics` con el estado del ledger (`ledger`), para retomarlo tras un reinicio.
+- **LifecycleMonitor cableado**: `check` corre cada vez que se cierra un trade de referencia y una vez al día. Si propone una transición, se aplica con `StrategyRegistry.transition(..., actor="system")` y queda en el log (`LifecycleMonitor: 'trend' active -> probation (actor=system): ...`). Las promociones nunca son automáticas. La banda del Monte Carlo sale de `lab_report`, en el formato del walk-forward (`montecarlo.max_drawdown.p95/p99`) o en el plano (`max_drawdown_p95/p99`).
+- **Persistencia** (`store.py`): `reference_trades` (trades cerrados) y `reference_equity` (un punto por día UTC), con escrituras idempotentes. Si la base falla, los datos quedan pendientes y se reintentan en el siguiente ciclo; el checkpoint del stream no avanza hasta que todo se guardó.
+- **Días en shadow sin fallas** (página #58): `live_metrics.shadow` trae `started_at` (entrada a shadow, cuando empieza la corrida), `clean_since`, `days_clean`, `min_days` (7), `eligible_for_promotion`, `failures` y la última falla. Una falla es una señal que no se pudo aplicar (de un símbolo que el ledger no opera o un error al aplicarla) o un silencio de más de 3 velas de su timeframe. En la base, `GET /strategies?select=*,shadow_days_clean` lo calcula al momento.
+- **Shadow nunca envía órdenes**: este servicio no tiene cliente del exchange ni escribe en `tm:decisions`. Además, `TradingSleeveGuard` (`guard.py`) se le pasa a `AgenticStrategy` del motor: solo generan órdenes los sleeves cuya estrategia está en `active` o `probation`, y cualquier otro (shadow, desconocido o con el registro inaccesible) se rechaza. Hay pruebas de las dos cosas (`test_reference_service.py` y `services/engine/tests/test_shadow_guard.py`).

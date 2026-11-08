@@ -1,29 +1,72 @@
 """RiskAgent: tamaño de posición, límites y kill switch. 100 % determinista.
 
 Ninguna orden llega al motor sin pasar por `RiskAgent.evaluate`, que responde PASS o BLOCK
-con las razones. El riesgo por operación sale del nivel de riesgo del perfil (1 a 5) y la
-cantidad se calcula para que, si se toca el stop, la pérdida sea ese porcentaje del equity.
+con las razones. El riesgo por operación, la exposición máxima y el drawdown máximo salen
+del nivel de riesgo del perfil (1 a 5, :data:`RISK_TABLE`), y la cantidad se calcula para
+que, si se toca el stop, la pérdida sea ese porcentaje del equity.
 
 `RiskAgent.evaluate_target` es la variante del orquestador por bot (#19): la cantidad la
 propone el BotRunner (capital del sleeve * exposición del nivel * confianza) y aquí solo se
 valida y se recorta; se permite agregar a una posición abierta (los tramos del TrendAgent).
+La exposición del nivel (``tm_agents.orchestrator.exposure``) también lee el drawdown máximo
+de :data:`RISK_TABLE`.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from decimal import ROUND_DOWN, Decimal
+from types import MappingProxyType
 
 from tm_shared.contracts import OrderSide, Rationale, RiskVerdict, TradeDecision
 
-# Nivel de riesgo -> (% del equity arriesgado por operación, exposición máxima del portafolio)
-RISK_TABLE: dict[int, tuple[Decimal, Decimal]] = {
-    1: (Decimal("0.0025"), Decimal("0.20")),
-    2: (Decimal("0.005"), Decimal("0.35")),
-    3: (Decimal("0.01"), Decimal("0.50")),
-    4: (Decimal("0.015"), Decimal("0.70")),
-    5: (Decimal("0.02"), Decimal("0.90")),
-}
+#: Capital mínimo de un portafolio, en USDT de testnet (propuesta, sección 3.4).
+MIN_CAPITAL = Decimal("500")
+
+
+@dataclass(frozen=True)
+class RiskLevel:
+    """Un nivel de riesgo del perfil y los límites que se derivan de él.
+
+    Todas las proporciones son fracciones: ``Decimal("0.2")`` = 20 %.
+    """
+
+    level: int
+    name: str
+    #: Caída máxima tolerada desde el máximo de equity; al rebasarla salta el kill switch.
+    max_drawdown: Decimal
+    #: Porcentaje del equity que se pierde si una operación toca su stop.
+    risk_per_trade: Decimal
+    #: Nocional máximo de las posiciones abiertas como fracción del equity.
+    max_exposure: Decimal
+
+    def max_loss(self, capital: Decimal | float | int) -> Decimal:
+        """Caída máxima en USDT para un capital dado (lo que muestra el onboarding)."""
+        return Decimal(str(capital)) * self.max_drawdown
+
+
+# Tabla única de niveles de riesgo (propuesta, sección 3.4). La copian, y deben coincidir:
+#   * supabase/migrations/20261109000100_profiles_risk_levels.sql (private.risk_level_max_drawdown)
+#   * apps/web/src/lib/onboarding/schema.ts (RISK_TABLE)
+# tests/test_risk_levels_sync.py falla si alguna se desalinea.
+RISK_TABLE: Mapping[int, RiskLevel] = MappingProxyType(
+    {
+        1: RiskLevel(1, "Conservador", Decimal("0.10"), Decimal("0.0025"), Decimal("0.20")),
+        2: RiskLevel(2, "Prudente", Decimal("0.15"), Decimal("0.005"), Decimal("0.35")),
+        3: RiskLevel(3, "Moderado", Decimal("0.20"), Decimal("0.01"), Decimal("0.50")),
+        4: RiskLevel(4, "Decidido", Decimal("0.30"), Decimal("0.015"), Decimal("0.70")),
+        5: RiskLevel(5, "Agresivo", Decimal("0.40"), Decimal("0.02"), Decimal("0.90")),
+    }
+)
+
+
+def get_risk_level(level: int) -> RiskLevel:
+    """Nivel de riesgo del 1 al 5; cualquier otro valor es un ``ValueError``."""
+    try:
+        return RISK_TABLE[level]
+    except (KeyError, TypeError):
+        raise ValueError("risk_level debe estar entre 1 y 5") from None
 
 
 @dataclass(frozen=True)
@@ -39,17 +82,27 @@ class RiskLimits:
     allow_short: bool = False  # Binance Spot
 
     @classmethod
-    def from_profile(cls, risk_level: int, max_drawdown: float, **overrides: object) -> RiskLimits:
-        if risk_level not in RISK_TABLE:
-            raise ValueError("risk_level debe estar entre 1 y 5")
-        if not 0 < max_drawdown < 1:
+    def from_profile(
+        cls, risk_level: int, max_drawdown: float | None = None, **overrides: object
+    ) -> RiskLimits:
+        """Límites del RiskAgent a partir del nivel de riesgo del perfil.
+
+        El drawdown máximo sale de :data:`RISK_TABLE` (igual que ``profiles.max_drawdown``,
+        que la base deriva del nivel). ``max_drawdown`` solo existe para forzar otro valor,
+        p. ej. en pruebas o backtests; debe estar en (0, 1).
+        """
+        spec = get_risk_level(risk_level)
+        if max_drawdown is None:
+            drawdown = spec.max_drawdown
+        elif 0 < max_drawdown < 1:
+            drawdown = Decimal(str(max_drawdown))
+        else:
             raise ValueError("max_drawdown debe estar entre 0 y 1")
-        per_trade, exposure = RISK_TABLE[risk_level]
         limits = cls(
-            risk_per_trade=per_trade,
-            max_exposure=exposure,
-            max_drawdown=Decimal(str(max_drawdown)),
-            daily_loss_limit=per_trade * 3,
+            risk_per_trade=spec.risk_per_trade,
+            max_exposure=spec.max_exposure,
+            max_drawdown=drawdown,
+            daily_loss_limit=spec.risk_per_trade * 3,
         )
         return replace(limits, **overrides) if overrides else limits
 

@@ -59,11 +59,11 @@ from tm_shared.contracts import (
 )
 
 from tm_agents.allocator import AllocationResult, PortfolioAllocator
-from tm_agents.orchestrator.events import SignalEvent, StrategySnapshot
 from tm_agents.orchestrator.exposure import exposure_for_level, sensitivity_for
 from tm_agents.orchestrator.policy import sell_levels
 from tm_agents.orchestrator.streams import DecisionSink
 from tm_agents.risk import Portfolio, RiskAgent, RiskLimits, TradeProposal
+from tm_agents.signals import SignalEvent, StrategySnapshot
 from tm_agents.strategy_stats import StrategyState
 
 log = logging.getLogger(__name__)

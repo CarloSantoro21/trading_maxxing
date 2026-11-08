@@ -15,27 +15,56 @@ import { OnboardingSaveError, saveOnboarding } from "@/lib/onboarding/repository
 import {
   EMPTY_FORM,
   errorsForStep,
-  HORIZON_LABELS,
-  HORIZONS,
+  formatUsd,
+  isRiskLevel,
   MAX_GOALS,
-  RISK_LABELS,
+  maxLossUsd,
+  MIN_CAPITAL,
+  parseCapital,
   RISK_LEVELS,
+  RISK_TABLE,
   STEPS,
-  SYMBOL_LABELS,
-  SYMBOLS,
   todayIso,
   validateOnboarding,
   type FieldErrors,
   type GoalFormState,
   type OnboardingFormState,
-  type SupportedSymbol,
+  type RiskLevel,
 } from "@/lib/onboarding/schema";
 
-const HORIZON_HELP: Record<string, string> = {
-  short: "Días a semanas. Estrategias más activas.",
-  medium: "Semanas a meses.",
-  long: "Meses o más. Menos operaciones.",
-};
+/** Qué significa el nivel elegido, en dólares, para el capital capturado. */
+function RiskExplanation({ id, capital, level }: { id: string; capital: number | null; level: RiskLevel }) {
+  const spec = RISK_TABLE[level];
+  const base = capital ?? MIN_CAPITAL;
+  const perTrade = Math.round(base * spec.riskPerTradePct) / 100;
+  const exposure = Math.round(base * spec.maxExposurePct) / 100;
+  return (
+    <section
+      id={id}
+      aria-live="polite"
+      className="rounded-md border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-950 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-100"
+    >
+      <h3 className="font-semibold">
+        Nivel {level} · {spec.name}
+      </h3>
+      <p className="mt-1">{spec.summary}</p>
+      <ul className="mt-2 list-disc space-y-1 pl-5">
+        <li>
+          {capital === null ? `Por ejemplo, con ${formatUsd(base)} USDT: ` : `Con tus ${formatUsd(base)} USDT: `}
+          si la cuenta llega a caer <strong>{formatUsd(maxLossUsd(base, level))} USDT</strong> (
+          {spec.maxDrawdownPct} %) desde su punto más alto, el bot vende todo y se detiene.
+        </li>
+        <li>
+          En cada operación se arriesgan como máximo {formatUsd(perTrade)} USDT ({spec.riskPerTradePct} %).
+        </li>
+        <li>
+          Nunca hay más de {formatUsd(exposure)} USDT ({spec.maxExposurePct} %) invertidos a la vez; el resto
+          se queda en USDT.
+        </li>
+      </ul>
+    </section>
+  );
+}
 
 export function OnboardingWizard({
   supabase,
@@ -75,15 +104,6 @@ export function OnboardingWizard({
     setForm((f) => ({
       ...f,
       goals: f.goals.map((g, i) => (i === index ? { ...g, ...patch } : g)),
-    }));
-  }
-
-  function toggleInstrument(symbol: SupportedSymbol, checked: boolean) {
-    setForm((f) => ({
-      ...f,
-      instruments: checked
-        ? SYMBOLS.filter((s) => s === symbol || f.instruments.includes(s))
-        : f.instruments.filter((s) => s !== symbol),
     }));
   }
 
@@ -156,11 +176,14 @@ export function OnboardingWizard({
     [errors[key] ? `${id}-${key}-error` : null, help ?? null].filter(Boolean).join(" ") || undefined;
 
   const current = STEPS[step];
+  const capital = parseCapital(form.capital);
+  const level = Number(form.riskLevel);
+  const selectedLevel: RiskLevel | null = isRiskLevel(level) ? level : null;
 
   return (
     <div className="space-y-6">
       <nav aria-label="Progreso del onboarding">
-        <ol className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <ol className="grid grid-cols-3 gap-2">
           {STEPS.map((s, i) => (
             <li
               key={s.id}
@@ -192,137 +215,74 @@ export function OnboardingWizard({
 
         <div className="mt-6 space-y-6">
           {current.id === "capital" && (
-            <>
-              <div>
-                <label htmlFor={`${id}-capital`} className={labelClass}>
-                  Capital inicial (USDT)
-                </label>
-                <input
-                  id={`${id}-capital`}
-                  name="capital"
-                  type="number"
-                  inputMode="decimal"
-                  min={0}
-                  step="any"
-                  value={form.capital}
-                  onChange={(e) => update("capital", e.target.value)}
-                  aria-invalid={errors.capital ? true : undefined}
-                  aria-describedby={describedBy("capital", `${id}-capital-help`)}
-                  className={`${inputClass} mt-1`}
-                />
-                <p id={`${id}-capital-help`} className={helpClass}>
-                  Monto de la cuenta de Binance Testnet que operará la plataforma.
-                </p>
-                {fieldError("capital")}
-              </div>
-
-              <fieldset aria-describedby={describedBy("horizon")}>
-                <legend className={labelClass}>Horizonte de inversión</legend>
-                <div className="mt-2 grid gap-2 sm:grid-cols-3">
-                  {HORIZONS.map((h) => (
-                    <label
-                      key={h}
-                      className="flex cursor-pointer gap-2 rounded-md border border-neutral-300 p-3 has-[:checked]:border-emerald-700 has-[:checked]:bg-emerald-50 dark:border-neutral-700 dark:has-[:checked]:bg-emerald-950"
-                    >
-                      <input
-                        type="radio"
-                        name="horizon"
-                        value={h}
-                        checked={form.horizon === h}
-                        onChange={() => update("horizon", h)}
-                        className="mt-1 accent-emerald-700"
-                      />
-                      <span>
-                        <span className="block font-medium">{HORIZON_LABELS[h]}</span>
-                        <span className="block text-xs text-neutral-500">{HORIZON_HELP[h]}</span>
-                      </span>
-                    </label>
-                  ))}
-                </div>
-                {fieldError("horizon")}
-              </fieldset>
-            </>
+            <div>
+              <label htmlFor={`${id}-capital`} className={labelClass}>
+                Capital inicial (USDT)
+              </label>
+              <input
+                id={`${id}-capital`}
+                name="capital"
+                type="number"
+                inputMode="decimal"
+                min={MIN_CAPITAL}
+                step="any"
+                value={form.capital}
+                onChange={(e) => update("capital", e.target.value)}
+                aria-invalid={errors.capital ? true : undefined}
+                aria-describedby={describedBy("capital", `${id}-capital-help`)}
+                className={`${inputClass} mt-1`}
+              />
+              <p id={`${id}-capital-help`} className={helpClass}>
+                Mínimo {MIN_CAPITAL} USDT de Binance Testnet. La plataforma opera BTC/USDT y ETH/USDT con
+                todas las estrategias activas; tú solo eliges cuánto y con cuánto riesgo.
+              </p>
+              {fieldError("capital")}
+            </div>
           )}
 
           {current.id === "risk" && (
             <>
-              <fieldset aria-describedby={describedBy("riskLevel")}>
-                <legend className={labelClass}>Nivel de riesgo (1 a 5)</legend>
-                <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-5">
-                  {RISK_LEVELS.map((level) => (
-                    <label
-                      key={level}
-                      className="flex cursor-pointer items-center gap-2 rounded-md border border-neutral-300 p-3 has-[:checked]:border-emerald-700 has-[:checked]:bg-emerald-50 sm:flex-col sm:text-center dark:border-neutral-700 dark:has-[:checked]:bg-emerald-950"
-                    >
-                      <input
-                        type="radio"
-                        name="riskLevel"
-                        value={level}
-                        checked={form.riskLevel === String(level)}
-                        onChange={() => update("riskLevel", String(level))}
-                        className="accent-emerald-700"
-                      />
-                      <span className="text-sm">
-                        <span className="font-semibold">{level}</span> · {RISK_LABELS[level]}
-                      </span>
-                    </label>
-                  ))}
+              <fieldset aria-describedby={describedBy("riskLevel", `${id}-risk-help`)}>
+                <legend className={labelClass}>¿Cuánto te puede caer la cuenta antes de detenerse?</legend>
+                <p id={`${id}-risk-help`} className={helpClass}>
+                  Cada nivel fija una caída máxima. Si la cuenta la alcanza, el bot vende todo a USDT y se
+                  apaga para que no pierdas más.
+                </p>
+                <div className="mt-2 grid gap-2">
+                  {RISK_LEVELS.map((lvl) => {
+                    const spec = RISK_TABLE[lvl];
+                    return (
+                      <label
+                        key={lvl}
+                        className="flex cursor-pointer items-start gap-3 rounded-md border border-neutral-300 p-3 has-[:checked]:border-emerald-700 has-[:checked]:bg-emerald-50 dark:border-neutral-700 dark:has-[:checked]:bg-emerald-950"
+                      >
+                        <input
+                          type="radio"
+                          name="riskLevel"
+                          value={lvl}
+                          checked={form.riskLevel === String(lvl)}
+                          onChange={() => update("riskLevel", String(lvl))}
+                          className="mt-1 accent-emerald-700"
+                        />
+                        <span className="text-sm">
+                          <span className="font-semibold">
+                            {lvl} · {spec.name}
+                          </span>
+                          <span className="block text-neutral-600 dark:text-neutral-300">
+                            Caída máxima {spec.maxDrawdownPct} %
+                            {capital !== null && ` (${formatUsd(maxLossUsd(capital, lvl))} USDT)`}
+                          </span>
+                        </span>
+                      </label>
+                    );
+                  })}
                 </div>
                 {fieldError("riskLevel")}
               </fieldset>
-
-              <div>
-                <label htmlFor={`${id}-dd`} className={labelClass}>
-                  Drawdown máximo (%)
-                </label>
-                <input
-                  id={`${id}-dd`}
-                  name="maxDrawdownPct"
-                  type="number"
-                  inputMode="decimal"
-                  min={0}
-                  max={100}
-                  step="any"
-                  value={form.maxDrawdownPct}
-                  onChange={(e) => update("maxDrawdownPct", e.target.value)}
-                  aria-invalid={errors.maxDrawdownPct ? true : undefined}
-                  aria-describedby={describedBy("maxDrawdownPct", `${id}-dd-help`)}
-                  className={`${inputClass} mt-1`}
-                />
-                <p id={`${id}-dd-help`} className={helpClass}>
-                  Si la cuenta cae este porcentaje desde su máximo, el kill switch detiene el bot.
-                </p>
-                {fieldError("maxDrawdownPct")}
-              </div>
+              {selectedLevel !== null && (
+                <RiskExplanation id={`${id}-risk-explanation`} capital={capital} level={selectedLevel} />
+              )}
             </>
-          )}
-
-          {current.id === "instruments" && (
-            <fieldset aria-describedby={describedBy("instruments", `${id}-inst-help`)}>
-              <legend className={labelClass}>Instrumentos a operar</legend>
-              <p id={`${id}-inst-help`} className={helpClass}>
-                Solo spot: se compra o se queda en USDT, nunca en corto.
-              </p>
-              <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                {SYMBOLS.map((s) => (
-                  <label
-                    key={s}
-                    className="flex cursor-pointer items-center gap-2 rounded-md border border-neutral-300 p-3 has-[:checked]:border-emerald-700 has-[:checked]:bg-emerald-50 dark:border-neutral-700 dark:has-[:checked]:bg-emerald-950"
-                  >
-                    <input
-                      type="checkbox"
-                      name="instruments"
-                      value={s}
-                      checked={form.instruments.includes(s)}
-                      onChange={(e) => toggleInstrument(s, e.target.checked)}
-                      className="accent-emerald-700"
-                    />
-                    <span className="font-medium">{SYMBOL_LABELS[s]}</span>
-                  </label>
-                ))}
-              </div>
-              {fieldError("instruments")}
-            </fieldset>
           )}
 
           {current.id === "goals" && (
@@ -401,17 +361,18 @@ export function OnboardingWizard({
                 </h3>
                 <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
                   <dt className="text-neutral-500">Capital</dt>
-                  <dd>{form.capital ? `${form.capital} USDT` : "—"}</dd>
-                  <dt className="text-neutral-500">Horizonte</dt>
-                  <dd>{form.horizon ? HORIZON_LABELS[form.horizon] : "—"}</dd>
+                  <dd>{capital !== null ? `${formatUsd(capital)} USDT` : "—"}</dd>
                   <dt className="text-neutral-500">Riesgo</dt>
+                  <dd>{selectedLevel !== null ? `${selectedLevel} · ${RISK_TABLE[selectedLevel].name}` : "—"}</dd>
+                  <dt className="text-neutral-500">Caída máxima</dt>
                   <dd>
-                    {form.riskLevel} · {RISK_LABELS[Number(form.riskLevel)] ?? "—"}
+                    {selectedLevel !== null
+                      ? `${RISK_TABLE[selectedLevel].maxDrawdownPct} %` +
+                        (capital !== null ? ` (${formatUsd(maxLossUsd(capital, selectedLevel))} USDT)` : "")
+                      : "—"}
                   </dd>
-                  <dt className="text-neutral-500">Drawdown máximo</dt>
-                  <dd>{form.maxDrawdownPct ? `${form.maxDrawdownPct} %` : "—"}</dd>
                   <dt className="text-neutral-500">Instrumentos</dt>
-                  <dd>{form.instruments.map((s) => SYMBOL_LABELS[s]).join(", ") || "—"}</dd>
+                  <dd>BTC/USDT y ETH/USDT</dd>
                 </dl>
               </section>
             </>

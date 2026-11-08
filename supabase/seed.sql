@@ -1,5 +1,5 @@
 -- Datos de prueba para desarrollo local. Se cargan con `supabase db reset`.
--- Usuario demo: demo@trading-maxxing.local / demo1234 (solo local, nunca en la nube).
+-- Usuario demo: demo@trading-maxxing.local / demo1234 (solo local, nunca en la nube). Es admin.
 
 -- Usuario de Supabase Auth con correo confirmado.
 -- Las columnas de tokens van como cadena vacía porque GoTrue no acepta NULL en ellas.
@@ -39,12 +39,17 @@ insert into auth.identities (
   now()
 );
 
--- Perfil: mediano plazo, riesgo 3, 10,000 USDT, drawdown máximo de 15 %.
-insert into public.profiles (id, user_id, horizon, risk_level, capital, max_drawdown, instruments)
+-- Rol: el usuario demo es admin (promueve y retira estrategias, da de alta usuarios).
+insert into public.app_roles (user_id, role)
+values ('11111111-1111-1111-1111-111111111111', 'admin');
+
+-- Perfil: riesgo 3 (moderado) y 10,000 USDT. El trigger deriva el drawdown máximo (20 %);
+-- horizon e instruments toman sus valores por defecto (medium; BTCUSDT y ETHUSDT).
+insert into public.profiles (id, user_id, risk_level, capital)
 values (
   '22222222-2222-2222-2222-222222222222',
   '11111111-1111-1111-1111-111111111111',
-  'medium', 3, 10000, 0.15, array['BTCUSDT', 'ETHUSDT']
+  3, 10000
 );
 
 -- Meta: 12 % en un año.
