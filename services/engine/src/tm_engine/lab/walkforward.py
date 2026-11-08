@@ -10,9 +10,14 @@ Para cada tramo (12 meses in-sample + 3 out-of-sample, avanzando 3 meses):
 La corrida out-of-sample se ejecuta en Nautilus (`run_backtest`, comisión de 0.1 % por lado)
 y en el simulador; el reporte usa la de Nautilus y registra la diferencia entre las dos.
 Al final se corre el Monte Carlo del drawdown (block bootstrap de los retornos diarios) y los
-criterios de aprobación (`tm_agents.montecarlo.evaluate`).
+criterios de aprobación (`tm_agents.montecarlo.evaluate`). El criterio usa el drawdown p95 en
+un horizonte de **1 año** (simulaciones de 365 retornos diarios); el del horizonte completo
+del backtest se reporta solo como referencia.
 
-Las velas a partir de `holdout_start` (2025) no se cargan salvo con `include_holdout=True`.
+Con lotes (`trend_vol`), los trades se cuentan por periodo y no por lote: los lotes de un
+mismo periodo que se traslapan en el tiempo son una sola operación.
+
+Las velas a partir de `holdout_start` (2026) no se cargan salvo con `include_holdout=True`.
 """
 
 from __future__ import annotations
@@ -28,9 +33,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from tm_agents.montecarlo import ApprovalCriteria, bootstrap, evaluate
-from tm_agents.montecarlo.report import build_report
-from tm_agents.montecarlo.resampling import bootstrap_paths
+from tm_agents.montecarlo import ONE_YEAR_DAYS, ApprovalCriteria, bootstrap, evaluate
 from tm_marketdata.storage import ParquetStore
 
 from tm_engine.lab.config import (
@@ -137,7 +140,65 @@ class WalkForwardReport:
 
 
 def _sleeve_name(adapter: StrategyAdapter, k: int) -> str:
-    return adapter.name if adapter.n_sub_sleeves == 1 else f"{adapter.name}_{k}"
+    if adapter.n_sub_sleeves == 1:
+        return adapter.name
+    lots = getattr(adapter, "lots", 1)
+    return f"{adapter.name}_{k}" if lots == 1 else f"{adapter.name}_{k // lots}_{k % lots}"
+
+
+def _group_of(sleeve: str, lots: int) -> str:
+    """Sub-sleeve (periodo) al que pertenece un lote: `trend_vol_2_7` -> `trend_vol_2`."""
+    return sleeve if lots == 1 else sleeve.rsplit("_", 1)[0]
+
+
+def merge_lot_trades(trades: Sequence[SimTrade], lots: int) -> list[SimTrade]:
+    """Une los trades de los lotes de un mismo periodo que se traslapan en el tiempo.
+
+    Con `lots == 1` devuelve los trades tal cual. Una operación empieza cuando se compra el
+    primer lote de un periodo sin posición y termina cuando se vende el último.
+    """
+    if lots == 1:
+        return list(trades)
+    groups: dict[tuple[str, str], list[SimTrade]] = {}
+    for t in trades:
+        groups.setdefault((_group_of(t.sleeve, lots), t.symbol), []).append(t)
+    merged: list[SimTrade] = []
+    for (group, symbol), items in groups.items():
+        items.sort(key=lambda t: t.entry_ts)
+        block: list[SimTrade] = []
+        end: pd.Timestamp | None = None
+        for t in items:
+            if block and end is not None and t.entry_ts >= end:
+                merged.append(_merge(group, symbol, block))
+                block = []
+            if not block:
+                end = t.exit_ts
+            elif end is not None:
+                end = None if t.exit_ts is None else max(end, t.exit_ts)
+            block.append(t)
+        merged.append(_merge(group, symbol, block))
+    return sorted(merged, key=lambda t: (t.entry_ts, t.symbol, t.sleeve))
+
+
+def _merge(group: str, symbol: str, block: Sequence[SimTrade]) -> SimTrade:
+    qty = sum(t.quantity for t in block)
+    cost = sum(t.quantity * t.entry_price for t in block)
+    exit_value = sum(t.quantity * t.exit_price for t in block)
+    pnl = sum(t.pnl for t in block)
+    is_open = any(t.exit_ts is None for t in block)
+    exits = [t.exit_ts for t in block if t.exit_ts is not None]
+    return SimTrade(
+        sleeve=group,
+        symbol=symbol,
+        entry_ts=block[0].entry_ts,
+        exit_ts=None if is_open else max(exits),
+        quantity=qty,
+        entry_price=cost / qty,
+        exit_price=exit_value / qty,
+        commissions=sum(t.commissions for t in block),
+        pnl=pnl,
+        ret=pnl / cost if cost else 0.0,
+    )
 
 
 def _simulate(
@@ -308,7 +369,8 @@ def walk_forward(
     timings["out_of_sample"] = time.perf_counter() - t0 - sum(timings.values())
 
     equity = daily_equity(runs, oos_start, oos_end)
-    trades = [t for r in runs for t in r.trades]
+    lots = getattr(adapter, "lots", 1)
+    trades = merge_lot_trades([t for r in runs for t in r.trades], lots)
     orders = [o for r in runs for o in r.orders]
     hold_runs = buy_and_hold(
         dict(frames), capital=config.capital, fee=config.fee, period=adapter.period,
@@ -345,7 +407,7 @@ def walk_forward(
         per_symbol[symbol] = {
             "strategy": _stats(symbol_equity[symbol]),
             "hold": _stats(symbol_hold[symbol]),
-            "trades": sum(len(r.trades) for r in mine),
+            "trades": sum(1 for t in trades if t.symbol == symbol),
             "commissions": float(sum(r.commissions for r in mine)),
         }
 
@@ -368,20 +430,23 @@ def walk_forward(
         }
     )
 
-    # 3) Monte Carlo del drawdown sobre los retornos diarios y criterios de aprobación.
+    # 3) Monte Carlo del drawdown sobre los retornos diarios y criterios de aprobación. El
+    # criterio usa simulaciones de un año (365 días); el horizonte completo es referencia.
     rets = daily_returns(equity).to_numpy()
     block = min(config.block_size, len(rets))
     mc = bootstrap(
+        rets, config.n_simulations, seed=config.seed, block_size=block, initial_capital=1.0,
+        horizon=ONE_YEAR_DAYS,
+    )  # fmt: skip
+    full = bootstrap(
         rets, config.n_simulations, seed=config.seed, block_size=block, initial_capital=1.0
     )
     sharpe = aggregate["sharpe"] if aggregate["sharpe"] is not None else float("nan")
-    criteria = ApprovalCriteria(max_drawdown_p95=config.max_drawdown)
+    criteria = ApprovalCriteria(
+        max_drawdown_p95=config.max_drawdown, drawdown_horizon=ONE_YEAR_DAYS
+    )
     verdict = evaluate(mc, sharpe, n_trades, criteria, oos_years=oos_years)
-    # Referencia: el mismo bootstrap con horizonte de un año (el criterio habla de "un año
-    # malo"); el veredicto usa el horizonte completo, que es más exigente.
-    one_year = _one_year_drawdown(rets, config, block)
     montecarlo = {
-        "max_drawdown_1y": one_year,
         "method": mc.method,
         "n_simulations": mc.n_simulations,
         "block_size": mc.block_size,
@@ -390,6 +455,12 @@ def walk_forward(
         "final_return": _summary(mc.final_return),
         "probability_of_ruin": mc.probability_of_ruin,
         "ruin_level": mc.ruin_level,
+        "full_horizon": {
+            "horizon_days": full.n_trades,
+            "max_drawdown": _summary(full.max_drawdown),
+            "final_return": _summary(full.final_return),
+            "probability_of_ruin": full.probability_of_ruin,
+        },
     }
     approval = {
         "approved": verdict.approved,
@@ -399,6 +470,7 @@ def walk_forward(
             "min_trades": criteria.min_trades,
             "low_freq_min_trades": criteria.low_freq_min_trades,
             "low_freq_min_oos_years": criteria.low_freq_min_oos_years,
+            "drawdown_horizon_days": criteria.drawdown_horizon,
         },
         "checks": [
             {
@@ -439,22 +511,6 @@ def walk_forward(
     )
 
 
-def _one_year_drawdown(
-    rets: np.ndarray, config: WalkForwardConfig, block: int
-) -> dict[str, float] | None:
-    """Drawdown máximo simulado en horizontes de 365 días (block bootstrap circular)."""
-    horizon = 365
-    if len(rets) <= horizon:
-        return None
-    rng = np.random.default_rng(config.seed)
-    paths = bootstrap_paths(rets, config.n_simulations, rng, block)[:, :horizon].copy()
-    mc = build_report(
-        paths, method="bootstrap", initial_capital=1.0, ruin_level=0.5, block_size=block,
-        trades_per_year=None,
-    )  # fmt: skip
-    return _summary(mc.max_drawdown)
-
-
 def exposure_by_risk_level(p95: float) -> dict[int, float]:
     """Fracción del sleeve que invierte cada nivel: `min(1, drawdown del nivel / p95)`."""
     if not math.isfinite(p95) or p95 <= 0:
@@ -473,7 +529,8 @@ def _exposure(
     start: pd.Timestamp,
     end: pd.Timestamp,
 ) -> float:
-    """Fracción promedio del tiempo con posición (promedio sobre sub-sleeves y símbolos)."""
+    """Exposición media: fracción del tiempo con posición, promediada sobre sub-sleeves (y
+    lotes) y símbolos. Con lotes es la fracción media del capital invertida."""
     span = (end - start) / pd.Timedelta(days=1)
     if not runs or span <= 0:
         return 0.0

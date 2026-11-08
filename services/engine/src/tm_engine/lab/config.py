@@ -12,9 +12,11 @@ Engine = Literal["nautilus", "vector"]
 
 DATA_START = "2020-01-01"
 OOS_START = "2021-01-01"
-OOS_END = "2025-01-01"  # exclusivo: el último tramo es 2024-T4
-HOLDOUT_START = "2025-01-01"
-HOLDOUT_END = "2026-01-01"
+# 2025 pasó a ser out-of-sample (se revisó en #84 y dejó de ser examen final); el holdout
+# protegido es 2026, de enero a octubre (aprobado el 2026-11-07).
+OOS_END = "2026-01-01"  # exclusivo: el último tramo es 2025-T4
+HOLDOUT_START = "2026-01-01"
+HOLDOUT_END = "2026-11-01"
 # Techo global del drawdown p95 a tamaño completo (el del nivel de riesgo 5); cada usuario
 # invierte después la fracción min(1, drawdown de su nivel / p95). Ver criterios-de-aprobacion.md.
 GLOBAL_MAX_DRAWDOWN = 0.40
@@ -23,7 +25,7 @@ RISK_LEVEL_DRAWDOWN = {1: 0.10, 2: 0.15, 3: 0.20, 4: 0.30, 5: 0.40}
 
 
 class HoldoutError(RuntimeError):
-    """Se pidió tocar el holdout (2025) sin la bandera explícita `include_holdout`."""
+    """Se pidió tocar el holdout (2026) sin la bandera explícita `include_holdout`."""
 
 
 def utc(value: str | pd.Timestamp) -> pd.Timestamp:
@@ -117,7 +119,7 @@ class WalkForwardConfig:
         return replace(self, oos_start=self.holdout_start, oos_end=end, include_holdout=True)
 
     def windows(self) -> list[Window]:
-        """Tramos del walk-forward; con los valores por defecto son 16 (2021-T1 a 2024-T4)."""
+        """Tramos del walk-forward; con los valores por defecto son 20 (2021-T1 a 2025-T4)."""
         start, end = utc(self.oos_start), utc(self.oos_end)
         if not self.include_holdout and end > utc(self.holdout_start):
             raise HoldoutError(

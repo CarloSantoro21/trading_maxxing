@@ -5,7 +5,7 @@ Antes de recibir capital, una estrategia tiene que pasar tres pruebas en el labo
 | # | Criterio | Pregunta que responde |
 |---|---|---|
 | 1 | **Sharpe out-of-sample > 0.5** | ¿Gana de forma consistente, o solo con sustos enormes? |
-| 2 | **Drawdown p95 < techo global de 40 %** | En un año malo pero realista, ¿cuánto cae? Cada usuario invierte la fracción que cabe en su tolerancia |
+| 2 | **Drawdown p95 a 1 año < techo global de 40 %** | En un año malo pero realista, ¿cuánto cae? Cada usuario invierte la fracción que cabe en su tolerancia |
 | 3 | **Suficientes trades** | ¿El resultado es estadísticamente creíble o pudo ser suerte? |
 
 Los tres se calculan **solo con datos que la estrategia no vio al ajustarse** (out-of-sample) e **incluyen comisiones**: 0.1 % por lado en Binance Spot.
@@ -29,17 +29,20 @@ En lugar de un solo corte, se repite el examen muchas veces:
 | 2020-04 → 2021-03 | 2021 abr–jun |
 | 2020-07 → 2021-06 | 2021 jul–sep |
 | … | … |
-| 2023-10 → 2024-09 | 2024 oct–dic |
+| 2024-10 → 2025-09 | 2025 oct–dic |
 
-Son **16 tramos de prueba**. Pegados forman **4 años (2021–2024) de resultados en examen**, que cruzan regímenes muy distintos:
+Son **20 tramos de prueba**. Pegados forman **5 años (2021–2025) de resultados en examen**, que cruzan regímenes muy distintos:
 - 2021: alcista
 - 2022: bajista; BTC cayó ~77 % desde su máximo
 - 2023: recuperación
 - 2024: alcista
+- 2025: el año que antes era el holdout
 
-Al final, **2025 es el examen final** (*holdout*): se corre una sola vez y no se toca antes.
+Al final, **2026 (enero a octubre) es el examen final** (*holdout*): se corre una sola vez y no se toca antes.
 
-> Kronos tiene su propio calendario. Sus datos de preentrenamiento llegan a junio de 2024, así que no se evalúa antes. Solo se ajustan sus umbrales, con julio–diciembre de 2024, y 2025 es su holdout.
+> **Cambio aprobado el 7 de noviembre de 2026.** El holdout original era 2025, pero se revisó en la investigación de estrategias nuevas (#84) y dejó de ser un examen limpio. Por eso 2025 pasó a ser out-of-sample (cuatro tramos más del walk-forward) y el holdout protegido es 2026. El laboratorio no carga velas de 2026 sin `--holdout`.
+
+> Kronos tiene su propio calendario. Sus datos de preentrenamiento llegan a junio de 2024, así que no se evalúa antes. Solo se ajustan sus umbrales, con julio–diciembre de 2024; 2025 es su out-of-sample y 2026 su holdout.
 
 ### Comprar y mantener
 Cada reporte se compara contra **comprar BTC o ETH y no hacer nada** en el mismo periodo. Si una estrategia no le gana a eso en Sharpe, no vale la pena operarla.
@@ -79,7 +82,7 @@ Terminan igual, pero con B pasas meses viendo pérdidas grandes. Además, es muc
 | ≥ 2 en un backtest | Sospechoso: probablemente sobreajuste o un error |
 
 ### Por qué 0.5
-Con comisiones incluidas y medido solo out-of-sample, un Sharpe de 0.5 sostenido en 4 años con regímenes distintos ya es una ventaja real. Pedir más dejaría fuera casi todo; pedir menos dejaría pasar ruido.
+Con comisiones incluidas y medido solo out-of-sample, un Sharpe de 0.5 sostenido en 5 años con regímenes distintos ya es una ventaja real. Pedir más dejaría fuera casi todo; pedir menos dejaría pasar ruido.
 
 ---
 
@@ -92,23 +95,26 @@ La **peor caída desde un máximo**. Si tu cuenta llegó a $12,000 y luego bajó
 El backtest muestra **un solo orden** de las operaciones. Si los 5 peores trades hubieran caído seguidos, la caída habría sido mucho peor. Ese orden fue suerte.
 
 ### Monte Carlo y el p95
-1. Se toman los resultados de la estrategia y se **revuelven 10,000 veces**.
-2. Cada orden distinto produce un drawdown distinto: salen 10,000 drawdowns posibles.
+1. Se toman los retornos diarios de la estrategia y se **remuestrean 10,000 veces** en bloques.
+2. Cada simulación dura **un año (365 días)** y produce un drawdown distinto: salen 10,000 drawdowns posibles.
 3. El **p95** es el valor que el 95 % de esas simulaciones **no rebasa**. Es "un año malo, pero realista". El **p99** es "un año muy malo".
+
+### Horizonte: un año (aprobado el 7 de noviembre de 2026)
+El drawdown depende del tiempo: en 5 años caben más rachas malas que en uno. Si cada simulación durara lo mismo que el backtest, el p95 crecería con cada año de datos y una estrategia se vería más riesgosa solo por tener más historia. Por eso **el criterio mide el drawdown p95 en simulaciones de 365 días** (`ApprovalCriteria(drawdown_horizon=365)` y `bootstrap(..., horizon=365)`). El reporte sigue dando el p95 en el horizonte completo del backtest, solo como referencia.
 
 ### El criterio
 Como el laboratorio es **uno solo para todos los usuarios**, el criterio se aplica en dos niveles:
 
-1. **Aprobación global:** el p95 a tamaño completo debe quedar por debajo de un **techo de 40 %** (el drawdown del nivel de riesgo más agresivo). Si no, la estrategia se rechaza para todos, aunque gane dinero.
+1. **Aprobación global:** el p95 a 1 año y a tamaño completo debe quedar por debajo de un **techo de 40 %** (el drawdown del nivel de riesgo más agresivo). Si no, la estrategia se rechaza para todos, aunque gane dinero.
 2. **Por usuario:** cada portafolio invierte solo la fracción de cada sleeve que cabe en su tolerancia: `exposición = min(1, drawdown máximo de su nivel ÷ p95 de la estrategia)`. Ejemplo: si la estrategia tiene un p95 de 28 % y el usuario es nivel 3 (20 %), invierte 20/28 ≈ 71 % de ese sleeve y el resto queda en USDT. En spot el drawdown escala casi en proporción a lo invertido.
 
 ### ¿Depende de cuánto duran los trades? Sí
 **Lo que dura cada trade importa, y mucho.** Hay dos efectos:
 
 1. **Caídas dentro del trade.** Si solo se revuelven los resultados finales de cada trade, se pierde lo que pasó *mientras* estaba abierto. Un trade de 4 meses puede bajar 20 % antes de recuperarse y cerrar en +10 %. El usuario sí vivió esa caída de 20 %, aunque el resultado final diga +10 %.
-2. **El tiempo.** Una estrategia con 5 trades al año y otra con 500 no acumulan el riesgo igual. El drawdown hay que medirlo sobre el mismo horizonte de tiempo, por ejemplo por año.
+2. **El tiempo.** Una estrategia con 5 trades al año y otra con 500 no acumulan el riesgo igual. El drawdown hay que medirlo sobre el mismo horizonte de tiempo: un año.
 
-**Cómo lo resolvemos:** el Monte Carlo del drawdown se corre sobre los **retornos diarios del sleeve** (el valor de su cuenta cada día, con las posiciones abiertas valuadas a mercado), no sobre el resultado final de cada trade. Se usa *block bootstrap* con bloques de unas 20 velas, para conservar las rachas. Así la medición incluye las caídas dentro de los trades y se compara por horizonte de tiempo. El módulo `tm_agents.montecarlo` ya acepta cualquier serie de retornos y soporta bloques.
+**Cómo lo resolvemos:** el Monte Carlo del drawdown se corre sobre los **retornos diarios del sleeve** (el valor de su cuenta cada día, con las posiciones abiertas valuadas a mercado), no sobre el resultado final de cada trade. Se usa *block bootstrap* con bloques de 20 días, para conservar las rachas, y cada simulación dura 365 días. Así la medición incluye las caídas dentro de los trades y todas las estrategias se comparan en el mismo horizonte. El módulo `tm_agents.montecarlo` ya acepta cualquier serie de retornos y soporta bloques.
 
 ### Cuánto suelen durar los trades
 
@@ -143,7 +149,7 @@ Con 15 trades, una estrategia mediocre puede parecer genial. Con 100 o más, eso
 ### El problema con el Trend
 La tabla de arriba muestra que el TrendAgent hace **muy pocos trades**. Sus periodos largos (100 y 200 días) hacen de 5 a 7 trades en 4 años. Sumando los 4 periodos y los 2 símbolos da unos 103: apenas pasa el mínimo de 100, y solo si se cuentan todos juntos.
 
-Esto no significa que sea una mala estrategia. Significa que **contar trades no es la mejor forma de medir la evidencia de una estrategia lenta**: sus 4 años out-of-sample son unos 1,460 días de exposición al mercado, y cada día aporta información.
+Esto no significa que sea una mala estrategia. Significa que **contar trades no es la mejor forma de medir la evidencia de una estrategia lenta**: sus 5 años out-of-sample son unos 1,826 días de exposición al mercado, y cada día aporta información.
 
 ### Alternativa para estrategias de baja frecuencia (aprobada el 7 de noviembre de 2026)
 El criterio 3 es **"al menos 100 trades, o, para estrategias de baja frecuencia, al menos 30 trades y 3 años out-of-sample con exposición diaria"**. Está implementado en `evaluate(..., oos_years=...)`. El Sharpe y el drawdown se calcularían sobre los retornos diarios en ambos casos.
@@ -154,8 +160,8 @@ El criterio 3 es **"al menos 100 trades, o, para estrategias de baja frecuencia,
 
 | Criterio | Se calcula sobre | Umbral |
 |---|---|---|
-| Sharpe | Retornos diarios out-of-sample del sleeve (16 tramos del walk-forward) | > 0.5, y mayor que el de comprar y mantener* |
-| Drawdown p95 | Monte Carlo (block bootstrap) de los retornos diarios del sleeve | < 40 % global; la exposición por usuario se ajusta a su nivel |
+| Sharpe | Retornos diarios out-of-sample del sleeve (20 tramos del walk-forward, 2021–2025) | > 0.5, y mayor que el de comprar y mantener* |
+| Drawdown p95 a 1 año | Monte Carlo (block bootstrap, simulaciones de 365 días) de los retornos diarios del sleeve | < 40 % global; la exposición por usuario se ajusta a su nivel |
 | Evidencia | Número de trades y años out-of-sample | ≥ 100 trades, o ≥ 30 trades y ≥ 3 años |
 
 \* La comparación contra comprar y mantener también es una propuesta y queda pendiente de aprobación.
