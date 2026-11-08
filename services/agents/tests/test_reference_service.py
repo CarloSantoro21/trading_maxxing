@@ -118,7 +118,8 @@ def test_shadow_ledger_records_trades_equity_and_metrics(base):
     (trade,) = store.trades_for(sid)
     assert trade["state"] == "shadow" and trade["symbol"] == "BTCUSDT"
     assert trade["ret"] == pytest.approx((110 * 0.999 - 100 * 1.001) / (100 * 1.001))
-    (point,) = store.equity_for(sid)
+    # Un punto por día UTC: si base + 9 h cruza la medianoche hay dos; vale el último.
+    point = store.equity_for(sid)[-1]
     assert point["equity"] == pytest.approx(100_000 * (1 + trade["ret"]))
     m = rec.live_metrics
     assert m["source"] == "reference_ledger" and m["state"] == "shadow"
@@ -273,6 +274,12 @@ def test_guard_fails_closed_and_caches():
             raise RegistryError("sin red")
 
     assert TradingSleeveGuard(Broken()).allows("trend") is False  # type: ignore[arg-type]
+    # #89: los cierres pasan en cualquier estado, aunque el registro falle
+    assert TradingSleeveGuard(Broken()).allows("trend", reduce_only=True) is True  # type: ignore[arg-type]
+    assert guard("nope", reduce_only=True) is True
+    registry.transition("trend", S.RETIRED, "system", "x")
+    clock[0] = 30
+    assert guard("trend") is False and guard("trend", reduce_only=True) is True
     assert [can_send_orders(s) for s in S] == [s in (S.ACTIVE, S.PROBATION) for s in S]
     assert can_send_orders(None) is False
 

@@ -103,14 +103,16 @@ def create_app(
         openapi_tags=TAGS,
         lifespan=lifespan,
     )
-    # El frontend es un sitio estático en otro origen: el navegador necesita CORS. La
-    # autenticación va en el header Authorization (no en cookies).
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=list(settings.cors_origins),
-        allow_methods=["*"],
-        allow_headers=["Authorization", "Content-Type"],
-    )
+    # El frontend es un sitio estático que llama a la API desde el navegador con el JWT en
+    # Authorization (sin cookies), así que no hace falta allow_credentials.
+    if settings.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(settings.cors_origins),
+            allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
+            allow_headers=["Authorization", "Content-Type"],
+            max_age=600,
+        )
     for module in (users, profiles, goals, bots, portfolio, trades, backtests, strategies, lab):
         app.include_router(module.router)
 

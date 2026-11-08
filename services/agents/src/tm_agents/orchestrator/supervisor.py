@@ -7,6 +7,11 @@
 - ``handle_command()`` aplica ``start``, ``stop`` y ``kill`` de ``tm:commands``. ``kill``
   cierra todas las posiciones del bot y lo detiene.
 - ``on_event()`` reparte cada ``SignalEvent`` a todos los runners.
+
+Con un ``trades`` (:class:`~tm_agents.orchestrator.state.TradeStateRepository`), cada runner
+nuevo (al arrancar el worker, en ``sync`` o con ``start``) reconstruye su libro desde la tabla
+``trades`` antes de operar (#89). Si no se puede leer, el runner no arranca y se reintenta en
+el siguiente ``sync``: un libro vacío con posiciones abiertas en el motor duplicaría compras.
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ from tm_agents.orchestrator.bot import (
     BotStatus,
     CommandType,
 )
+from tm_agents.orchestrator.state import TradeStateRepository
 from tm_agents.orchestrator.streams import (
     COMMANDS_STREAM,
     DecisionSink,
@@ -133,14 +139,28 @@ class BotSupervisor:
         *,
         shadow_sink: DecisionSink | None = None,
         runner_factory: RunnerFactory | None = None,
+        trades: TradeStateRepository | None = None,
     ) -> None:
         self.repository = repository
         self.sink = sink
         self.shadow_sink = shadow_sink
+        self.trades = trades
         self._factory = runner_factory or (
             lambda cfg: BotRunner(cfg, self.sink, shadow_sink=self.shadow_sink)
         )
         self.runners: dict[str, BotRunner] = {}
+
+    def _spawn(self, cfg: BotConfig) -> BotRunner | None:
+        """Crea el runner del bot y le restaura el libro desde ``trades`` (si hay repositorio)."""
+        runner = self._factory(cfg)
+        if self.trades is not None:
+            try:
+                runner.restore(self.trades.load(cfg.bot_id))
+            except Exception as exc:
+                log.warning("bot %s sin arrancar: no se pudo leer trades (%s)", cfg.bot_id, exc)
+                return None
+        self.runners[cfg.bot_id] = runner
+        return runner
 
     def sync(self) -> None:
         try:
@@ -149,8 +169,7 @@ class BotSupervisor:
             log.warning("no se pudo leer la tabla bots; se conservan los runners: %s", exc)
             return
         for bot_id, cfg in running.items():
-            if bot_id not in self.runners:
-                self.runners[bot_id] = self._factory(cfg)
+            if bot_id not in self.runners and self._spawn(cfg) is not None:
                 log.info("bot %s arrancado", bot_id)
         for bot_id in list(self.runners):
             if bot_id not in running:
@@ -174,7 +193,9 @@ class BotSupervisor:
                 if cfg is None:
                     log.warning("start de un bot desconocido: %s", command.bot_id)
                     return []
-                runner = self.runners[command.bot_id] = self._factory(cfg)
+                runner = self._spawn(cfg)
+                if runner is None:
+                    return []
             runner.start()
             return []
         if runner is None:

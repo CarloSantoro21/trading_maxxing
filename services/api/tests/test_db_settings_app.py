@@ -142,3 +142,25 @@ def test_openapi_documentado(client):
         assert path in paths
     assert "examples" in spec["components"]["schemas"]["ProfileCreate"]
     assert spec["components"]["securitySchemes"]["HTTPBearer"]["scheme"] == "bearer"
+
+
+def test_cors_origins_desde_el_entorno(monkeypatch):
+    monkeypatch.delenv("API_CORS_ORIGINS", raising=False)
+    assert Settings.from_env().cors_origins == ("http://localhost:3000", "http://127.0.0.1:3000")
+    monkeypatch.setenv("API_CORS_ORIGINS", " https://tm.pages.dev/ , ,http://localhost:3000")
+    assert Settings.from_env().cors_origins == ("https://tm.pages.dev", "http://localhost:3000")
+    monkeypatch.setenv("API_CORS_ORIGINS", "")
+    assert Settings.from_env().cors_origins == ()
+
+
+def test_cors_permite_al_frontend(client):
+    headers = {
+        "Origin": "http://localhost:3000",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "authorization,content-type",
+    }
+    r = client.options("/bots/kill-all", headers=headers)
+    assert r.status_code == 200
+    assert r.headers["access-control-allow-origin"] == "http://localhost:3000"
+    r = client.options("/bots/kill-all", headers={**headers, "Origin": "https://malo.example"})
+    assert "access-control-allow-origin" not in r.headers

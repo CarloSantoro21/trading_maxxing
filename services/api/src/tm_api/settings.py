@@ -10,6 +10,15 @@ from dataclasses import dataclass
 
 COMMANDS_STREAM = "tm:commands"
 BACKTESTS_STREAM = "tm:backtests"
+# Orígenes del frontend que pueden llamar a la API desde el navegador (CORS). El sitio es
+# estático y llama a la API directamente, así que sin esto el navegador bloquea las llamadas.
+DEFAULT_CORS_ORIGINS = ("http://localhost:3000", "http://127.0.0.1:3000")
+
+
+def _origins(raw: str | None) -> tuple[str, ...]:
+    if raw is None:
+        return DEFAULT_CORS_ORIGINS
+    return tuple(o.strip().rstrip("/") for o in raw.split(",") if o.strip())
 
 
 @dataclass(frozen=True)
@@ -37,9 +46,8 @@ class Settings:
     # Reportes del laboratorio (JSON de `python -m tm_engine.lab`). Vacío = los del repo
     # (docs/estrategias/reportes); en Docker se monta ese directorio y se indica aquí.
     lab_reports_dir: str = ""
-    # Orígenes del navegador que pueden llamar a la API (el frontend estático), separados
-    # por comas.
-    cors_origins: tuple[str, ...] = ("http://localhost:3000", "http://127.0.0.1:3000")
+    # Orígenes permitidos por CORS (API_CORS_ORIGINS, separados por comas).
+    cors_origins: tuple[str, ...] = DEFAULT_CORS_ORIGINS
 
     @property
     def rest_url(self) -> str:
@@ -65,9 +73,5 @@ class Settings:
             commands_stream=env.get("TM_COMMANDS_STREAM", COMMANDS_STREAM),
             backtests_stream=env.get("TM_BACKTESTS_STREAM", BACKTESTS_STREAM),
             lab_reports_dir=env.get("LAB_REPORTS_DIR", ""),
-            cors_origins=_origins(env.get("CORS_ORIGINS")) or cls.cors_origins,
+            cors_origins=_origins(env.get("API_CORS_ORIGINS")),
         )
-
-
-def _origins(value: str | None) -> tuple[str, ...]:
-    return tuple(o.strip().rstrip("/") for o in (value or "").split(",") if o.strip())

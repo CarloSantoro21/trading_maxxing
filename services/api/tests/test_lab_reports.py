@@ -145,10 +145,10 @@ def test_cors_para_el_frontend(client):
 
 
 def test_cors_origins_desde_el_entorno(monkeypatch):
-    monkeypatch.setenv("CORS_ORIGINS", "https://app.example.dev/, http://x:1")
+    monkeypatch.setenv("API_CORS_ORIGINS", "https://app.example.dev/, http://x:1")
     monkeypatch.setenv("LAB_REPORTS_DIR", "/tmp/lab")
     s = Settings.from_env()
     assert s.cors_origins == ("https://app.example.dev", "http://x:1")
     assert s.lab_reports_dir == "/tmp/lab"
-    monkeypatch.delenv("CORS_ORIGINS")
+    monkeypatch.delenv("API_CORS_ORIGINS")
     assert Settings.from_env().cors_origins == Settings.cors_origins

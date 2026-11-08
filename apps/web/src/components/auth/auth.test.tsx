@@ -125,10 +125,10 @@ describe("LoginContent", () => {
     await waitFor(() => expect(replace).toHaveBeenCalledWith("/onboarding"));
   });
 
-  it("manda al inicio si el usuario ya tiene perfil", async () => {
+  it("manda al dashboard si el usuario ya tiene perfil", async () => {
     const fake = createFakeSupabase(() => ({ data: { id: "p1" } }));
     await login(fake);
-    await waitFor(() => expect(replace).toHaveBeenCalledWith("/"));
+    await waitFor(() => expect(replace).toHaveBeenCalledWith("/dashboard"));
   });
 
   it("respeta el parámetro next", async () => {

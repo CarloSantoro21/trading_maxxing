@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import fakeredis
 import httpx
@@ -14,6 +15,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from tm_api.commands import CommandBus
 from tm_api.main import create_app
+from tm_api.routers.strategies import shadow_days_clean
 from tm_api.schemas import AppRole
 from tm_api.settings import Settings
 from tm_api.users import (
@@ -31,10 +33,15 @@ SUPABASE = "http://supabase.test"
 NEW_ID = "33333333-3333-4333-8333-333333333333"
 
 
+# Hace 8 días: suficiente para promover desde shadow (mínimo 7 sin fallas).
+EIGHT_DAYS_AGO = (datetime.now(UTC) - timedelta(days=8)).isoformat()
+
+
 @pytest.fixture
 def strategy(fake_db):
-    def _make(name: str = "trend", state: str = "shadow"):
-        return fake_db.seed("strategies", name=name, state=state)
+    def _make(name: str = "trend", state: str = "shadow", **extra):
+        extra.setdefault("state_changed_at", EIGHT_DAYS_AGO)
+        return fake_db.seed("strategies", name=name, state=state, **extra)
 
     return _make
 
@@ -102,6 +109,42 @@ def test_promover_desde_probation(client, alice, make_admin, strategy):
     strategy(state="probation")
     r = client.post("/strategies/trend/promote", json={"reason": "se recuperó"}, headers=alice)
     assert r.json()["to_state"] == "active"
+
+
+def test_promover_desde_shadow_exige_7_dias_limpios(client, alice, make_admin, strategy, fake_db):
+    make_admin()
+    three_days_ago = (datetime.now(UTC) - timedelta(days=3)).isoformat()
+    strategy(state_changed_at=three_days_ago)
+    r = client.post("/strategies/trend/promote", json={"reason": "ya"}, headers=alice)
+    assert r.status_code == 409
+    assert "3.0 días" in r.json()["detail"]
+    assert fake_db.tables["strategy_transitions"] == []
+
+
+def test_una_falla_reciente_reinicia_los_dias_limpios(client, alice, make_admin, strategy):
+    make_admin()
+    one_day_ago = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    strategy(live_metrics={"shadow": {"clean_since": one_day_ago, "failures": 1}})
+    r = client.post("/strategies/trend/promote", json={"reason": "ya"}, headers=alice)
+    assert r.status_code == 409
+    assert "1.0 días" in r.json()["detail"]
+
+
+def test_shadow_days_clean():
+    now = datetime(2026, 11, 8, tzinfo=UTC)
+    base = {"state": "shadow", "state_changed_at": "2026-11-01T00:00:00Z", "live_metrics": {}}
+    assert shadow_days_clean(base, now) == pytest.approx(7.0)
+    # clean_since anterior a la entrada a shadow (corrida previa): manda state_changed_at.
+    old = {**base, "live_metrics": {"shadow": {"clean_since": "2026-10-01T00:00:00+00:00"}}}
+    assert shadow_days_clean(old, now) == pytest.approx(7.0)
+    recent = {**base, "live_metrics": {"shadow": {"clean_since": "2026-11-07T12:00:00"}}}
+    assert shadow_days_clean(recent, now) == pytest.approx(0.5)
+    bad = {**base, "live_metrics": {"shadow": {"clean_since": "no-es-fecha"}}}
+    assert shadow_days_clean(bad, now) == pytest.approx(7.0)
+    assert shadow_days_clean({**base, "state_changed_at": None}, now) == 0.0
+    future = {**base, "state_changed_at": datetime(2026, 11, 9, tzinfo=UTC)}
+    assert shadow_days_clean(future, now) == 0.0
+    assert shadow_days_clean({**base, "state": "active"}, now) is None
 
 
 @pytest.mark.parametrize(
