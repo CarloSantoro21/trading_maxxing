@@ -97,6 +97,7 @@ _DEFAULTS: dict[str, Callable[[], Row]] = {
         "state_changed_at": datetime.now(UTC).isoformat(),
     },
     "strategy_transitions": dict,
+    "reference_equity": lambda: {"cash": 0, "positions_value": 0, "drawdown": 0},
 }
 # Tablas que el rol authenticated puede escribir (según las migraciones de RLS).
 _USER_INSERT = {"profiles", "goals", "bots", "backtests", "strategy_transitions"}
@@ -144,7 +145,7 @@ class FakeDatabase:
     def _visible(self, table: str, uid: str, row: Row) -> bool:
         if table in ("profiles", "app_roles"):
             return str(row["user_id"]) == uid
-        if table in ("strategies", "strategy_transitions"):
+        if table in ("strategies", "strategy_transitions", "reference_equity"):
             return True
         if table in ("goals", "bots", "backtests"):
             return self._owns_profile(uid, row["profile_id"])

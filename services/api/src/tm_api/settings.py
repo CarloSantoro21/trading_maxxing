@@ -43,6 +43,9 @@ class Settings:
     backtests_stream: str = BACKTESTS_STREAM
     # Tope aproximado de entradas por stream (XADD MAXLEN ~).
     stream_maxlen: int = 10_000
+    # Reportes del laboratorio (JSON de `python -m tm_engine.lab`). Vacío = los del repo
+    # (docs/estrategias/reportes); en Docker se monta ese directorio y se indica aquí.
+    lab_reports_dir: str = ""
     # Orígenes permitidos por CORS (API_CORS_ORIGINS, separados por comas).
     cors_origins: tuple[str, ...] = DEFAULT_CORS_ORIGINS
 
@@ -69,5 +72,6 @@ class Settings:
             redis_url=env.get("REDIS_URL", cls.redis_url),
             commands_stream=env.get("TM_COMMANDS_STREAM", COMMANDS_STREAM),
             backtests_stream=env.get("TM_BACKTESTS_STREAM", BACKTESTS_STREAM),
+            lab_reports_dir=env.get("LAB_REPORTS_DIR", ""),
             cors_origins=_origins(env.get("API_CORS_ORIGINS")),
         )

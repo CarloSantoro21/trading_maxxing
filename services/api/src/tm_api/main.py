@@ -23,6 +23,7 @@ from tm_api.routers import (
     backtests,
     bots,
     goals,
+    lab,
     portfolio,
     profiles,
     strategies,
@@ -54,6 +55,7 @@ TAGS = [
     {"name": "portfolio", "description": "Equity y posiciones por sleeve y en total."},
     {"name": "trades", "description": "Historial paginado de operaciones."},
     {"name": "backtests", "description": "Jobs de backtest (`tm:backtests`)."},
+    {"name": "lab", "description": "Reportes del laboratorio de walk-forward (solo lectura)."},
     {"name": "strategies", "description": "Catálogo compartido; promover y retirar (admin)."},
     {"name": "users", "description": "Usuario actual y alta de usuarios del equipo (admin)."},
     {"name": "health", "description": "Estado del servicio."},
@@ -111,7 +113,7 @@ def create_app(
             allow_headers=["Authorization", "Content-Type"],
             max_age=600,
         )
-    for module in (users, profiles, goals, bots, portfolio, trades, backtests, strategies):
+    for module in (users, profiles, goals, bots, portfolio, trades, backtests, strategies, lab):
         app.include_router(module.router)
 
     @app.get("/health", response_model=Health, tags=["health"])

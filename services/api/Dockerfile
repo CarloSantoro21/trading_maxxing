@@ -13,6 +13,7 @@ WORKDIR /app
 # 1) Solo manifiestos: esta capa se cachea mientras no cambien las dependencias
 COPY pyproject.toml uv.lock ./
 COPY packages/shared/pyproject.toml packages/shared/
+COPY packages/marketdata/pyproject.toml packages/marketdata/
 COPY services/api/pyproject.toml services/api/
 COPY services/agents/pyproject.toml services/agents/
 COPY services/forecast/pyproject.toml services/forecast/
@@ -20,8 +21,11 @@ COPY services/engine/pyproject.toml services/engine/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-workspace --package tm-api
 
-# 2) Código del paquete compartido y del servicio
+# 2) Código de los paquetes compartidos, de agents (Monte Carlo, exposición y allocator para
+#    la proyección de metas, #38) y del servicio
 COPY packages/shared/ packages/shared/
+COPY packages/marketdata/ packages/marketdata/
+COPY services/agents/ services/agents/
 COPY services/api/ services/api/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable --package tm-api

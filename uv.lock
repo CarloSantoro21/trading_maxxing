@@ -1008,8 +1008,10 @@ source = { editable = "services/api" }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "numpy" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "redis" },
+    { name = "tm-agents" },
     { name = "tm-shared" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -1018,8 +1020,10 @@ dependencies = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28" },
+    { name = "numpy", specifier = ">=2.1" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.10" },
     { name = "redis", specifier = ">=5.2" },
+    { name = "tm-agents", editable = "services/agents" },
     { name = "tm-shared", editable = "packages/shared" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
 ]
