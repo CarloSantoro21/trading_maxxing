@@ -15,6 +15,11 @@ OOS_START = "2021-01-01"
 OOS_END = "2025-01-01"  # exclusivo: el último tramo es 2024-T4
 HOLDOUT_START = "2025-01-01"
 HOLDOUT_END = "2026-01-01"
+# Techo global del drawdown p95 a tamaño completo (el del nivel de riesgo 5); cada usuario
+# invierte después la fracción min(1, drawdown de su nivel / p95). Ver criterios-de-aprobacion.md.
+GLOBAL_MAX_DRAWDOWN = 0.40
+# Drawdown máximo tolerado por nivel de riesgo (propuesta, sección 3.4)
+RISK_LEVEL_DRAWDOWN = {1: 0.10, 2: 0.15, 3: 0.20, 4: 0.30, 5: 0.40}
 
 
 class HoldoutError(RuntimeError):
@@ -85,7 +90,7 @@ class WalkForwardConfig:
     n_simulations: int = 10_000
     block_size: int = 20
     seed: int = 42
-    max_drawdown: float = 0.20
+    max_drawdown: float = GLOBAL_MAX_DRAWDOWN
     data_dir: str | None = None
     extra: Mapping[str, Any] = field(default_factory=dict)
 

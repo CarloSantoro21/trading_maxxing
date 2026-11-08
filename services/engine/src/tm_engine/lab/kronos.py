@@ -24,7 +24,7 @@ from tm_agents.montecarlo import ApprovalCriteria, bootstrap, evaluate
 from tm_marketdata.resample import resample_ohlcv
 from tm_marketdata.storage import ParquetStore
 
-from tm_engine.lab.config import HoldoutError, utc
+from tm_engine.lab.config import GLOBAL_MAX_DRAWDOWN, HoldoutError, utc
 from tm_engine.lab.execution import run_nautilus
 from tm_engine.lab.metrics import daily_returns, perf_stats
 from tm_engine.lab.simulator import (
@@ -54,7 +54,7 @@ class KronosLabConfig:
     thresholds: Sequence[float] = DEFAULT_THRESHOLDS
     capital: float = 100_000.0
     fee: float = 0.001
-    max_drawdown: float = 0.20
+    max_drawdown: float = GLOBAL_MAX_DRAWDOWN
     n_simulations: int = 10_000
     block_size: int = 20
     seed: int = 42

@@ -95,7 +95,7 @@ def to_markdown(report: WalkForwardReport, image: str | None = None) -> str:
     verdict = "APROBADA" if report.approved else "RECHAZADA"
     lines += [
         f"**Veredicto: {verdict}** con los criterios de `ApprovalCriteria` "
-        f"(drawdown p95 < {_pct(cfg.max_drawdown, 0)}).",
+        f"(drawdown p95 a tamaño completo < {_pct(cfg.max_drawdown, 0)}).",
         "",
     ]
     lines += ["### Agregado out-of-sample contra comprar y mantener", ""]
@@ -213,6 +213,13 @@ def to_markdown(report: WalkForwardReport, image: str | None = None) -> str:
         label, fv, ft = names[c["name"]]
         lines.append(f"| {label} | {fv(c['value'])} | {ft(c['threshold'])} | "
                      f"{'sí' if c['passed'] else 'no'} |")  # fmt: skip
+    exposure = report.approval["exposure_by_risk_level"]
+    lines += [
+        "",
+        "Exposición por nivel de riesgo si se aprobara, `min(1, drawdown del nivel / p95)`: "
+        + ", ".join(f"nivel {k}: {_pct(v, 0)}" for k, v in exposure.items())
+        + ".",
+    ]
     beats = report.approval["beats_buy_and_hold_sharpe"]
     lines += [
         "",

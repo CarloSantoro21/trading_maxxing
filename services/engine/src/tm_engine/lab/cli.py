@@ -20,7 +20,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from tm_engine.lab.config import WalkForwardConfig
+from tm_engine.lab.config import GLOBAL_MAX_DRAWDOWN, WalkForwardConfig
 
 
 def _common(p: argparse.ArgumentParser) -> None:
@@ -29,7 +29,12 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--out-dir", default="reports/lab")
     p.add_argument("--capital", type=float, default=100_000.0)
     p.add_argument("--fee", type=float, default=0.001, help="Comisión por lado (0.001 = 0.1 %%)")
-    p.add_argument("--max-drawdown", type=float, default=0.20, help="Límite del drawdown p95")
+    p.add_argument(
+        "--max-drawdown",
+        type=float,
+        default=GLOBAL_MAX_DRAWDOWN,
+        help="Techo del drawdown p95 a tamaño completo (global: 0.40)",
+    )
     p.add_argument("--n-sims", type=int, default=10_000)
     p.add_argument("--block-size", type=int, default=20)
     p.add_argument("--seed", type=int, default=42)

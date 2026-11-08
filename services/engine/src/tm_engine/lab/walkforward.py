@@ -33,7 +33,13 @@ from tm_agents.montecarlo.report import build_report
 from tm_agents.montecarlo.resampling import bootstrap_paths
 from tm_marketdata.storage import ParquetStore
 
-from tm_engine.lab.config import HoldoutError, WalkForwardConfig, Window, utc
+from tm_engine.lab.config import (
+    RISK_LEVEL_DRAWDOWN,
+    HoldoutError,
+    WalkForwardConfig,
+    Window,
+    utc,
+)
 from tm_engine.lab.execution import run_nautilus
 from tm_engine.lab.metrics import daily_returns, perf_stats, sharpe_ratio, window_slice
 from tm_engine.lab.simulator import (
@@ -405,6 +411,7 @@ def walk_forward(
             for c in verdict.checks
         ],
         "reasons": list(verdict.reasons),
+        "exposure_by_risk_level": exposure_by_risk_level(mc.max_drawdown.p95),
         "beats_buy_and_hold_sharpe": (
             aggregate["sharpe"] is not None
             and hold_stats["sharpe"] is not None
@@ -446,6 +453,13 @@ def _one_year_drawdown(
         trades_per_year=None,
     )  # fmt: skip
     return _summary(mc.max_drawdown)
+
+
+def exposure_by_risk_level(p95: float) -> dict[int, float]:
+    """Fracción del sleeve que invierte cada nivel: `min(1, drawdown del nivel / p95)`."""
+    if not math.isfinite(p95) or p95 <= 0:
+        return dict.fromkeys(RISK_LEVEL_DRAWDOWN, 1.0)
+    return {level: min(1.0, dd / p95) for level, dd in RISK_LEVEL_DRAWDOWN.items()}
 
 
 def _summary(d: Any) -> dict[str, float]:

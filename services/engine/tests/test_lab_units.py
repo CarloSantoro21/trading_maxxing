@@ -217,3 +217,13 @@ def test_slice_bars_uses_the_close_time():
     start = bars.index[1]
     out = slice_bars(bars, start, start + 2 * DAY, DAY)
     assert list(out["close"]) == [2, 3]  # las velas que cierran en (start, end]
+
+
+def test_exposure_by_risk_level():
+    from tm_engine.lab.walkforward import exposure_by_risk_level
+
+    exp = exposure_by_risk_level(0.40)
+    assert exp[1] == pytest.approx(0.25) and exp[3] == pytest.approx(0.5) and exp[5] == 1.0
+    assert exposure_by_risk_level(0.05)[1] == 1.0
+    assert exposure_by_risk_level(float("nan")) == dict.fromkeys(range(1, 6), 1.0)
+    assert WalkForwardConfig(strategy="trend").max_drawdown == 0.40
