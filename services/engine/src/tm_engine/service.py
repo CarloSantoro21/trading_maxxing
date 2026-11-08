@@ -119,7 +119,10 @@ class CompositeDecisionSource:
 
 
 def build_strategy(
-    profile: EngineProfile, source: DecisionSource, recorder: FillRecorder
+    profile: EngineProfile,
+    source: DecisionSource,
+    recorder: FillRecorder,
+    sleeve_guard: Callable[[str], bool] | None = None,
 ) -> AgenticStrategy:
     config = AgenticStrategyConfig(
         bar_types=tuple(str(bar_type(s, profile.timeframe)) for s in profile.symbols),
@@ -127,7 +130,7 @@ def build_strategy(
         poll_interval_secs=profile.poll_interval_secs,
         manage_contingent_orders=True,
     )
-    return AgenticStrategy(config, source=source, recorder=recorder)
+    return AgenticStrategy(config, source=source, recorder=recorder, sleeve_guard=sleeve_guard)
 
 
 def build_node(profile: EngineProfile, credentials: Credentials, strategy: AgenticStrategy) -> Any:
@@ -191,11 +194,14 @@ class TradingEngineService:
         redis_client: Any | None = None,
         recorder: FillRecorder | None = None,
         node_factory: NodeFactory = build_node,
+        sleeve_guard: Callable[[str], bool] | None = None,
     ) -> None:
         self._credentials = Credentials.from_env() if credentials is _FROM_ENV else credentials
         self._redis = redis_client
         self._recorder: FillRecorder = recorder or MemoryFillRecorder()
         self._node_factory = node_factory
+        # Solo los sleeves con capital (active/probation) envían órdenes; shadow nunca.
+        self._sleeve_guard = sleeve_guard
         self._queue = QueueDecisionSource()
         self.mode = EngineMode.STOPPED
         self.profile: EngineProfile | None = None
@@ -218,7 +224,7 @@ class TradingEngineService:
             except Exception as exc:
                 log.warning("Redis no disponible, solo se usarán decisiones locales: %s", exc)
         self.strategy = build_strategy(
-            self.profile, CompositeDecisionSource(sources), self._recorder
+            self.profile, CompositeDecisionSource(sources), self._recorder, self._sleeve_guard
         )
         if self._credentials is None:
             self.mode = EngineMode.OFFLINE
