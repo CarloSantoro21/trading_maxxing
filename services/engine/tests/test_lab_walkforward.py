@@ -319,3 +319,23 @@ def test_report_json_is_valid(daily_bars, frames_loader, tmp_path):
         assert text in md
     png = plot_equity(report, tmp_path / "img" / "trend.png")
     assert png.read_bytes()[:4] == b"\x89PNG"
+
+
+def test_cli_run_writes_json_markdown_and_png(daily_bars, frames_loader, tmp_path, monkeypatch):
+    import tm_engine.lab.walkforward as wf
+    from tm_engine.lab.cli import main
+
+    loader = frames_loader(_frames(daily_bars))
+    monkeypatch.setattr(wf, "store_loader", lambda _: loader)
+    out = tmp_path / "out"
+    args = ["run", "--strategy", "trend", "--oos-end", "2021-07-01", "--engine", "vector"]
+    assert main([*args, "--n-sims", "100", "--out-dir", str(out)]) == 0
+    assert {p.name for p in out.iterdir()} == {"trend.json", "trend.md", "trend.png"}
+    assert "2021-T2" in (out / "trend.md").read_text()
+    # con --holdout el nombre lo dice y las ventanas son las de 2025
+    assert (
+        main([*args[:3], "--holdout", "--no-plot", "--n-sims", "100", "--out-dir", str(out)]) == 0
+    )
+    data = json.loads((out / "trend-holdout.json").read_text())
+    assert data["config"]["include_holdout"] is True
+    assert data["windows"][0]["label"] == "2025-T1"

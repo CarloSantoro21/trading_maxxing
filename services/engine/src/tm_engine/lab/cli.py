@@ -85,7 +85,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "kronos.json").write_text(json.dumps(result, indent=2, ensure_ascii=False))
-        print(json.dumps({k: result[k] for k in ("chosen", "in_sample")}, indent=2))
+        summary = {
+            "chosen": result["chosen"],
+            "in_sample": {k: v for k, v in result["in_sample"].items() if k != "equity_daily"},
+            "holdout": None if result["holdout"] is None else result["holdout"].get("approval"),
+        }
+        print(json.dumps(summary, indent=2))
         return 0
 
     from tm_engine.lab.report import plot_equity, to_markdown, write_json
