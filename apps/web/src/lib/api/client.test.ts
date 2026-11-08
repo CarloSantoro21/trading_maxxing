@@ -37,7 +37,7 @@ describe("apiRequest", () => {
 
   it("convierte los errores de FastAPI en ApiError", async () => {
     mockApi(() => ({ status: 409, body: { detail: "No se puede arrancar" } }));
-    const err = await apiRequest("/x", { token: "t" }).catch((e) => e);
+    const err = (await apiRequest("/x", { token: "t" }).catch((e: unknown) => e)) as ApiError;
     expect(err).toBeInstanceOf(ApiError);
     expect(err.status).toBe(409);
     expect(err.message).toBe("No se puede arrancar");
@@ -46,7 +46,7 @@ describe("apiRequest", () => {
   it("explica un error de red", async () => {
     vi.stubEnv("NEXT_PUBLIC_API_URL", "http://api.test/");
     vi.stubGlobal("fetch", vi.fn(async () => Promise.reject(new TypeError("Failed to fetch"))));
-    const err = await apiRequest("/x", { token: "t" }).catch((e) => e);
+    const err = (await apiRequest("/x", { token: "t" }).catch((e: unknown) => e)) as ApiError;
     expect(err.status).toBe(0);
     expect(err.message).toContain("http://api.test");
   });
