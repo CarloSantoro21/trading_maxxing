@@ -444,3 +444,121 @@ class CreatedUser(BaseModel):
     temporary_password: str = Field(
         description="Contraseña temporal; se muestra una sola vez y la persona debe cambiarla"
     )
+
+
+# --- probabilidad de alcanzar una meta (Monte Carlo #3, #38) ----------------------------
+
+
+class GoalFanPoint(BaseModel):
+    day: date
+    p10: float
+    p50: float
+    p90: float
+
+
+class GoalStrategyContribution(BaseModel):
+    name: str
+    state: str
+    source: Literal["reference", "lab_report", "none"] = Field(
+        description="De dónde salieron los retornos: portafolio de referencia o laboratorio"
+    )
+    report_source: Literal["db", "file", "none"] = Field(
+        description="Reporte del laboratorio usado: el de la tabla strategies o el archivo"
+    )
+    observations: int = Field(description="Retornos diarios usados")
+    weight: float = Field(description="Peso del sleeve (PortfolioAllocator)")
+    exposure: float = Field(description="Exposición del nivel de riesgo (0 a 1)")
+    excluded: str | None = Field(default=None, description="Por qué no recibe capital")
+
+
+class GoalProbability(BaseModel):
+    goal_id: UUID
+    profile_id: UUID
+    target_return: float
+    deadline: date
+    as_of: date
+    days: int = Field(description="Días que faltan para la fecha límite")
+    capital: float = Field(description="Capital del perfil (base del retorno objetivo)")
+    start_equity: float = Field(description="Equity actual del usuario")
+    target_equity: float = Field(description="capital * (1 + target_return)")
+    probability: float = Field(
+        description="P(el equity toca la meta en algún día antes de la fecha límite)"
+    )
+    probability_at_deadline: float = Field(description="P(equity >= meta en la fecha límite)")
+    invested_fraction: float = Field(description="Suma de peso * exposición; el resto en USDT")
+    final_equity_p10: float
+    final_equity_p50: float
+    final_equity_p90: float
+    n_simulations: int
+    block_size: int
+    seed: int
+    fan: list[GoalFanPoint] = Field(description="Abanico p10/p50/p90 del equity por día")
+    strategies: list[GoalStrategyContribution]
+    notes: list[str] = Field(default_factory=list)
+
+
+# --- reportes del laboratorio (#24) ---------------------------------------------------------
+
+
+class LabReportSummary(BaseModel):
+    name: str = Field(description="Nombre del archivo del reporte, sin .json")
+    strategy: str
+    symbols: list[str]
+    oos_start: str | None = None
+    oos_end: str | None = None
+    aggregate: dict[str, Any] = Field(description="Métricas out-of-sample agregadas")
+    buy_and_hold: dict[str, Any] = Field(description="Comprar y mantener en el mismo periodo")
+    max_drawdown_p95: float | None = Field(default=None, description="Drawdown p95 del MC")
+    approved: bool
+    reasons: list[str] = Field(description="Razones de cada criterio que falla")
+
+
+class LabEquityPoint(BaseModel):
+    day: str
+    strategy: float
+    buy_and_hold: float | None = None
+
+
+class LabWindow(BaseModel):
+    label: str | None = None
+    is_start: str | None = None
+    is_end: str | None = None
+    oos_start: str | None = None
+    oos_end: str | None = None
+    params_label: str | None = None
+    is_sharpe: float | None = None
+    oos_return: float | None = None
+    oos_sharpe: float | None = None
+    oos_max_drawdown: float | None = None
+    hold_return: float | None = None
+    trades: int | None = None
+
+
+class HistogramBin(BaseModel):
+    start: float
+    end: float
+    count: int
+
+
+class DrawdownHistogram(BaseModel):
+    bins: list[HistogramBin]
+    p95: float = Field(description="p95 del reporte")
+    p95_recomputed: float = Field(description="p95 de las muestras de este histograma")
+    p50: float
+    n_simulations: int
+    block_size: int
+    seed: int
+    horizon_days: int
+    limit: float | None = Field(default=None, description="Tope del criterio de aprobación")
+
+
+class LabReportDetail(LabReportSummary):
+    config: dict[str, Any]
+    per_symbol: dict[str, Any]
+    parameter_stability: dict[str, Any]
+    montecarlo: dict[str, Any]
+    checks: list[dict[str, Any]]
+    exposure_by_risk_level: dict[str, float]
+    windows: list[LabWindow]
+    equity: list[LabEquityPoint]
+    drawdown_histogram: DrawdownHistogram | None = None

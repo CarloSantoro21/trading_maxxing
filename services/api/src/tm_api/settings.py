@@ -34,6 +34,12 @@ class Settings:
     backtests_stream: str = BACKTESTS_STREAM
     # Tope aproximado de entradas por stream (XADD MAXLEN ~).
     stream_maxlen: int = 10_000
+    # Reportes del laboratorio (JSON de `python -m tm_engine.lab`). Vacío = los del repo
+    # (docs/estrategias/reportes); en Docker se monta ese directorio y se indica aquí.
+    lab_reports_dir: str = ""
+    # Orígenes del navegador que pueden llamar a la API (el frontend estático), separados
+    # por comas.
+    cors_origins: tuple[str, ...] = ("http://localhost:3000", "http://127.0.0.1:3000")
 
     @property
     def rest_url(self) -> str:
@@ -58,4 +64,10 @@ class Settings:
             redis_url=env.get("REDIS_URL", cls.redis_url),
             commands_stream=env.get("TM_COMMANDS_STREAM", COMMANDS_STREAM),
             backtests_stream=env.get("TM_BACKTESTS_STREAM", BACKTESTS_STREAM),
+            lab_reports_dir=env.get("LAB_REPORTS_DIR", ""),
+            cors_origins=_origins(env.get("CORS_ORIGINS")) or cls.cors_origins,
         )
+
+
+def _origins(value: str | None) -> tuple[str, ...]:
+    return tuple(o.strip().rstrip("/") for o in (value or "").split(",") if o.strip())

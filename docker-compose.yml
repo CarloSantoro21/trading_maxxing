@@ -43,6 +43,15 @@ services:
     image: trading-maxxing-api:local
     build: { context: ., dockerfile: services/api/Dockerfile }
     ports: ["127.0.0.1:8000:8000"]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      SUPABASE_URL: ${SUPABASE_URL:-http://host.docker.internal:54321}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Reportes del laboratorio para /lab/reports y la proyección de metas (#24, #38).
+      LAB_REPORTS_DIR: /app/lab-reports
+      # Orígenes del frontend (make web o el contenedor web) que pueden llamar a la api.
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+    volumes: ["./docs/estrategias/reportes:/app/lab-reports:ro"]
 
   # Orquestador (#19) y ledger de referencia (#57) en un solo worker. La capa compartida
   # (señales, vetos y SimulationGate, una vez para todos) publica en tm:signals; la capa por

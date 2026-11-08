@@ -12,6 +12,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 
 import httpx
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from redis.asyncio import Redis
 from tm_shared.health import Health, health
 
@@ -22,6 +23,7 @@ from tm_api.routers import (
     backtests,
     bots,
     goals,
+    lab,
     portfolio,
     profiles,
     strategies,
@@ -53,6 +55,7 @@ TAGS = [
     {"name": "portfolio", "description": "Equity y posiciones por sleeve y en total."},
     {"name": "trades", "description": "Historial paginado de operaciones."},
     {"name": "backtests", "description": "Jobs de backtest (`tm:backtests`)."},
+    {"name": "lab", "description": "Reportes del laboratorio de walk-forward (solo lectura)."},
     {"name": "strategies", "description": "Catálogo compartido; promover y retirar (admin)."},
     {"name": "users", "description": "Usuario actual y alta de usuarios del equipo (admin)."},
     {"name": "health", "description": "Estado del servicio."},
@@ -100,7 +103,15 @@ def create_app(
         openapi_tags=TAGS,
         lifespan=lifespan,
     )
-    for module in (users, profiles, goals, bots, portfolio, trades, backtests, strategies):
+    # El frontend es un sitio estático en otro origen: el navegador necesita CORS. La
+    # autenticación va en el header Authorization (no en cookies).
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(settings.cors_origins),
+        allow_methods=["*"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
+    for module in (users, profiles, goals, bots, portfolio, trades, backtests, strategies, lab):
         app.include_router(module.router)
 
     @app.get("/health", response_model=Health, tags=["health"])
