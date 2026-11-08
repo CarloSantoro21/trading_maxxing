@@ -2,7 +2,7 @@
 
 Código: `services/agents/src/tm_agents/strategies/intraday_momentum.py` (registrada como `"intraday_momentum"`). Pruebas: `services/agents/tests/test_intraday_momentum.py`.
 
-**Resumen.** El paper encuentra que en BTC el retorno de la noche más la primera media hora predice el de la última media hora del "día". Con los datos de Binance 2020–2025, la regla genera entre 90 y 190 operaciones al año, y el retorno bruto por operación queda entre −2 y +4 pb. La comisión de Binance Spot (0.1 % por lado, 20 pb por ida y vuelta) se come 5 a 10 veces esa ventaja. El propio paper ya lo advierte: su costo de equilibrio sin apalancamiento es de 3 a 10 pb. **La estrategia se queda en `research`/`lab` y no debe recibir capital** salvo que el backtest formal (#13) muestre algo muy distinto.
+**Resumen.** El paper encuentra que en BTC el retorno de la noche más la primera media hora predice el de la última media hora del "día". Con los datos de Binance 2020–2025, la regla genera entre 90 y 190 operaciones al año, y el retorno bruto por operación queda entre −2 y +4 pb. La comisión de Binance Spot (0.1 % por lado, 20 pb por ida y vuelta) se come 5 a 10 veces esa ventaja. El propio paper ya lo advierte: su costo de equilibrio sin apalancamiento es de 3 a 10 pb. **La estrategia se queda en `research`/`lab` y no debe recibir capital** salvo que el backtest formal (#13) muestre algo muy distinto. El backtest formal ya se corrió y lo confirma: Sharpe out-of-sample de −2.56 con comisiones y de −0.54 sin ellas (ver [resultados-intraday-momentum.md](resultados-intraday-momentum.md)).
 
 ---
 
