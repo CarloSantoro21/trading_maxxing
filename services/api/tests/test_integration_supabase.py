@@ -73,10 +73,17 @@ def test_flujo_completo_contra_supabase_local(user_token):
     bus = CommandBus(fakeredis.FakeAsyncRedis(server=server), settings)
     headers = {"Authorization": f"Bearer {user_token}"}
     with TestClient(create_app(settings, bus=bus)) as c:
-        body = {"horizon": "long", "risk_level": 2, "capital": "5000", "max_drawdown": "0.1"}
+        body = {"risk_level": 2, "capital": "5000"}
         r = c.post("/profiles", json=body, headers=headers)
         assert r.status_code == 201, r.text
         profile = r.json()
+        # El trigger deriva el drawdown del nivel 2 y la base pone los defaults.
+        assert profile["max_drawdown"] == 0.15
+        assert (profile["horizon"], profile["instruments"]) == ("medium", ["BTCUSDT", "ETHUSDT"])
+        # Un usuario recién creado es member: no retira estrategias.
+        r = c.post("/strategies/trend/retire", json={"reason": "prueba"}, headers=headers)
+        assert r.status_code == 403
+        assert c.get("/me", headers=headers).json()["role"] == "member"
         # El check de la base y la validación de Pydantic coinciden.
         assert c.post("/profiles", json=body, headers=headers).status_code == 409
 

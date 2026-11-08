@@ -1,7 +1,7 @@
 """Modelos de entrada y salida de la API.
 
-Las validaciones replican los checks de `supabase/migrations/20261107000100_tables.sql`
-para responder 422 con un mensaje claro antes de llegar a la base.
+Las validaciones replican los checks de `supabase/migrations/` (capital mínimo, nivel de
+riesgo, etc.) para responder 422 con un mensaje claro antes de llegar a la base.
 """
 
 from __future__ import annotations
@@ -18,12 +18,25 @@ from tm_shared.contracts import Horizon, OrderSide, Timeframe
 Symbol = Literal["BTCUSDT", "ETHUSDT"]
 SUPPORTED_SYMBOLS: tuple[str, ...] = ("BTCUSDT", "ETHUSDT")
 
-RiskLevel = Annotated[int, Field(ge=1, le=5, description="Tolerancia al riesgo, de 1 a 5")]
-Capital = Annotated[Decimal, Field(gt=0, description="Capital en USDT, mayor que 0")]
-MaxDrawdown = Annotated[
-    Decimal,
-    Field(gt=0, lt=1, description="Drawdown máximo como fracción en (0, 1): 0.2 = 20 %"),
+#: Capital mínimo de un perfil en USDT de testnet (igual que el check profiles_capital_min y
+#: que tm_agents.risk.MIN_CAPITAL).
+MIN_CAPITAL = Decimal("500")
+
+RiskLevel = Annotated[
+    int,
+    Field(
+        ge=1,
+        le=5,
+        description=(
+            "Nivel de riesgo de 1 a 5. Define el drawdown máximo (10, 15, 20, 30 o 40 %), "
+            "el riesgo por operación y la exposición máxima (tm_agents.risk.RISK_TABLE)"
+        ),
+    ),
 ]
+Capital = Annotated[
+    Decimal, Field(ge=MIN_CAPITAL, description="Capital en USDT de testnet, mínimo 500")
+]
+PositiveAmount = Annotated[Decimal, Field(gt=0, description="Monto en USDT, mayor que 0")]
 TargetReturn = Annotated[
     Decimal, Field(gt=0, description="Retorno objetivo como fracción: 0.15 = 15 %")
 ]
@@ -75,38 +88,24 @@ def _strip_name(value: str | None) -> str | None:
 
 
 class ProfileCreate(_Input):
-    horizon: Horizon
+    """Lo único que captura el onboarding: capital y nivel de riesgo.
+
+    `max_drawdown` lo deriva la base del nivel; `horizon` e `instruments` toman sus valores
+    por defecto (medium; BTCUSDT y ETHUSDT). Mandarlos da 422.
+    """
+
     risk_level: RiskLevel
     capital: Capital
-    max_drawdown: MaxDrawdown
-    instruments: list[Symbol] = Field(default_factory=lambda: list(SUPPORTED_SYMBOLS), min_length=1)
-
-    _check_instruments = field_validator("instruments")(_unique_symbols)
 
     model_config = ConfigDict(
         extra="forbid",
-        json_schema_extra={
-            "examples": [
-                {
-                    "horizon": "medium",
-                    "risk_level": 3,
-                    "capital": "10000",
-                    "max_drawdown": "0.2",
-                    "instruments": ["BTCUSDT", "ETHUSDT"],
-                }
-            ]
-        },
+        json_schema_extra={"examples": [{"risk_level": 3, "capital": "10000"}]},
     )
 
 
 class ProfileUpdate(_Input):
-    horizon: Horizon | None = None
     risk_level: RiskLevel | None = None
     capital: Capital | None = None
-    max_drawdown: MaxDrawdown | None = None
-    instruments: list[Symbol] | None = Field(default=None, min_length=1)
-
-    _check_instruments = field_validator("instruments")(_unique_symbols)
 
     @model_validator(mode="after")
     def _not_empty(self) -> ProfileUpdate:
@@ -124,7 +123,7 @@ class Profile(BaseModel):
     horizon: Horizon
     risk_level: int
     capital: float
-    max_drawdown: float
+    max_drawdown: float = Field(description="Derivado de risk_level por la base")
     instruments: list[str]
     created_at: datetime
     updated_at: datetime
@@ -307,7 +306,7 @@ class BacktestConfig(BaseModel):
     end: date
     mode: Literal["in_sample", "out_of_sample", "walk_forward"] = "walk_forward"
     strategies: list[str] = Field(default_factory=list, description="Vacío = todas")
-    initial_capital: Capital | None = None
+    initial_capital: PositiveAmount | None = None
 
     _check_symbols = field_validator("symbols")(_unique_symbols)
 
@@ -354,3 +353,94 @@ class Backtest(BaseModel):
     finished_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+
+# --- usuario actual y roles -----------------------------------------------------
+
+
+class AppRole(StrEnum):
+    """Rol en el equipo (igual al enum public.app_role)."""
+
+    ADMIN = "admin"
+    MEMBER = "member"
+
+
+class Me(BaseModel):
+    id: UUID
+    email: str | None = None
+    role: AppRole = Field(description="Sin fila en app_roles, el usuario es member")
+
+
+# --- estrategias (ciclo de vida) ------------------------------------------------
+
+
+class StrategyState(StrEnum):
+    """Igual al enum public.strategy_state y a tm_agents.strategy_stats.StrategyState."""
+
+    RESEARCH = "research"
+    LAB = "lab"
+    SHADOW = "shadow"
+    ACTIVE = "active"
+    PROBATION = "probation"
+    RETIRED = "retired"
+
+
+class Strategy(BaseModel):
+    id: UUID
+    name: str
+    state: StrategyState
+    params: dict[str, Any] = Field(default_factory=dict)
+    lab_report: dict[str, Any] | None = None
+    live_metrics: dict[str, Any] = Field(default_factory=dict)
+    state_changed_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
+class StrategyTransitionRequest(_Input):
+    reason: str = Field(
+        min_length=1, max_length=1000, description="Por qué se promueve o se retira"
+    )
+
+    @field_validator("reason")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("el motivo no puede estar vacío")
+        return value
+
+
+class StrategyTransition(BaseModel):
+    strategy: Strategy
+    from_state: StrategyState
+    to_state: StrategyState
+    actor: str
+    reason: str
+
+
+# --- alta de usuarios (solo admin) ----------------------------------------------
+
+
+class UserCreate(_Input):
+    email: str = Field(min_length=3, max_length=320, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    role: AppRole = AppRole.MEMBER
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _normalize(cls, value: object) -> object:
+        return value.strip().lower() if isinstance(value, str) else value
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"examples": [{"email": "ana@equipo.dev", "role": "member"}]},
+    )
+
+
+class CreatedUser(BaseModel):
+    id: UUID
+    email: str
+    role: AppRole
+    temporary_password: str = Field(
+        description="Contraseña temporal; se muestra una sola vez y la persona debe cambiarla"
+    )

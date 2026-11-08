@@ -19,6 +19,9 @@ class Settings:
     supabase_url: str = "http://127.0.0.1:54321"
     # Llave pública (anon o publishable) que Kong exige en el header `apikey`.
     supabase_anon_key: str = ""
+    # Llave service_role (o sb_secret_). Solo la usa el alta de usuarios (POST /admin/users);
+    # sin ella esa ruta responde 503 y todo lo demás funciona igual.
+    supabase_service_role_key: str = ""
     # Secreto para validar JWT HS256. Si se deja vacío, solo se aceptan tokens asimétricos
     # (ES256/RS256) validados contra el JWKS de Supabase Auth.
     supabase_jwt_secret: str = ""
@@ -47,6 +50,8 @@ class Settings:
             supabase_url=env.get("SUPABASE_URL", cls.supabase_url),
             supabase_anon_key=env.get("SUPABASE_ANON_KEY")
             or env.get("SUPABASE_PUBLISHABLE_KEY", ""),
+            supabase_service_role_key=env.get("SUPABASE_SERVICE_ROLE_KEY")
+            or env.get("SUPABASE_SECRET_KEY", ""),
             supabase_jwt_secret=env.get("SUPABASE_JWT_SECRET", ""),
             jwt_audience=env.get("SUPABASE_JWT_AUDIENCE", cls.jwt_audience),
             jwt_issuer=env.get("SUPABASE_JWT_ISSUER", ""),

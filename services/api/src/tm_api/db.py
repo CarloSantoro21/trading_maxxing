@@ -1,10 +1,11 @@
 """Acceso a datos a través de PostgREST (Supabase), actuando en nombre del usuario.
 
 Cada llamada reenvía el JWT del usuario en `Authorization`, así PostgreSQL evalúa las
-políticas de RLS con `auth.uid()` y la API nunca ve filas ajenas. Ningún endpoint de
-este servicio necesita la llave service_role: las migraciones permiten al rol
-`authenticated` leer y escribir perfiles, metas y bots, leer trades y equity, y encolar
-backtests en estado `queued`.
+políticas de RLS con `auth.uid()` y la API nunca ve filas ajenas. Las migraciones permiten
+al rol `authenticated` leer y escribir perfiles, metas y bots, leer trades, equity, su rol
+y las estrategias, encolar backtests en estado `queued` y, solo a un admin, registrar
+transiciones del ciclo de vida a su nombre. La única ruta que usa la llave service_role
+es el alta de usuarios (`tm_api.users`), porque la API admin de Supabase Auth la exige.
 
 Los filtros siguen la sintaxis de PostgREST (`{"id": "eq.<uuid>", "closed_at": "is.null"}`).
 """
@@ -47,6 +48,8 @@ _PG_ERRORS: dict[str, tuple[int, str]] = {
     "23502": (UNPROCESSABLE, "Falta un campo obligatorio"),
     "22P02": (UNPROCESSABLE, "Valor con formato inválido"),
     "42501": (status.HTTP_403_FORBIDDEN, "No tienes permiso sobre este recurso"),
+    # La estrategia cambió de estado entre la lectura y la transición (trigger del ciclo de vida).
+    "40001": (status.HTTP_409_CONFLICT, "El recurso cambió mientras se procesaba; reintenta"),
     "PGRST116": (status.HTTP_404_NOT_FOUND, "Recurso no encontrado"),
     "PGRST301": (status.HTTP_401_UNAUTHORIZED, "PostgREST rechazó el token"),
     "PGRST303": (status.HTTP_401_UNAUTHORIZED, "PostgREST rechazó el token"),
