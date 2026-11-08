@@ -26,6 +26,7 @@ _TF_SPEC: dict[Timeframe, str] = {
     Timeframe.M1: "1-MINUTE",
     Timeframe.M15: "15-MINUTE",
     Timeframe.M30: "30-MINUTE",
+    Timeframe.H4: "4-HOUR",
     Timeframe.D1: "1-DAY",
 }
 
@@ -33,6 +34,7 @@ _TF_DELTA: dict[Timeframe, pd.Timedelta] = {
     Timeframe.M1: pd.Timedelta(minutes=1),
     Timeframe.M15: pd.Timedelta(minutes=15),
     Timeframe.M30: pd.Timedelta(minutes=30),
+    Timeframe.H4: pd.Timedelta(hours=4),
     Timeframe.D1: pd.Timedelta(days=1),
 }
 
