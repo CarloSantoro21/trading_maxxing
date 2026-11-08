@@ -49,11 +49,11 @@ PATHS = {
 
 @pytest.fixture
 def base() -> datetime:
-    # Después de "ahora": el historial del registro en memoria usa el reloj real. Se ancla
-    # al inicio del día UTC siguiente para que las señales de las pruebas (hasta +9 h) no
-    # crucen la medianoche y caigan en dos días de equity según la hora en que corra CI.
-    tomorrow = datetime.now(UTC).date() + timedelta(days=1)
-    return datetime(tomorrow.year, tomorrow.month, tomorrow.day, 0, 1, tzinfo=UTC)
+    # Después de "ahora" (el historial del registro en memoria usa el reloj real) y al
+    # inicio de un día UTC, para que base + 0..9 h no cruce la medianoche: la equity es
+    # diaria y la prueba espera un solo punto.
+    tomorrow = datetime.now(UTC) + timedelta(days=1)
+    return tomorrow.replace(hour=0, minute=1, second=0, microsecond=0)
 
 
 def add_strategy(
