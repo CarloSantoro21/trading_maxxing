@@ -115,7 +115,8 @@ def test_shadow_ledger_records_trades_equity_and_metrics(base):
     (trade,) = store.trades_for(sid)
     assert trade["state"] == "shadow" and trade["symbol"] == "BTCUSDT"
     assert trade["ret"] == pytest.approx((110 * 0.999 - 100 * 1.001) / (100 * 1.001))
-    (point,) = store.equity_for(sid)
+    # Un punto por día UTC: si base + 9 h cruza la medianoche hay dos; vale el último.
+    point = store.equity_for(sid)[-1]
     assert point["equity"] == pytest.approx(100_000 * (1 + trade["ret"]))
     m = rec.live_metrics
     assert m["source"] == "reference_ledger" and m["state"] == "shadow"
