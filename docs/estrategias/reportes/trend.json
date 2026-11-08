@@ -19,7 +19,7 @@
     "n_simulations": 10000,
     "block_size": 20,
     "seed": 42,
-    "max_drawdown": 0.2
+    "max_drawdown": 0.4
   },
   "aggregate": {
     "start": "2021-01-01",
@@ -943,7 +943,7 @@
     "approved": false,
     "criteria": {
       "min_oos_sharpe": 0.5,
-      "max_drawdown_p95": 0.2,
+      "max_drawdown_p95": 0.4,
       "min_trades": 100,
       "low_freq_min_trades": 30,
       "low_freq_min_oos_years": 3.0
@@ -960,8 +960,8 @@
         "name": "max_drawdown_p95",
         "passed": false,
         "value": 0.6150846319786607,
-        "threshold": 0.2,
-        "reason": "Drawdown máximo p95 de 61.5% (se requiere menor a 20.0%)"
+        "threshold": 0.4,
+        "reason": "Drawdown máximo p95 de 61.5% (se requiere menor a 40.0%)"
       },
       {
         "name": "min_trades",
@@ -972,13 +972,20 @@
       }
     ],
     "reasons": [
-      "Drawdown máximo p95 de 61.5% (se requiere menor a 20.0%)"
+      "Drawdown máximo p95 de 61.5% (se requiere menor a 40.0%)"
     ],
+    "exposure_by_risk_level": {
+      "1": 0.16257925300183623,
+      "2": 0.24386887950275432,
+      "3": 0.32515850600367247,
+      "4": 0.48773775900550864,
+      "5": 0.6503170120073449
+    },
     "beats_buy_and_hold_sharpe": true
   },
   "execution": {
     "engine": "nautilus",
-    "nautilus_seconds": 0.12940195895498618,
+    "nautilus_seconds": 0.17251712502911687,
     "fills": 326,
     "rejections": [],
     "n_rejections": 0,
@@ -988,10 +995,10 @@
     "final_rel_diff": 2.449978092091531e-13
   },
   "timings_seconds": {
-    "load": 0.01968991698231548,
-    "in_sample": 0.18832570797530934,
-    "out_of_sample": 0.14657500002067536,
-    "total": 0.8496889579691924
+    "load": 0.04673729196656495,
+    "in_sample": 0.19155695801600814,
+    "out_of_sample": 0.18951191700762138,
+    "total": 0.9433384589501657
   },
   "equity_daily": {
     "strategy": [

@@ -2,7 +2,7 @@
 
 Backtest formal del [IntradayMomentumAgent](../../services/agents/src/tm_agents/strategies/intraday_momentum.py) (Shen, Urquhart y Wang, 2022) con el laboratorio del #13. La definición del paper y la adaptación están en [intraday-momentum.md](intraday-momentum.md). Issue: #32.
 
-> **Veredicto: RECHAZADO.** Sharpe out-of-sample de −2.56 (se requiere > 0.5) y drawdown p95 de 42.6 % (se requiere < 20 %). Pierde 34.5 % en 4 años mientras comprar y mantener gana 290 %. Las comisiones (35,945 USDT, 36 % del capital) explican la mayor parte, pero **ni siquiera sin comisiones** tiene ventaja en este periodo (Sharpe −0.54). Confirma el chequeo rápido de [intraday-momentum.md](intraday-momentum.md): la estrategia se queda en `research` y no recibe capital.
+> **Veredicto: RECHAZADO.** Sharpe out-of-sample de −2.56 (se requiere > 0.5) y drawdown p95 de 42.6 % (se requiere < 40 %). Pierde 34.5 % en 4 años mientras comprar y mantener gana 290 %. Las comisiones (35,945 USDT, 36 % del capital) explican la mayor parte, pero **ni siquiera sin comisiones** tiene ventaja en este periodo (Sharpe −0.54). Confirma el chequeo rápido de [intraday-momentum.md](intraday-momentum.md): la estrategia se queda en `research` y no recibe capital.
 
 ## 1. Cómo se corrió
 
@@ -17,7 +17,7 @@ uv run --package tm-engine python -m tm_engine.lab run --strategy intraday_momen
 - **Ejecución**: el out-of-sample se ejecuta en **Nautilus** (`tm_engine.backtest.run_backtest`, venue simulado de Binance). La cuadrícula in-sample usa un simulador vectorizado equivalente (`tm_engine.lab.simulator`); el reporte compara los dos en la misma corrida y la diferencia del equity diario es < 1e-9 (ver la última sección).
 - **Optimización in-sample**: `mode` (`onfh`, `slh` o `both`) × `threshold` (0, 0.25 %, 0.5 % o 1 %; en `slh` no aplica), 9 combinaciones. La apertura del reloj de volumen (`volume_clock_open`) se vuelve a ajustar en cada ventana solo con las velas in-sample. El sleeve compra al cierre de la vela de las 16:00 ET (16:30) y vende al cierre de la de las 16:30 ET (17:00), como el agente, y solo opera la pata larga. Se elige la combinación con mayor Sharpe in-sample (diario, anualizado con 365 días).
 - **Métricas**: sobre la **serie diaria de equity** del sleeve con las posiciones abiertas valuadas a mercado (00:00 UTC). Sharpe con 365 días y tasa libre de riesgo 0.
-- **Monte Carlo**: `tm_agents.montecarlo.bootstrap` sobre los 1,461 retornos diarios out-of-sample (bloques de 20 días, 10,000 simulaciones, semilla 42) y `evaluate(..., oos_years=4)` con `ApprovalCriteria(max_drawdown_p95=0.20)`: Sharpe > 0.5, drawdown p95 < 20 % (el valor por defecto de `ApprovalCriteria`; el real es el `max_drawdown` del perfil) y ≥ 100 trades, o ≥ 30 con ≥ 3 años out-of-sample.
+- **Monte Carlo**: `tm_agents.montecarlo.bootstrap` sobre los 1,461 retornos diarios out-of-sample (bloques de 20 días, 10,000 simulaciones, semilla 42) y `evaluate(..., oos_years=4)` con `ApprovalCriteria(max_drawdown_p95=0.40)`: Sharpe > 0.5, drawdown p95 a tamaño completo < 40 % (techo global de [criterios-de-aprobacion.md](criterios-de-aprobacion.md)) y ≥ 100 trades, o ≥ 30 con ≥ 3 años out-of-sample. El reporte también da la exposición por nivel de riesgo, `min(1, drawdown del nivel / p95)`.
 - **Reporte completo** (por ventana, la cuadrícula in-sample y la serie diaria de equity en JSON): [`reportes/intraday_momentum.json`](reportes/intraday_momentum.json).
 
 ## 2. Resultados
@@ -100,8 +100,10 @@ Como referencia, con el mismo bootstrap pero en horizontes de un año (el criter
 | Criterio | Valor | Umbral | ¿Pasa? |
 |---|---|---|---|
 | Sharpe out-of-sample | -2.56 | > 0.50 | no |
-| Drawdown p95 | 42.6 % | < 20 % | no |
+| Drawdown p95 | 42.6 % | < 40 % | no |
 | Evidencia (trades) | 444 en 4.0 años | ≥ 100, o ≥ 30 con ≥ 3 años | sí |
+
+Exposición por nivel de riesgo si se aprobara, `min(1, drawdown del nivel / p95)`: nivel 1: 23 %, nivel 2: 35 %, nivel 3: 47 %, nivel 4: 70 %, nivel 5: 94 %.
 
 Sharpe contra comprar y mantener (propuesta pendiente de aprobación, no entra al veredicto): -2.56 contra 0.83, no le gana.
 
