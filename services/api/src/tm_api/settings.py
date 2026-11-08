@@ -10,6 +10,15 @@ from dataclasses import dataclass
 
 COMMANDS_STREAM = "tm:commands"
 BACKTESTS_STREAM = "tm:backtests"
+# Orígenes del frontend que pueden llamar a la API desde el navegador (CORS). El sitio es
+# estático y llama a la API directamente, así que sin esto el navegador bloquea las llamadas.
+DEFAULT_CORS_ORIGINS = ("http://localhost:3000", "http://127.0.0.1:3000")
+
+
+def _origins(raw: str | None) -> tuple[str, ...]:
+    if raw is None:
+        return DEFAULT_CORS_ORIGINS
+    return tuple(o.strip().rstrip("/") for o in raw.split(",") if o.strip())
 
 
 @dataclass(frozen=True)
@@ -34,6 +43,8 @@ class Settings:
     backtests_stream: str = BACKTESTS_STREAM
     # Tope aproximado de entradas por stream (XADD MAXLEN ~).
     stream_maxlen: int = 10_000
+    # Orígenes permitidos por CORS (API_CORS_ORIGINS, separados por comas).
+    cors_origins: tuple[str, ...] = DEFAULT_CORS_ORIGINS
 
     @property
     def rest_url(self) -> str:
@@ -58,4 +69,5 @@ class Settings:
             redis_url=env.get("REDIS_URL", cls.redis_url),
             commands_stream=env.get("TM_COMMANDS_STREAM", COMMANDS_STREAM),
             backtests_stream=env.get("TM_BACKTESTS_STREAM", BACKTESTS_STREAM),
+            cors_origins=_origins(env.get("API_CORS_ORIGINS")),
         )

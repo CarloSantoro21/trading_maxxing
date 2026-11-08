@@ -11,6 +11,12 @@ export default function Home() {
         <Link href="/login" className="underline underline-offset-4">
           Iniciar sesión
         </Link>
+        <Link href="/dashboard" className="underline underline-offset-4">
+          Dashboard
+        </Link>
+        <Link href="/strategies" className="underline underline-offset-4">
+          Estrategias
+        </Link>
         <Link href="/onboarding" className="underline underline-offset-4">
           Configurar perfil
         </Link>

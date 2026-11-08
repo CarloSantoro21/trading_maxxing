@@ -23,10 +23,10 @@ export function LoginContent() {
       router.replace(safeNextPath(next));
       return;
     }
-    // Sin destino explícito: al onboarding si todavía no tiene perfil.
+    // Sin destino explícito: al onboarding si todavía no tiene perfil y, si ya lo tiene, al dashboard.
     let destination = "/onboarding";
     try {
-      if (supabase && (await fetchProfile(supabase, userId))) destination = "/";
+      if (supabase && (await fetchProfile(supabase, userId))) destination = "/dashboard";
     } catch {
       // Si no se puede leer el perfil, el onboarding lo volverá a intentar.
     }

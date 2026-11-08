@@ -1,6 +1,7 @@
 "use client";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import Link from "next/link";
 import { useEffect, useId, useRef, useState } from "react";
 import {
   cardClass,
@@ -159,9 +160,14 @@ export function OnboardingWizard({
           Tu perfil de inversión y tus metas quedaron registrados. Puedes volver a esta página
           cuando quieras para cambiarlos.
         </p>
-        <button type="button" className={`${secondaryButtonClass} mt-4`} onClick={() => setSaved(false)}>
-          Editar de nuevo
-        </button>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <Link href="/dashboard" className={primaryButtonClass}>
+            Ir a mi dashboard
+          </Link>
+          <button type="button" className={secondaryButtonClass} onClick={() => setSaved(false)}>
+            Editar de nuevo
+          </button>
+        </div>
       </section>
     );
   }
