@@ -225,7 +225,7 @@ def test_build_worker_with_fake_redis(monkeypatch):
 
     monkeypatch.setattr(redis.Redis, "from_url", staticmethod(lambda url: fakeredis.FakeRedis()))
     w = worker_main.build_worker(
-        {"REDIS_URL": "redis://x", "ORCHESTRATOR_SYMBOLS": "btcusdt, ", "DATA_DIR": "/tmp/x"}
+        {"REDIS_URL": "redis://x", "ORCHESTRATOR_SYMBOLS": "btcusdt, ", "TM_DATA_DIR": "/tmp/x"}
     )
     assert isinstance(w, OrchestratorWorker)
     assert w.shared.symbols == ("BTCUSDT",)

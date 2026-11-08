@@ -90,7 +90,7 @@ def build_worker(env: Mapping[str, str] | None = None) -> Any | None:
         backend = PostgRESTBackend.from_env(env) if has_supabase else InMemoryBackend()
         shared = SharedSignalLayer(
             StrategyRegistry(backend),
-            MarketDataBarsProvider(MarketDataService(data_dir=env.get("DATA_DIR") or None)),
+            MarketDataBarsProvider(MarketDataService(data_dir=env.get("TM_DATA_DIR") or None)),
             RedisStreamSink(client, SIGNALS_STREAM),
             symbols=symbols,
             news=StoreVetoProvider(RedisVetoStore(client)),
