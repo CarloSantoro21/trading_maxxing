@@ -40,6 +40,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from tm_shared.contracts import Horizon, Signal, SimResult
 
 from tm_agents.news.models import Veto
+from tm_agents.orchestrator.exposure import KNOWN_SENSITIVITY
 from tm_agents.registry import StrategyRecord
 from tm_agents.strategy_stats import StrategyState, StrategyStats
 
@@ -69,7 +70,8 @@ class StrategySnapshot(_Frozen):
     oos_sharpe: float
     horizon: Horizon | None = None
     max_drawdown_p95: float | None = Field(default=None, ge=0.0, le=1.0)
-    #: Curva de sensibilidad del laboratorio: pares ``(exposición, drawdown p95)``.
+    #: Curva de sensibilidad del laboratorio: pares ``(exposición, drawdown p95)``. Sale del
+    #: reporte (``exposure_sensitivity``) o de la curva medida para su variante.
     sensitivity: tuple[tuple[float, float], ...] | None = None
 
     @classmethod
@@ -78,7 +80,9 @@ class StrategySnapshot(_Frozen):
         aggregate = report.get("aggregate") or {}
         mc = (report.get("montecarlo") or {}).get("max_drawdown") or {}
         horizon = report.get("horizon")
-        sensitivity = report.get("exposure_sensitivity")
+        # La curva del reporte; si no trae, la medida para su variante (config.strategy).
+        lab_name = (report.get("config") or {}).get("strategy") or record.name
+        sensitivity = report.get("exposure_sensitivity") or KNOWN_SENSITIVITY.get(lab_name)
         return cls(
             name=record.name,
             state=record.state,

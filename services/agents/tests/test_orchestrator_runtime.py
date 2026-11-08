@@ -9,15 +9,19 @@ from decimal import Decimal
 
 import fakeredis
 import httpx
+import numpy as np
 import pytest
 from tm_agents import __main__ as worker_main
+from tm_agents.montecarlo import ONE_YEAR_DAYS, bootstrap
 from tm_agents.orchestrator.bot import BotCommand, BotConfig, BotProfile, BotStatus, CommandType
 from tm_agents.orchestrator.events import StrategySnapshot
 from tm_agents.orchestrator.exposure import (
     CONSERVATIVE_DD_FACTOR,
     TREND_SENSITIVITY,
+    TREND_VOL_SENSITIVITY,
     exposure_for_level,
     level_drawdown,
+    measure_sensitivity,
     sensitivity_for,
 )
 from tm_agents.orchestrator.runtime import OrchestratorWorker, memory_sinks
@@ -284,19 +288,34 @@ def test_main_loop_survives_build_errors(tmp_path, monkeypatch):
 
 # --- exposición por nivel ------------------------------------------------------------------
 def test_exposure_uses_the_measured_curve_not_the_proportional_rule():
-    # Nivel 3 (20 %) con el p95 de 61.5 % del Trend: la regla proporcional daría 32.5 %, pero
-    # el laboratorio midió 25.2 % con 33 % invertido; la curva pide ~25 %.
-    k = exposure_for_level(3, 0.615, TREND_SENSITIVITY)
-    assert 0.24 < k < 0.26
-    assert k < 0.20 / 0.615
-    levels = [exposure_for_level(n, 0.615, TREND_SENSITIVITY) for n in range(1, 6)]
-    assert levels == sorted(levels) and levels[-1] < 1.0
+    # Nivel 3 (20 %) con el p95 a 1 año de 43.8 % del Trend: la regla proporcional daría
+    # 45.6 %, pero con 45.6 % invertido el p95 medido es de ~22.2 %; la curva pide ~40.6 %.
+    k = exposure_for_level(3, 0.4383, TREND_SENSITIVITY)
+    assert k == pytest.approx(0.406, abs=0.002)
+    assert k < 0.20 / 0.4383
+    levels = [exposure_for_level(n, 0.4383, TREND_SENSITIVITY) for n in range(1, 6)]
+    assert levels == sorted(levels) and levels[-1] < 0.40 / 0.4383
 
 
 def test_exposure_without_curve_is_conservative():
-    k = exposure_for_level(3, 0.615)
-    assert k == pytest.approx(0.20 / 0.615 / CONSERVATIVE_DD_FACTOR)
-    assert k <= exposure_for_level(3, 0.615, TREND_SENSITIVITY) + 0.01
+    k = exposure_for_level(3, 0.4383)
+    assert k == pytest.approx(0.20 / 0.4383 / CONSERVATIVE_DD_FACTOR)
+    for curve in (TREND_SENSITIVITY, TREND_VOL_SENSITIVITY):
+        for level in range(1, 5):
+            assert exposure_for_level(level, curve[0][1]) <= exposure_for_level(
+                level, curve[0][1], curve
+            )
+
+
+def test_measure_sensitivity_reproduces_the_lab_method():
+    rng = np.random.default_rng(0)
+    returns = rng.normal(0.001, 0.03, size=730)
+    curve = measure_sensitivity(returns, (1.0, 0.5), n_simulations=500)
+    (k1, p1), (k2, p2) = curve
+    assert (k1, k2) == (1.0, 0.5)
+    assert 0 < p2 < p1 and p2 > 0.5 * p1 * 0.95  # baja menos que en proporción
+    same = bootstrap(returns, 500, seed=42, block_size=20, horizon=ONE_YEAR_DAYS)
+    assert p1 == pytest.approx(same.max_drawdown.p95)
 
 
 @pytest.mark.parametrize("p95", [None, 0.0, float("nan")])
@@ -333,6 +352,17 @@ def test_snapshot_from_record_reads_the_lab_report():
     assert snap.sensitivity == ((1.0, 0.5), (0.5, 0.3))
     stats = snap.to_stats(state=StrategyState.ACTIVE)
     assert stats.state is StrategyState.ACTIVE and stats.max_drawdown_p95 == 0.5
+    vol = StrategySnapshot.from_record(
+        StrategyRecord(
+            "trend",
+            lab_report={
+                **report,
+                "exposure_sensitivity": None,
+                "config": {"strategy": "trend_vol"},
+            },
+        )
+    )
+    assert vol.sensitivity == TREND_VOL_SENSITIVITY
     empty = StrategySnapshot.from_record(StrategyRecord("y", state=StrategyState.ACTIVE))
     assert empty.volatility == 0.0 and empty.max_drawdown_p95 is None
     assert json.loads(snap.model_dump_json())["state"] == "shadow"

@@ -1,23 +1,26 @@
 """Exposición de cada sleeve según el nivel de riesgo del usuario (propuesta, sección 3.4).
 
 La regla original es ``exposición = min(1, drawdown_del_nivel / drawdown_p95)``, que supone
-que el drawdown escala en proporción a lo invertido. El laboratorio mostró que no es así
-(`docs/estrategias/resultados-trend.md`, "Sensibilidad: exposición reducida"): con el mismo
-block bootstrap, invertir 33 % del sleeve del TrendAgent da un p95 de 25.2 %, no de 20 %; para
-llegar a 20 % hace falta ~25 %. La capitalización compuesta hace que el drawdown baje menos que
-en proporción.
+que el drawdown escala en proporción a lo invertido. El laboratorio mostró que no es así: la
+capitalización compuesta hace que el drawdown baje **menos** que en proporción al reducir la
+exposición. Con el criterio a 4 años (PR #80) invertir 33 % del TrendAgent daba un p95 de
+25.2 %, no de 20 %. Con el criterio vigente, el p95 a 1 año (#83), el efecto es menor pero
+sigue ahí: con 40 % invertido el p95 es 1.13 veces el proporcional y con 10 %, 1.19 veces.
 
 Por eso la exposición se calcula así:
 
-1. **Con curva de sensibilidad** (pares ``(exposición k, drawdown p95 con k)`` del
-   laboratorio): se busca, por interpolación lineal, la ``k`` cuyo p95 relativo
-   (``p95(k) / p95(1)``) iguala ``drawdown_del_nivel / p95``. La curva se usa como forma
-   relativa, así sigue sirviendo si el p95 del reporte se actualiza. La del TrendAgent sale
-   de la tabla del reporte (:data:`TREND_SENSITIVITY`); un reporte nuevo puede traer la suya
-   en ``lab_report["exposure_sensitivity"]``.
+1. **Con curva de sensibilidad** (pares ``(exposición k, drawdown p95 con k)``): se busca, por
+   interpolación lineal, la ``k`` cuyo p95 relativo (``p95(k) / p95(1)``) iguala
+   ``drawdown_del_nivel / p95``. La curva se usa como forma relativa, así sigue sirviendo si
+   el p95 del reporte se actualiza. Las curvas de ``trend`` y ``trend_vol`` se midieron con
+   :func:`measure_sensitivity` sobre los retornos diarios out-of-sample de sus reportes
+   (``docs/estrategias/reportes/``) con el mismo block bootstrap del laboratorio (bloques de
+   20 días, 10,000 simulaciones, semilla 42, horizonte de 365 días); reproducen el p95 de
+   cada reporte con k = 1. Un reporte nuevo puede traer la suya en
+   ``lab_report["exposure_sensitivity"]``.
 2. **Sin curva**: ``min(1, drawdown_del_nivel / (p95 * CONSERVATIVE_DD_FACTOR))`` con un factor
-   de 1.3. Es la pendiente de la curva del TrendAgent en exposiciones bajas (19.6 / 61.5 / 0.25
-   ≈ 1.27 y 25.2 / 61.5 / 0.33 ≈ 1.24), así que nunca invierte más que la curva medida.
+   de 1.3, mayor que el peor medido (1.19 a 1 año y 1.27 a 4 años), así que nunca invierte
+   más que una curva medida.
 
 Una estrategia sin p95 (sin Monte Carlo) recibe exposición 0.
 """
@@ -37,19 +40,42 @@ LEVEL_MAX_DRAWDOWN: Mapping[int, float] = MappingProxyType(
 #: Factor conservador cuando no hay curva: el p95 con exposición k se toma como 1.3 k p95.
 CONSERVATIVE_DD_FACTOR = 1.3
 
-#: Sensibilidad medida del TrendAgent (resultados-trend.md, walk-forward 2021-2024).
+#: Exposiciones en las que :func:`measure_sensitivity` mide la curva.
+SENSITIVITY_GRID: tuple[float, ...] = (1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1)
+
+#: Sensibilidad medida del TrendAgent sin vol targeting (reportes/trend.json, 2021-2025,
+#: drawdown p95 a 1 año).
 TREND_SENSITIVITY: tuple[tuple[float, float], ...] = (
-    (1.00, 0.615),
-    (0.65, 0.448),
-    (0.60, 0.420),
-    (0.50, 0.362),
-    (0.33, 0.252),
-    (0.25, 0.196),
+    (1.0, 0.4383),
+    (0.9, 0.4023),
+    (0.8, 0.3650),
+    (0.7, 0.3257),
+    (0.6, 0.2847),
+    (0.5, 0.2418),
+    (0.4, 0.1975),
+    (0.3, 0.1510),
+    (0.2, 0.1025),
+    (0.1, 0.0522),
 )
 
-#: Curvas conocidas por estrategia (se usan si el reporte no trae la suya).
+#: Sensibilidad medida del TrendAgent con vol targeting (reportes/trend_vol.json).
+TREND_VOL_SENSITIVITY: tuple[tuple[float, float], ...] = (
+    (1.0, 0.3561),
+    (0.9, 0.3254),
+    (0.8, 0.2938),
+    (0.7, 0.2609),
+    (0.6, 0.2272),
+    (0.5, 0.1923),
+    (0.4, 0.1563),
+    (0.3, 0.1191),
+    (0.2, 0.0807),
+    (0.1, 0.0410),
+)
+
+#: Curvas conocidas por nombre del reporte (``config.strategy``); se usan si el reporte no
+#: trae la suya.
 KNOWN_SENSITIVITY: Mapping[str, tuple[tuple[float, float], ...]] = MappingProxyType(
-    {"trend": TREND_SENSITIVITY}
+    {"trend": TREND_SENSITIVITY, "trend_vol": TREND_VOL_SENSITIVITY}
 )
 
 
@@ -85,6 +111,36 @@ def sensitivity_for(
     return reported or KNOWN_SENSITIVITY.get(name)
 
 
+def measure_sensitivity(
+    daily_returns: Sequence[float],
+    exposures: Sequence[float] = SENSITIVITY_GRID,
+    *,
+    n_simulations: int = 10_000,
+    block_size: int = 20,
+    seed: int = 42,
+    horizon: int | None = None,
+) -> tuple[tuple[float, float], ...]:
+    """Curva ``(k, drawdown p95)`` escalando los retornos diarios por ``k``.
+
+    Es el método de la sección de sensibilidad del laboratorio: mismo block bootstrap
+    (``tm_agents.montecarlo.bootstrap``) para cada ``k``; ignora que la comisión también
+    escala. ``horizon`` por omisión es el del criterio (365 días).
+    """
+    import numpy as np
+
+    from tm_agents.montecarlo import ONE_YEAR_DAYS, bootstrap
+
+    returns = np.asarray(daily_returns, dtype=float)
+    steps = ONE_YEAR_DAYS if horizon is None else horizon
+    out = []
+    for k in exposures:
+        report = bootstrap(
+            returns * float(k), n_simulations, seed=seed, block_size=block_size, horizon=steps
+        )
+        out.append((float(k), float(report.max_drawdown.p95)))
+    return tuple(out)
+
+
 def _relative_curve(points: Sequence[tuple[float, float]]) -> list[tuple[float, float]] | None:
     """Curva ``(k, p95(k) / p95(1))`` ordenada por k, con el origen; None si no sirve."""
     clean = sorted(
@@ -116,8 +172,11 @@ __all__ = [
     "CONSERVATIVE_DD_FACTOR",
     "KNOWN_SENSITIVITY",
     "LEVEL_MAX_DRAWDOWN",
+    "SENSITIVITY_GRID",
     "TREND_SENSITIVITY",
+    "TREND_VOL_SENSITIVITY",
     "exposure_for_level",
     "level_drawdown",
+    "measure_sensitivity",
     "sensitivity_for",
 ]

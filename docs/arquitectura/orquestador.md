@@ -103,28 +103,38 @@ resto de la posición quedaría bajo el mínimo, se cierra todo.
 ### Exposición por nivel
 
 La regla original (`min(1, drawdown_del_nivel / drawdown_p95)`) supone que el drawdown baja en
-proporción a lo invertido. El laboratorio mostró que no
-([resultados-trend.md](../estrategias/resultados-trend.md), "Sensibilidad: exposición
-reducida"): con 33 % invertido el p95 del TrendAgent es de 25.2 %, no de 20 %.
+proporción a lo invertido. El laboratorio mostró que no: la capitalización compuesta hace que
+baje menos. Con el criterio a 4 años del PR #80, invertir 33 % del TrendAgent daba un p95 de
+25.2 %, no de 20 %. Con el criterio vigente (p95 a 1 año, #83) el efecto es menor pero sigue:
+con 40 % invertido el p95 es 1.13 veces el proporcional y con 10 %, 1.19 veces.
 
-- **Con curva de sensibilidad** (pares `(exposición, p95)` del laboratorio): se interpola la
-  exposición cuyo p95 relativo (`p95(k) / p95(1)`) iguala `drawdown_del_nivel / p95`. La curva
-  del TrendAgent está en `exposure.TREND_SENSITIVITY`; un reporte nuevo puede traer la suya en
+- **Con curva de sensibilidad** (pares `(exposición, p95)`): se interpola la exposición cuyo
+  p95 relativo (`p95(k) / p95(1)`) iguala `drawdown_del_nivel / p95`. Las curvas de `trend` y
+  `trend_vol` (`exposure.TREND_SENSITIVITY` y `TREND_VOL_SENSITIVITY`) se midieron con
+  `exposure.measure_sensitivity` sobre los retornos diarios out-of-sample de
+  `docs/estrategias/reportes/trend.json` y `trend_vol.json`: el mismo block bootstrap del
+  laboratorio (bloques de 20 días, 10,000 simulaciones, semilla 42, 365 días) con los retornos
+  multiplicados por `k`. Con `k = 1` reproducen el p95 de cada reporte (43.83 % y 35.61 %). Se
+  elige por `config.strategy` del reporte; un reporte nuevo puede traer la suya en
   `lab_report["exposure_sensitivity"]`.
-- **Sin curva**: `min(1, drawdown_del_nivel / (p95 × 1.3))`. El 1.3 es la pendiente medida del
-  TrendAgent en exposiciones bajas (19.6 / 61.5 / 0.25 ≈ 1.27), así que nunca invierte más que
-  la curva medida.
+- **Sin curva**: `min(1, drawdown_del_nivel / (p95 × 1.3))`. El 1.3 es mayor que el peor factor
+  medido (1.19 a 1 año, 1.27 a 4 años), así que nunca invierte más que una curva medida.
 - Sin p95 (sin Monte Carlo), la exposición es 0.
 
-Con el p95 de 61.5 % del TrendAgent:
+El p95 es el de `lab_report.montecarlo.max_drawdown`, que desde el #83 es el del criterio (a 1
+año). Con los reportes actuales:
 
-| Nivel | Drawdown tolerado | Regla proporcional | Con la curva |
-|---|---|---|---|
-| 1 | 10 % | 16.3 % | 12.8 % |
-| 2 | 15 % | 24.4 % | 19.1 % |
-| 3 | 20 % | 32.5 % | 25.6 % |
-| 4 | 30 % | 48.8 % | 40.4 % |
-| 5 | 40 % | 65.0 % | 56.6 % |
+| Nivel | Drawdown tolerado | `trend` proporcional | `trend` con la curva | `trend_vol` proporcional | `trend_vol` con la curva |
+|---|---|---|---|---|---|
+| 1 | 10 % | 22.8 % | 19.5 % | 28.1 % | 25.0 % |
+| 2 | 15 % | 34.2 % | 29.8 % | 42.1 % | 38.3 % |
+| 3 | 20 % | 45.6 % | 40.6 % | 56.2 % | 52.2 % |
+| 4 | 30 % | 68.4 % | 63.7 % | 84.2 % | 82.0 % |
+| 5 | 40 % | 91.3 % | 89.4 % | 100 % | 100 % |
+
+Con vol targeting (#83) la `confidence` del TrendAgent ya es la exposición objetivo del sleeve
+(voto por escala de volatilidad, con su banda de rebalanceo), así que el BotRunner la usa igual
+que el voto de los canales.
 
 No hay topes manuales del administrador: todo sale del perfil, del laboratorio y del estado.
 
