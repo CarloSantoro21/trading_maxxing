@@ -28,6 +28,11 @@ El libro del bot (efectivo, posiciones y equity a mercado) es **virtual y optimi
 que cada decisión se llena al precio del evento con la comisión de 0.1 %. Es lo que usa para
 dimensionar y para los límites del RiskAgent; el P&L real lo lleva el engine por bot y sleeve.
 
+Las salidas por SL/TP **reales** (Kronos) las ejecuta el motor con su bracket; el libro
+virtual las refleja cuando el precio de un evento posterior del símbolo cruza el nivel
+(:meth:`VirtualBook.settle_brackets`). Es una aproximación: el libro no lee los fills del
+motor.
+
 Comandos (``tm:commands``): ``start`` reanuda, ``stop`` deja de operar (las posiciones se
 quedan) y ``kill`` cierra todas las posiciones a mercado y detiene el bot. El kill switch
 por drawdown del RiskAgent hace lo mismo que ``kill``.
@@ -148,6 +153,9 @@ class SleevePosition:
     quantity: Decimal = ZERO
     fraction: float = 0.0  # fracción de la posición objetivo completa que se tiene (0 a 1)
     avg_price: Decimal = ZERO
+    #: SL y TP reales del último tramo (solo estrategias con stop real, como Kronos).
+    stop_loss: Decimal | None = None
+    take_profit: Decimal | None = None
 
 
 @dataclass
@@ -210,7 +218,33 @@ class VirtualBook:
             self.cash += qty * price - fee
             if pos.quantity <= 0:
                 pos.quantity, pos.fraction, pos.avg_price = ZERO, 0.0, ZERO
+                pos.stop_loss = pos.take_profit = None
         self.trades_today += 1
+
+    def settle_brackets(self, symbol: str, price: Decimal) -> list[tuple[str, Decimal]]:
+        """Cierra en el libro los sleeves con stop real cuyo SL o TP ya tocó ``price``.
+
+        El motor ejecuta esos SL/TP por su cuenta (bracket), así que aquí no se emite nada:
+        solo se refleja la salida para que el sleeve pueda volver a entrar. Se liquida al
+        nivel del stop o del objetivo. Devuelve ``(sleeve, precio)`` de cada cierre.
+        """
+        out: list[tuple[str, Decimal]] = []
+        for (sleeve, sym), pos in self._open():
+            if sym != symbol or pos.stop_loss is None or pos.take_profit is None:
+                continue
+            level = (
+                pos.stop_loss
+                if price <= pos.stop_loss
+                else pos.take_profit
+                if price >= pos.take_profit
+                else None
+            )
+            if level is None:
+                continue
+            self.apply(sleeve, sym, OrderSide.SELL, pos.quantity, level)
+            self.trades_today -= 1  # la salida la hizo el motor, no cuenta como decisión nueva
+            out.append((sleeve, level))
+        return out
 
     def portfolio(self) -> Portfolio:
         return Portfolio(
@@ -311,8 +345,9 @@ class BotRunner:
         """Procesa un evento de ``tm:signals``; devuelve lo que se publicó (reales y shadow)."""
         if not self.running or event.symbol not in self.config.profile.instruments:
             return []
-        self.book.mark(event.symbol, event.price, event.bar_close)
-        self.shadow_book.mark(event.symbol, event.price, event.bar_close)
+        for book in (self.book, self.shadow_book):
+            book.mark(event.symbol, event.price, event.bar_close)
+            book.settle_brackets(event.symbol, event.price)
         if self.risk.check_drawdown(self.book.portfolio()):
             dd = self.risk.drawdown(self.book.portfolio())
             return self.kill(event.bar_close, f"kill switch: drawdown {dd:.2%}")
@@ -427,6 +462,8 @@ class BotRunner:
         )
         book.apply(event.strategy, event.symbol, OrderSide.BUY, decision.quantity, event.price)
         pos.fraction = min(1.0, pos.fraction + delta * min(1.0, filled))
+        if event.hard_stop:
+            pos.stop_loss, pos.take_profit = event.stop_loss, event.take_profit
         return [self._emit(envelope, shadow=shadow)]
 
     def _reduce(
