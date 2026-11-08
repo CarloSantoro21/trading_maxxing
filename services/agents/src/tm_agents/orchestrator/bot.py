@@ -27,6 +27,9 @@ tendrían si fueran activas) sobre un libro aparte y se publican en ``tm:shadow`
 El libro del bot (efectivo, posiciones y equity a mercado) es **virtual y optimista**: supone
 que cada decisión se llena al precio del evento con la comisión de 0.1 %. Es lo que usa para
 dimensionar y para los límites del RiskAgent; el P&L real lo lleva el engine por bot y sleeve.
+Al arrancar (o reanudar tras un ``stop``) el supervisor lo reconstruye con :meth:`BotRunner.restore`
+desde la tabla ``trades``, que es la fuente de verdad de lo que el motor ejecutó
+(ver :mod:`tm_agents.orchestrator.state`).
 
 Las salidas por SL/TP **reales** (Kronos) las ejecuta el motor con su bracket; el libro
 virtual las refleja cuando el precio de un evento posterior del símbolo cruza el nivel
@@ -60,7 +63,8 @@ from tm_shared.contracts import (
 
 from tm_agents.allocator import AllocationResult, PortfolioAllocator
 from tm_agents.orchestrator.exposure import exposure_for_level, sensitivity_for
-from tm_agents.orchestrator.policy import sell_levels
+from tm_agents.orchestrator.policy import policy_for, sell_levels
+from tm_agents.orchestrator.state import BotState
 from tm_agents.orchestrator.streams import DecisionSink
 from tm_agents.risk import Portfolio, RiskAgent, RiskLimits, TradeProposal
 from tm_agents.signals import SignalEvent, StrategySnapshot
@@ -180,6 +184,32 @@ class VirtualBook:
         self.peak_equity = Decimal(capital)
         self.day_start_equity = Decimal(capital)
         self.day: str | None = None
+        self.trades_today = 0
+
+    def restore(self, state: BotState, capital: Decimal) -> None:
+        """Deja el libro como lo dejó el motor antes de un reinicio (ver ``orchestrator.state``).
+
+        Las posiciones sin ``target_fraction`` (filas anteriores al #89) se toman completas
+        (fracción 1): la siguiente señal con menos confianza vende la parte proporcional.
+        """
+        self.positions.clear()
+        cost = ZERO
+        realized = state.closed_pnl
+        for open_pos in state.positions:
+            fraction = open_pos.target_fraction
+            self.positions[(open_pos.sleeve, open_pos.symbol)] = SleevePosition(
+                quantity=open_pos.quantity,
+                fraction=1.0 if fraction is None else min(1.0, max(0.0, fraction)),
+                avg_price=open_pos.avg_price,
+                stop_loss=open_pos.stop_loss,
+                take_profit=open_pos.take_profit,
+            )
+            cost += open_pos.quantity * open_pos.avg_price
+            realized += open_pos.realized_pnl
+        self.cash = Decimal(capital) + realized - cost
+        self.peak_equity = max(Decimal(capital) + state.peak_closed_pnl, self.equity())
+        self.day_start_equity = self.equity()
+        self.day = None
         self.trades_today = 0
 
     def position(self, sleeve: str, symbol: str) -> SleevePosition:
@@ -303,6 +333,28 @@ class BotRunner:
         self.kill_reason: str | None = None
 
     # --- control ---------------------------------------------------------------------------
+    def restore(self, state: BotState) -> int:
+        """Reconstruye el libro real del bot desde ``trades``; devuelve las posiciones abiertas.
+
+        Solo las estrategias con stop real (Kronos) conservan su SL/TP en el libro (para
+        :meth:`VirtualBook.settle_brackets`); en las demás el bracket es de catástrofe y la
+        salida la decide la señal.
+        """
+        if state.bot_id != self.bot_id:
+            raise ValueError(f"estado de {state.bot_id} para el bot {self.bot_id}")
+        self.book.restore(state, self.config.profile.capital)
+        for (sleeve, _symbol), pos in self.book.positions.items():
+            if not policy_for(sleeve).signal_levels:
+                pos.stop_loss = pos.take_profit = None
+        held = self.book.held()
+        if held:
+            log.info(
+                "bot %s restaurado desde trades: %s",
+                self.bot_id,
+                ", ".join(f"{s}:{sym}={p.quantity}" for s, sym, p in held),
+            )
+        return len(held)
+
     @property
     def running(self) -> bool:
         return self.status is BotStatus.RUNNING

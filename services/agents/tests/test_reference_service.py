@@ -270,6 +270,12 @@ def test_guard_fails_closed_and_caches():
             raise RegistryError("sin red")
 
     assert TradingSleeveGuard(Broken()).allows("trend") is False  # type: ignore[arg-type]
+    # #89: los cierres pasan en cualquier estado, aunque el registro falle
+    assert TradingSleeveGuard(Broken()).allows("trend", reduce_only=True) is True  # type: ignore[arg-type]
+    assert guard("nope", reduce_only=True) is True
+    registry.transition("trend", S.RETIRED, "system", "x")
+    clock[0] = 30
+    assert guard("trend") is False and guard("trend", reduce_only=True) is True
     assert [can_send_orders(s) for s in S] == [s in (S.ACTIVE, S.PROBATION) for s in S]
     assert can_send_orders(None) is False
 

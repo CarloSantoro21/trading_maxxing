@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import httpx
 import numpy as np
 import pandas as pd
 import pytest
@@ -143,3 +145,85 @@ class FramesLoader:
 @pytest.fixture
 def frames_loader():
     return FramesLoader
+
+
+# --- orquestador en el reloj del motor y tabla trades en memoria (#89) -------------------
+
+
+class LiveOrchestration:
+    """Fuente de decisiones que corre el orquestador en el reloj del motor (como en vivo).
+
+    En cada `poll(now)` del motor: aplica los `hooks` (p. ej. el LifecycleMonitor), corre la
+    capa compartida en ese cierre de vela y le pasa los eventos a los runners. Devuelve las
+    decisiones reales; las de shadow se quedan en su sink.
+    """
+
+    def __init__(self, layer, runners, *, start=None, hooks=()) -> None:
+        self.layer = layer
+        self.runners = list(runners)
+        self.start = start
+        self.hooks = list(hooks)
+        self.events = []
+        self.decisions = []
+
+    def poll(self, now):
+        if self.start is not None and now < self.start:
+            return []
+        for hook in self.hooks:
+            hook(now, self)
+        out = []
+        for event in self.layer.on_bar_close(now):
+            self.events.append(event)
+            for runner in self.runners:
+                out.extend(e for e in runner.on_event(event) if not e.shadow)
+        self.decisions.extend(out)
+        return out
+
+
+@pytest.fixture
+def live_orchestration():
+    return LiveOrchestration
+
+
+class FakeTradesTable:
+    """PostgREST mínimo para `public.trades` (POST, PATCH por id y GET con filtros), sin red."""
+
+    def __init__(self) -> None:
+        self.rows: list[dict] = []
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        if request.method == "POST":
+            row = {**json.loads(request.content), "id": f"t-{len(self.rows) + 1}"}
+            row.setdefault("closed_at", None)
+            row.setdefault("pnl", None)
+            self.rows.append(row)
+            return httpx.Response(201, json=[row])
+        if request.method == "PATCH":
+            trade_id = params["id"].removeprefix("eq.")
+            row = next(r for r in self.rows if r["id"] == trade_id)
+            row.update(json.loads(request.content))
+            return httpx.Response(200, json=[row])
+        rows = [r for r in self.rows if self._match(r, params)]
+        offset, limit = int(params.get("offset", 0)), int(params.get("limit", 10**9))
+        return httpx.Response(200, json=rows[offset : offset + limit])
+
+    @staticmethod
+    def _match(row: dict, params: dict) -> bool:
+        for col, cond in params.items():
+            if col in ("select", "order", "limit", "offset"):
+                continue
+            op, _, value = cond.partition(".")
+            if op == "eq" and str(row.get(col)) != value:
+                return False
+            if op == "is" and value == "null" and row.get(col) is not None:
+                return False
+        return True
+
+    def client(self) -> httpx.Client:
+        return httpx.Client(transport=httpx.MockTransport(self.handler))
+
+
+@pytest.fixture
+def trades_table():
+    return FakeTradesTable()

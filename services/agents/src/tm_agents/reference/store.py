@@ -1,6 +1,6 @@
 """Persistencia del ledger de referencia: ``reference_trades`` y ``reference_equity``.
 
-Las tablas están en la migración ``20261109000000_reference_ledger.sql``. Las escribe solo el
+Las tablas están en la migración ``20261109000200_reference_ledger.sql``. Las escribe solo el
 backend con la llave ``service_role``; cualquier usuario autenticado las lee (página
 ``/strategies``, #58). Hay dos backends: :class:`InMemoryReferenceStore` (pruebas) y
 :class:`PostgRESTReferenceStore` (Supabase).

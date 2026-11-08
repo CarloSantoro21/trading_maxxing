@@ -8,6 +8,7 @@
   estrategias en shadow).
 - :mod:`~tm_agents.orchestrator.supervisor`: bots en ``running`` de Supabase y comandos de
   ``tm:commands`` (``start``, ``stop``, ``kill``).
+- :mod:`~tm_agents.orchestrator.state`: el libro de cada bot tras un reinicio, desde ``trades``.
 - :mod:`~tm_agents.orchestrator.runtime`: el worker en vivo y :func:`run_offline` para backtest.
 
 Documentación: ``docs/arquitectura/orquestador.md``.
@@ -24,6 +25,11 @@ from tm_agents.orchestrator.bot import (
 from tm_agents.orchestrator.exposure import exposure_for_level
 from tm_agents.orchestrator.runtime import OfflineResult, OrchestratorWorker, run_offline
 from tm_agents.orchestrator.shared import FrameBarsProvider, SharedSignalLayer
+from tm_agents.orchestrator.state import (
+    BotState,
+    InMemoryTradeStateRepository,
+    PostgRESTTradeStateRepository,
+)
 from tm_agents.orchestrator.streams import (
     COMMANDS_STREAM,
     DECISIONS_STREAM,
@@ -42,15 +48,18 @@ __all__ = [
     "BotConfig",
     "BotProfile",
     "BotRunner",
+    "BotState",
     "BotStatus",
     "BotSupervisor",
     "CommandType",
     "FrameBarsProvider",
     "InMemoryBotRepository",
+    "InMemoryTradeStateRepository",
     "ListSignalSource",
     "MemorySink",
     "OfflineResult",
     "OrchestratorWorker",
+    "PostgRESTTradeStateRepository",
     "SharedSignalLayer",
     "SignalEvent",
     "StrategySnapshot",
