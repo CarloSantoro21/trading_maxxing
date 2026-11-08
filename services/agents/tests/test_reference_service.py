@@ -18,16 +18,13 @@ import httpx
 import pytest
 from tm_agents.lifecycle import LifecycleMonitor
 from tm_agents.reference import (
+    REFERENCE_CHECKPOINT,
     InMemoryReferenceStore,
-    InMemorySignalSource,
     PostgRESTReferenceStore,
-    RedisStreamSignalSource,
     ReferenceService,
     ReferenceStoreError,
-    SignalEnvelope,
     TradingSleeveGuard,
     can_send_orders,
-    publish_signal,
 )
 from tm_agents.reference.service import DrawdownBand
 from tm_agents.registry import (
@@ -36,6 +33,7 @@ from tm_agents.registry import (
     StaleStateError,
     StrategyRegistry,
 )
+from tm_agents.signals import ListSignalSource, RedisSignalSource, SignalEvent, publish_signal
 from tm_agents.strategy_stats import StrategyState as S
 from tm_shared.contracts import Direction, Horizon, Signal, Timeframe
 
@@ -71,12 +69,12 @@ def add_strategy(
 def sig(
     strategy: str,
     at: datetime,
-    close: float | None = 100.0,
+    close: float = 100.0,
     direction: Direction = Direction.LONG,
     *,
     symbol: str = "BTCUSDT",
     timeframe: Timeframe = Timeframe.H4,
-) -> SignalEnvelope:
+) -> SignalEvent:
     signal = Signal(
         symbol=symbol,
         direction=direction,
@@ -86,7 +84,7 @@ def sig(
         source=strategy,
         generated_at=at,
     )
-    return SignalEnvelope(signal=signal, close=close)
+    return SignalEvent.from_signal(signal, close)
 
 
 def make_service(registry=None, store=None, source=None, **kwargs) -> ReferenceService:
@@ -94,7 +92,7 @@ def make_service(registry=None, store=None, source=None, **kwargs) -> ReferenceS
     return ReferenceService(
         StrategyRegistry() if registry is None else registry,
         InMemoryReferenceStore() if store is None else store,
-        InMemorySignalSource() if source is None else source,
+        ListSignalSource() if source is None else source,
         **kwargs,
     )
 
@@ -106,7 +104,7 @@ def test_shadow_ledger_records_trades_equity_and_metrics(base):
     registry = StrategyRegistry()
     add_strategy(registry, "kronos", S.SHADOW, base)
     store = InMemoryReferenceStore()
-    source = InMemorySignalSource()
+    source = ListSignalSource()
     svc = make_service(registry, store, source)
     source.push(sig("kronos", base + timedelta(hours=4), 100.0))
     source.push(sig("kronos", base + timedelta(hours=8), 110.0, Direction.FLAT))
@@ -134,7 +132,7 @@ def test_shadow_ledger_records_trades_equity_and_metrics(base):
 def test_monitor_runs_on_each_trade_close_and_daily(base, monkeypatch):
     registry = StrategyRegistry()
     add_strategy(registry, "kronos", S.SHADOW, base)
-    source = InMemorySignalSource()
+    source = ListSignalSource()
     monitor = LifecycleMonitor()
     calls = []
     real = monitor.check
@@ -180,7 +178,7 @@ def test_active_drawdown_beyond_p95_moves_to_probation_on_trade_close(base, capl
 def test_probation_without_recovery_is_retired_by_daily_check(base):
     registry = StrategyRegistry()
     add_strategy(registry, "kronos", S.PROBATION, base - timedelta(days=31))
-    source = InMemorySignalSource()
+    source = ListSignalSource()
     store = InMemoryReferenceStore()
     svc = make_service(registry, store, source)
     source.push(sig("kronos", base + timedelta(hours=1), 100.0))
@@ -236,7 +234,7 @@ def test_shadow_strategies_never_send_orders(base):
     registry = StrategyRegistry()
     add_strategy(registry, "kronos", S.SHADOW, base)
     add_strategy(registry, "trend", S.ACTIVE, base)
-    source = RedisStreamSignalSource(r, checkpoint_key="tm:reference:last_signal_id")
+    source = RedisSignalSource(r, checkpoint_key=REFERENCE_CHECKPOINT)
     svc = make_service(registry, source=source)
     for i, name in enumerate(["kronos", "trend", "kronos", "trend"]):
         direction = Direction.LONG if i < 2 else Direction.FLAT
@@ -282,13 +280,13 @@ def test_guard_fails_closed_and_caches():
 def test_failures_reset_clean_days_and_promotion_eligibility(base):
     registry = StrategyRegistry()
     add_strategy(registry, "kronos", S.SHADOW, base)
-    source = InMemorySignalSource()
+    source = ListSignalSource()
     svc = make_service(registry, source=source)
-    source.push(sig("kronos", base + timedelta(hours=1), close=None))  # sin precio: falla
+    source.push(sig("kronos", base + timedelta(hours=1), symbol="SOLUSDT"))  # no la opera: falla
     svc.run_once(base + timedelta(days=1))
     shadow = registry.get("kronos").live_metrics["shadow"]
     assert shadow["failures"] == 1
-    assert "precio" in shadow["last_failure_reason"]
+    assert "SOLUSDT" in shadow["last_failure_reason"]
     assert shadow["clean_since"] == (base + timedelta(days=1)).isoformat()
     assert shadow["days_clean"] == 0
     # 8 días después, con señales al día, ya cumple los 7 días mínimos
@@ -372,7 +370,7 @@ def test_reentering_shadow_starts_a_new_run(base):
 def test_restart_resumes_ledger_from_live_metrics(base):
     registry = StrategyRegistry()
     add_strategy(registry, "kronos", S.SHADOW, base)
-    source = InMemorySignalSource([sig("kronos", base + timedelta(hours=1), close=None)])
+    source = ListSignalSource([sig("kronos", base + timedelta(hours=1), symbol="SOLUSDT")])
     svc = make_service(registry, source=source)
     source.push(sig("kronos", base + timedelta(hours=2), 100.0))
     source.push(sig("kronos", base + timedelta(hours=6), 120.0))
@@ -435,7 +433,7 @@ class FlakyStore(InMemoryReferenceStore):
         super().upsert_equity(points)
 
 
-class CountingSource(InMemorySignalSource):
+class CountingSource(ListSignalSource):
     commits = 0
 
     def commit(self) -> None:
@@ -489,7 +487,7 @@ def test_equity_points_for_past_days_and_constructor_validation(base):
     registry = StrategyRegistry()
     add_strategy(registry, "kronos", S.SHADOW, base)
     store = InMemoryReferenceStore()
-    source = InMemorySignalSource()
+    source = ListSignalSource()
     svc = make_service(registry, store, source)
     source.push(sig("kronos", base + timedelta(hours=1), 100.0))
     source.push(sig("kronos", base + timedelta(days=1, hours=1), 90.0))
@@ -584,7 +582,7 @@ def test_end_to_end_with_simulated_postgrest(base):
     client = httpx.Client(transport=httpx.MockTransport(fake))
     registry = StrategyRegistry(PostgRESTBackend("http://sb.test", "eyJx", client=client))
     store = PostgRESTReferenceStore("http://sb.test", "eyJx", client=client)
-    source = InMemorySignalSource()
+    source = ListSignalSource()
     svc = make_service(registry, store, source, sizing={"trend": "full"})
     source.push(sig("trend", base + timedelta(hours=1), 100.0, timeframe=Timeframe.D1))
     source.push(sig("trend", base + timedelta(hours=2), 85.0, Direction.FLAT))

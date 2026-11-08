@@ -2,14 +2,26 @@
 
 - Compra (`side=buy`): orden bracket. La entrada es market y, cuando se llena (OTO), quedan
   vivos el stop-loss (stop market) y el take-profit (limit) ligados como OUO/OCO: el que se
-  llena cancela al otro. Ambos hijos son `reduce_only`.
-- Venta (`side=sell`): en spot significa "quedarse en USDT" (flat). Se cancelan el SL y el TP
-  pendientes del sleeve y se vende a mercado, `reduce_only`, toda la cantidad que tiene ese
-  sleeve (ni más ni menos, aunque la decisión pida otra). Nunca se abren cortos: una venta sin
-  posición se rechaza.
+  llena cancela al otro. Ambos hijos son `reduce_only`. Cada bracket es un **tramo** del
+  sleeve con su propia protección.
+- Venta (`side=sell`): en spot significa reducir o salir a USDT. Nunca se abren cortos: una
+  venta sin posición se rechaza.
 
-Cada orden lleva los tags `sleeve:<nombre>` y `role:<entry|sl|tp|exit>` para atribuir los
-fills y el P&L a su sleeve (ver `SleeveLedger`).
+Dos modos, según el sobre (`DecisionEnvelope.target_quantity`, ver `tm_engine.decisions`):
+
+- **Sin `target_quantity`** (comportamiento del PR #69): una compra con el sleeve ya abierto se
+  rechaza y una venta cierra la posición completa del sleeve (cancela su SL y TP y vende a
+  mercado, `reduce_only`, toda la cantidad, aunque la decisión pida otra).
+- **Con `target_quantity`** (posición objetivo del orquestador, #19): una compra con el sleeve
+  abierto agrega un tramo nuevo (otro bracket) y una venta con objetivo mayor que 0 es
+  **parcial**: vende `decision.quantity` (como máximo lo que tiene el sleeve) y achica la
+  protección de los tramos, del más reciente al más viejo (`modify_order` de su SL y TP, o se
+  cancelan si el tramo queda en 0), para que cada unidad siga protegida una sola vez. Con
+  objetivo 0, o si la venta cubre toda la posición, se cierra completo como arriba.
+
+Cada orden lleva los tags `sleeve:<nombre>`, `role:<entry|sl|tp|exit|reduce>` y, si la decisión
+trae bot, `bot:<id>`, para atribuir los fills y el P&L a su bot y sleeve (ver `SleeveLedger`).
+Las decisiones `shadow` se rechazan siempre.
 
 Con un `sleeve_guard` (en vivo, `tm_agents.reference.TradingSleeveGuard`) solo se envían
 órdenes de los sleeves cuya estrategia opera con capital (`active` o `probation`). Las
@@ -28,7 +40,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
 from nautilus_trader.config import StrategyConfig
@@ -36,6 +48,7 @@ from nautilus_trader.model.data import Bar, BarType
 from nautilus_trader.model.enums import OrderSide as NtOrderSide
 from nautilus_trader.model.enums import TimeInForce, TriggerType
 from nautilus_trader.model.events import OrderDenied, OrderFilled, OrderRejected
+from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.trading.strategy import Strategy
 from tm_shared.contracts import OrderSide, TradeDecision
@@ -43,12 +56,20 @@ from tm_shared.contracts import OrderSide, TradeDecision
 from tm_engine.decisions import DecisionEnvelope, DecisionSource
 from tm_engine.instruments import instrument_id
 from tm_engine.recorder import FillRecord, FillRecorder, MemoryFillRecorder
-from tm_engine.sleeves import SleeveLedger, sleeve_from_tags, sleeve_tag
+from tm_engine.sleeves import (
+    SleeveLedger,
+    book_key,
+    bot_from_tags,
+    bot_tag,
+    sleeve_from_tags,
+    sleeve_tag,
+)
 
 log = logging.getLogger(__name__)
 
 ROLE_PREFIX = "role:"
 POLL_TIMER = "tm-poll-decisions"
+ZERO = Decimal("0")
 
 
 class AgenticStrategyConfig(StrategyConfig, frozen=True):
@@ -72,11 +93,22 @@ class Rejection:
 
 
 @dataclass
+class _Tranche:
+    """Un bracket del sleeve: su entrada, su protección y la cantidad que protege."""
+
+    entry_id: str
+    sl_id: str
+    tp_id: str
+    quantity: Decimal = ZERO  # cantidad llenada en la entrada que sigue protegida
+
+
+@dataclass
 class _OpenTrade:
     """Datos de la decisión vigente de un sleeve en un símbolo."""
 
     envelope: DecisionEnvelope
     order_ids: list[str] = field(default_factory=list)
+    tranches: list[_Tranche] = field(default_factory=list)
 
 
 def _role(tags: list[str] | None) -> str:
@@ -86,8 +118,19 @@ def _role(tags: list[str] | None) -> str:
     return "unknown"
 
 
+def _tags(envelope: DecisionEnvelope, role: str) -> list[str]:
+    tags = [sleeve_tag(envelope.sleeve), f"{ROLE_PREFIX}{role}"]
+    if envelope.bot_id:
+        tags.append(bot_tag(envelope.bot_id))
+    return tags
+
+
+def _book(envelope: DecisionEnvelope) -> str:
+    return book_key(envelope.bot_id, envelope.sleeve)
+
+
 class AgenticStrategy(Strategy):
-    """Estrategia de Nautilus que ejecuta `TradeDecision` por sleeve."""
+    """Estrategia de Nautilus que ejecuta `TradeDecision` por bot y sleeve."""
 
     def __init__(
         self,
@@ -145,6 +188,8 @@ class AgenticStrategy(Strategy):
         Devuelve True si se enviaron órdenes; si no, la decisión queda en `rejections`.
         """
         decision = envelope.decision
+        if envelope.shadow:
+            return self._reject(envelope, "decisión de una estrategia en shadow: no se ejecuta")
         if self._sleeve_guard is not None and not self._sleeve_guard(envelope.sleeve):
             reason = getattr(self._sleeve_guard, "reason", None)
             why = reason(envelope.sleeve) if callable(reason) else "el sleeve no opera capital"
@@ -157,22 +202,23 @@ class AgenticStrategy(Strategy):
             return self._reject(envelope, f"instrumento desconocido: {decision.symbol}")
         if decision.side is OrderSide.BUY:
             return self._open_long(envelope, instrument)
-        return self._close_long(envelope, instrument)
+        return self._sell(envelope, instrument)
 
     def _reject(self, envelope: DecisionEnvelope, reason: str) -> bool:
-        self.log.warning(f"decisión rechazada ({envelope.sleeve}): {reason}")
+        self.log.warning(f"decisión rechazada ({_book(envelope)}): {reason}")
         self.rejections.append(Rejection(envelope, reason))
         return False
 
     def _open_long(self, envelope: DecisionEnvelope, instrument: Instrument) -> bool:
         decision = envelope.decision
-        key = (envelope.sleeve, decision.symbol)
-        if key in self._open or self.ledger.quantity(*key) > 0:
+        key = (_book(envelope), decision.symbol)
+        scale_in = envelope.target_quantity is not None
+        is_open = key in self._open or self.ledger.quantity(*key) > 0
+        if is_open and not scale_in:
             return self._reject(envelope, "el sleeve ya tiene una posición abierta en el símbolo")
         shortfall = self._cash_shortfall(decision, instrument)
         if shortfall is not None:
             return self._reject(envelope, shortfall)
-        tag = sleeve_tag(envelope.sleeve)
         bracket = self.order_factory.bracket(
             instrument_id=instrument.id,
             order_side=NtOrderSide.BUY,
@@ -182,11 +228,15 @@ class AgenticStrategy(Strategy):
             tp_price=instrument.make_price(decision.take_profit),
             tp_post_only=False,
             time_in_force=TimeInForce.GTC,
-            entry_tags=[tag, f"{ROLE_PREFIX}entry"],
-            sl_tags=[tag, f"{ROLE_PREFIX}sl"],
-            tp_tags=[tag, f"{ROLE_PREFIX}tp"],
+            entry_tags=_tags(envelope, "entry"),
+            sl_tags=_tags(envelope, "sl"),
+            tp_tags=_tags(envelope, "tp"),
         )
-        self._open[key] = _OpenTrade(envelope, [o.client_order_id.value for o in bracket.orders])
+        entry, sl, tp = (o.client_order_id.value for o in bracket.orders)
+        trade = self._open.get(key)
+        if trade is None:
+            trade = self._open[key] = _OpenTrade(envelope, [entry, sl, tp])
+        trade.tranches.append(_Tranche(entry_id=entry, sl_id=sl, tp_id=tp))
         self.accepted.append(envelope)
         self.submit_order_list(bracket)
         return True
@@ -208,34 +258,96 @@ class AgenticStrategy(Strategy):
             return f"saldo insuficiente: se necesitan {needed:.2f} y hay {free:.2f} libres"
         return None
 
-    def _close_long(self, envelope: DecisionEnvelope, instrument: Instrument) -> bool:
+    def _sell(self, envelope: DecisionEnvelope, instrument: Instrument) -> bool:
         decision = envelope.decision
-        key = (envelope.sleeve, decision.symbol)
+        key = (_book(envelope), decision.symbol)
         held = self.ledger.quantity(*key)
         if held <= 0:
             return self._reject(envelope, "sin posición en el sleeve; en spot no se abren cortos")
-        self._cancel_sleeve_orders(envelope.sleeve, instrument)
+        target = envelope.target_quantity
+        # Hacia abajo a la precisión del par: nunca se vende más de lo pedido.
+        step = Decimal(1).scaleb(-instrument.size_precision)
+        quantity = min(decision.quantity, held).quantize(step, rounding=ROUND_DOWN)
+        if target is None or target <= 0 or quantity >= held:
+            return self._close_long(envelope, instrument, held)
+        if quantity <= 0:
+            return self._reject(envelope, "la venta parcial redondea a 0 con la precisión del par")
+        return self._reduce_long(envelope, instrument, quantity)
+
+    def _close_long(
+        self, envelope: DecisionEnvelope, instrument: Instrument, held: Decimal
+    ) -> bool:
+        """Cierre completo: cancela la protección del sleeve y vende todo a mercado."""
+        key = (_book(envelope), envelope.decision.symbol)
+        self._cancel_sleeve_orders(envelope, instrument)
         order = self.order_factory.market(
             instrument_id=instrument.id,
             order_side=NtOrderSide.SELL,
             quantity=instrument.make_qty(held),
             reduce_only=True,
-            tags=[sleeve_tag(envelope.sleeve), f"{ROLE_PREFIX}exit"],
+            tags=_tags(envelope, "exit"),
         )
         trade = self._open.get(key)
         if trade is not None:
             trade.order_ids.append(order.client_order_id.value)
+            trade.tranches.clear()
         self.accepted.append(envelope)
         self.submit_order(order)
         return True
 
-    def _cancel_sleeve_orders(self, sleeve: str, instrument: Instrument) -> None:
-        tag = sleeve_tag(sleeve)
+    def _reduce_long(
+        self, envelope: DecisionEnvelope, instrument: Instrument, quantity: Decimal
+    ) -> bool:
+        """Venta parcial: achica la protección de los tramos (LIFO) y vende `quantity`."""
+        key = (_book(envelope), envelope.decision.symbol)
+        trade = self._open.get(key)
+        left = quantity
+        for tranche in reversed(trade.tranches if trade is not None else []):
+            if left <= 0:
+                break
+            cut = min(left, tranche.quantity)
+            if cut <= 0:
+                continue
+            tranche.quantity -= cut
+            left -= cut
+            self._resize_protection(tranche, instrument)
+        order = self.order_factory.market(
+            instrument_id=instrument.id,
+            order_side=NtOrderSide.SELL,
+            quantity=instrument.make_qty(quantity),
+            reduce_only=True,
+            tags=_tags(envelope, "reduce"),
+        )
+        if trade is not None:
+            trade.order_ids.append(order.client_order_id.value)
+            trade.tranches = [t for t in trade.tranches if t.quantity > 0]
+        self.accepted.append(envelope)
+        self.submit_order(order)
+        return True
+
+    def _resize_protection(self, tranche: _Tranche, instrument: Instrument) -> None:
+        """Deja el SL y el TP del tramo con su nueva cantidad (o los cancela si es 0)."""
+        for order_id in (tranche.sl_id, tranche.tp_id):
+            order = self.cache.order(ClientOrderId(order_id))
+            if order is None or order.is_closed:
+                continue
+            if tranche.quantity <= 0:
+                self.cancel_order(order)
+            else:
+                self.modify_order(order, quantity=instrument.make_qty(tranche.quantity))
+
+    def _cancel_sleeve_orders(self, envelope: DecisionEnvelope, instrument: Instrument) -> None:
+        tag = sleeve_tag(envelope.sleeve)
+        bot = envelope.bot_id
+
+        def mine(tags: list[str] | None) -> bool:
+            return tag in (tags or []) and bot_from_tags(tags) == bot
+
         for order in self.cache.orders_open(instrument_id=instrument.id, strategy_id=self.id):
-            if tag in (order.tags or []):
+            if mine(order.tags):
                 self.cancel_order(order)
         for order in self.cache.orders_emulated(instrument_id=instrument.id, strategy_id=self.id):
-            if tag in (order.tags or []):
+            if mine(order.tags):
                 self.cancel_order(order)
 
     # --- fills ---------------------------------------------------------------------------
@@ -244,22 +356,26 @@ class AgenticStrategy(Strategy):
         order = self.cache.order(event.client_order_id)
         tags = order.tags if order is not None else None
         sleeve = sleeve_from_tags(tags)
+        bot_id = bot_from_tags(tags)
+        book = book_key(bot_id, sleeve)
         symbol = event.instrument_id.symbol.value
         side = OrderSide.BUY if event.order_side == NtOrderSide.BUY else OrderSide.SELL
         price = event.last_px.as_decimal()
         quantity = event.last_qty.as_decimal()
         commission = _commission_in_quote(event, price)
         realized = self.ledger.apply_fill(
-            sleeve=sleeve,
+            sleeve=book,
             symbol=symbol,
             side=side,
             quantity=quantity,
             price=price,
             commission=commission,
         )
-        remaining = self.ledger.quantity(sleeve, symbol)
-        key = (sleeve, symbol)
+        remaining = self.ledger.quantity(book, symbol)
+        key = (book, symbol)
         trade = self._open.get(key)
+        if trade is not None:
+            self._track_tranche(trade, event.client_order_id.value, quantity)
         record = FillRecord(
             sleeve=sleeve,
             symbol=symbol,
@@ -273,17 +389,30 @@ class AgenticStrategy(Strategy):
             client_order_id=event.client_order_id.value,
             ts=datetime.fromtimestamp(event.ts_event / 1e9, tz=UTC),
             decision=trade.envelope.decision if trade else None,
+            bot_id=bot_id,
         )
         if side is OrderSide.SELL and remaining == 0:
             self._open.pop(key, None)
         self.log.info(
-            f"fill {record.role} {sleeve} {side.value} {quantity} {symbol} @ {price} "
+            f"fill {record.role} {book} {side.value} {quantity} {symbol} @ {price} "
             f"(pnl {realized}, comisión {commission})"
         )
         try:
             self.recorder.on_fill(record)
         except Exception as exc:
             self.log.error(f"no se pudo registrar el fill: {exc}")
+
+    @staticmethod
+    def _track_tranche(trade: _OpenTrade, client_order_id: str, quantity: Decimal) -> None:
+        """Lleva la cantidad protegida de cada tramo con los fills de su entrada y de su SL/TP."""
+        for tranche in trade.tranches:
+            if client_order_id == tranche.entry_id:
+                tranche.quantity += quantity
+                return
+            if client_order_id in (tranche.sl_id, tranche.tp_id):
+                tranche.quantity = max(ZERO, tranche.quantity - quantity)
+                trade.tranches = [t for t in trade.tranches if t.quantity > 0]
+                return
 
     def on_order_rejected(self, event: OrderRejected) -> None:
         self._release_failed_entry(event.client_order_id.value, f"rechazada: {event.reason}")
@@ -292,17 +421,26 @@ class AgenticStrategy(Strategy):
         self._release_failed_entry(event.client_order_id.value, f"denegada: {event.reason}")
 
     def _release_failed_entry(self, client_order_id: str, reason: str) -> None:
-        """Si la entrada de un sleeve no llegó al venue, libera el sleeve para otra decisión."""
+        """Si la entrada de un tramo no llegó al venue, la quita; sin posición libera el sleeve."""
         for key, trade in list(self._open.items()):
-            if trade.order_ids and trade.order_ids[0] == client_order_id:
+            failed = [t for t in trade.tranches if t.entry_id == client_order_id]
+            if not failed:
+                continue
+            trade.tranches = [t for t in trade.tranches if t.entry_id != client_order_id]
+            if not trade.tranches and self.ledger.quantity(*key) <= 0:
                 self._open.pop(key)
-                self.rejections.append(Rejection(trade.envelope, f"orden de entrada {reason}"))
-                self.log.warning(f"entrada de {key[0]} en {key[1]} {reason}")
+            self.rejections.append(Rejection(trade.envelope, f"orden de entrada {reason}"))
+            self.log.warning(f"entrada de {key[0]} en {key[1]} {reason}")
 
     # --- consultas -----------------------------------------------------------------------
 
     def sleeve_report(self) -> dict[str, dict[str, Any]]:
         return self.ledger.to_dict()
+
+    def protected_quantity(self, sleeve: str, symbol: str, bot_id: str | None = None) -> Decimal:
+        """Cantidad cubierta por los SL/TP vivos del sleeve (para pruebas y diagnóstico)."""
+        trade = self._open.get((book_key(bot_id, sleeve), symbol))
+        return sum((t.quantity for t in trade.tranches), ZERO) if trade else ZERO
 
 
 def _commission_in_quote(event: OrderFilled, price: Decimal) -> Decimal:

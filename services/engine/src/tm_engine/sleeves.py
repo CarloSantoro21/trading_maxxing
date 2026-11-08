@@ -3,7 +3,10 @@
 Nautilus agrupa las posiciones por instrumento (OMS netting), así que dos sleeves que compran
 BTC terminan en la misma posición del venue. Este libro lleva la cuenta aparte: cada fill trae
 la etiqueta de su sleeve (`sleeve:<nombre>` en los tags de la orden) y aquí se acumula con
-costo promedio. En spot solo hay compras que abren y ventas que cierran.
+costo promedio. En spot solo hay compras (que abren o agregan) y ventas (que reducen o cierran).
+
+Con varios bots sobre la misma cuenta (#19), cada orden trae además `bot:<id>` y el libro se
+lleva por `bot/sleeve` (ver `book_key`).
 """
 
 from __future__ import annotations
@@ -11,10 +14,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from tm_shared.contracts import OrderSide
+from tm_shared.contracts import DEFAULT_SLEEVE, OrderSide
 
 SLEEVE_TAG_PREFIX = "sleeve:"
-DEFAULT_SLEEVE = "default"
+BOT_TAG_PREFIX = "bot:"
+# Separador entre el bot y el sleeve en la llave del libro (no puede aparecer en ninguno).
+BOOK_SEPARATOR = "/"
 ZERO = Decimal("0")
 
 
@@ -28,6 +33,31 @@ def sleeve_from_tags(tags: list[str] | None) -> str:
         if tag.startswith(SLEEVE_TAG_PREFIX):
             return tag[len(SLEEVE_TAG_PREFIX) :]
     return DEFAULT_SLEEVE
+
+
+def bot_tag(bot_id: str) -> str:
+    return f"{BOT_TAG_PREFIX}{bot_id}"
+
+
+def bot_from_tags(tags: list[str] | None) -> str | None:
+    """Extrae el bot de los tags de una orden; `None` si no trae ninguno."""
+    for tag in tags or []:
+        if tag.startswith(BOT_TAG_PREFIX):
+            return tag[len(BOT_TAG_PREFIX) :]
+    return None
+
+
+def book_key(bot_id: str | None, sleeve: str) -> str:
+    """Llave del libro: `sleeve` sin bot (un solo portafolio) o `bot/sleeve` con bot (#19)."""
+    return sleeve if not bot_id else f"{bot_id}{BOOK_SEPARATOR}{sleeve}"
+
+
+def split_book_key(key: str) -> tuple[str | None, str]:
+    """Inverso de `book_key`: `(bot_id, sleeve)`."""
+    if BOOK_SEPARATOR in key:
+        bot_id, sleeve = key.split(BOOK_SEPARATOR, 1)
+        return bot_id, sleeve
+    return None, key
 
 
 @dataclass

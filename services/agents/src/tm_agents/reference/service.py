@@ -6,8 +6,9 @@ por usuario. En cada ciclo (:meth:`ReferenceService.run_once`):
 1. Sincroniza con el ``StrategyRegistry`` las estrategias en ``shadow``, ``active`` y
    ``probation``. Cada una tiene su :class:`ReferenceLedger`, que nace cuando la estrategia
    entra a shadow y sigue igual al pasar a activa o a observación.
-2. Lee las señales nuevas de la fuente (``tm:signals``) y las aplica a su ledger (fill al
-   cierre de la vela con 0.1 % de comisión).
+2. Lee las señales nuevas de ``tm:signals`` (el mismo :class:`~tm_agents.signals.SignalEvent`
+   que consumen los BotRunner, con su propio cursor) y las aplica a su ledger (fill a
+   ``price``, el cierre de la vela, con 0.1 % de comisión).
 3. Cada vez que se cierra un trade de referencia, y una vez al día, llama a
    ``LifecycleMonitor.check`` con las estadísticas del ledger (no con el P&L de ningún
    usuario). Si propone una transición la aplica con
@@ -21,7 +22,7 @@ cualquier decisión de un sleeve sin capital (:class:`TradingSleeveGuard`).
 
 Días en shadow sin fallas (para la página #58): cuentan desde la entrada a shadow o desde
 la última falla, lo que sea más reciente. Una falla es una señal que no se pudo aplicar
-(sin precio, símbolo desconocido, error inesperado) o un silencio de más de
+(de otra estrategia, símbolo desconocido, error inesperado) o un silencio de más de
 ``silence_bars`` velas de su timeframe sin señales.
 """
 
@@ -43,7 +44,6 @@ from tm_agents.reference.ledger import (
     ReferenceTrade,
     Sizing,
 )
-from tm_agents.reference.signals import SignalEnvelope, SignalSource
 from tm_agents.reference.store import EquityPoint, ReferenceStore, ReferenceStoreError, trade_row
 from tm_agents.registry import (
     SYSTEM_ACTOR,
@@ -52,11 +52,14 @@ from tm_agents.registry import (
     StrategyRegistry,
     TransitionError,
 )
+from tm_agents.signals import SignalEvent, SignalSource
 from tm_agents.strategy_stats import StrategyState
 
 log = logging.getLogger(__name__)
 
 S = StrategyState
+#: Llave de Redis con el último id de ``tm:signals`` que procesó (y guardó) este servicio.
+REFERENCE_CHECKPOINT = "tm:reference:last_signal_id"
 #: Estados que tienen ledger de referencia.
 TRACKED_STATES: tuple[StrategyState, ...] = (S.SHADOW, S.ACTIVE, S.PROBATION)
 #: Días mínimos en shadow sin fallas antes de que una persona pueda promoverla.
@@ -204,7 +207,8 @@ class ReferenceService:
     Args:
         registry: registro de estrategias (estado, ``lab_report`` y ``live_metrics``).
         store: dónde se guardan trades y equity diaria.
-        source: fuente de señales (``RedisStreamSignalSource`` o ``InMemorySignalSource``).
+        source: fuente de señales de :mod:`tm_agents.signals` (``RedisSignalSource`` con
+            ``checkpoint_key=REFERENCE_CHECKPOINT`` en vivo o ``ListSignalSource``).
         monitor: LifecycleMonitor; por defecto con los umbrales de la propuesta.
         capital: capital nominal de cada ledger (100,000 USDT).
         fee: comisión por lado (0.1 %).
@@ -254,8 +258,8 @@ class ReferenceService:
         now = now or self.clock()
         self.sync(now)
         applied = 0
-        for envelope in self.source.poll():
-            applied += self.handle(envelope, now)
+        for event in self.source.poll():
+            applied += self.handle(event, now)
         if self._last_daily != now.date():
             self.daily(now)
             self._last_daily = now.date()
@@ -289,18 +293,18 @@ class ReferenceService:
             else:
                 tracked.record = record
 
-    def handle(self, envelope: SignalEnvelope, now: datetime | None = None) -> int:
+    def handle(self, event: SignalEvent, now: datetime | None = None) -> int:
         """Aplica una señal a su ledger; devuelve 1 si se aplicó y 0 si no."""
         now = now or self.clock()
-        tracked = self.tracked.get(envelope.strategy)
+        tracked = self.tracked.get(event.strategy)
         if tracked is None or tracked.record.state not in TRACKED_STATES:
             self.ignored += 1
             return 0
-        if envelope.ts < tracked.ledger.started_at:
+        if event.bar_close < tracked.ledger.started_at:
             self.ignored += 1  # señal de antes de la corrida actual
             return 0
         try:
-            result = tracked.ledger.on_signal(envelope)
+            result = tracked.ledger.on_signal(event)
         except ValueError as exc:
             self._fail(tracked, now, f"señal no aplicada: {exc}")
             return 0
@@ -310,7 +314,7 @@ class ReferenceService:
             return 0
         tracked.silence_reported_for = None
         tracked.dirty = True
-        self._snapshot(tracked, envelope.ts.date())
+        self._snapshot(tracked, event.bar_close.date())
         for trade in result.closed:
             self._on_trade_closed(tracked, trade)
         return 1

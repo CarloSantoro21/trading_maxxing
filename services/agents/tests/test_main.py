@@ -89,3 +89,40 @@ def test_loop_keeps_heartbeat_when_reference_setup_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(worker, "beat", beat)
     worker.main([])
     assert beats == [1]
+
+
+def test_reference_service_can_be_disabled():
+    env = {
+        "REDIS_URL": "redis://x",
+        "SUPABASE_URL": "http://supabase.test",
+        "SUPABASE_SERVICE_ROLE_KEY": "sb_secret_x",
+        "REFERENCE_SERVICE": "0",
+    }
+    assert worker.reference_service_from_env(env) is None
+
+
+def test_loop_runs_orchestrator_and_reference_together(tmp_path, monkeypatch):
+    """Las tres piezas en el mismo proceso: el orquestador cada tick y la referencia cada
+    heartbeat."""
+    monkeypatch.setattr(worker, "HEARTBEAT", tmp_path / "hb")
+    monkeypatch.setattr(worker, "INTERVAL", 0.0)
+    monkeypatch.setattr(worker, "TICK", 0.0)
+    handlers = {}
+    monkeypatch.setattr(worker.signal, "signal", lambda sig, fn: handlers.__setitem__(sig, fn))
+    calls = []
+
+    class Worker:
+        def tick(self):
+            calls.append("tick")
+
+    class Reference:
+        def run_once(self):
+            calls.append("reference")
+            if calls.count("reference") == 2:
+                handlers[worker.signal.SIGTERM]()
+
+    monkeypatch.setattr(worker, "build_worker", lambda: Worker())
+    monkeypatch.setattr(worker, "reference_service_from_env", lambda: Reference())
+    worker.main([])
+    assert calls == ["reference", "tick", "reference", "tick"]
+    assert (tmp_path / "hb").exists()

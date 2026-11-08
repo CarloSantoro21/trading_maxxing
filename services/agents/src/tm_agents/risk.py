@@ -4,6 +4,12 @@ Ninguna orden llega al motor sin pasar por `RiskAgent.evaluate`, que responde PA
 con las razones. El riesgo por operación, la exposición máxima y el drawdown máximo salen
 del nivel de riesgo del perfil (1 a 5, :data:`RISK_TABLE`), y la cantidad se calcula para
 que, si se toca el stop, la pérdida sea ese porcentaje del equity.
+
+`RiskAgent.evaluate_target` es la variante del orquestador por bot (#19): la cantidad la
+propone el BotRunner (capital del sleeve * exposición del nivel * confianza) y aquí solo se
+valida y se recorta; se permite agregar a una posición abierta (los tramos del TrendAgent).
+La exposición del nivel (``tm_agents.orchestrator.exposure``) también lee el drawdown máximo
+de :data:`RISK_TABLE`.
 """
 
 from __future__ import annotations
@@ -150,14 +156,62 @@ class RiskAgent:
         if per_unit == 0:
             return Decimal("0")
         qty = p.equity * self.limits.risk_per_trade / per_unit
-        room = max(Decimal("0"), p.equity * self.limits.max_exposure - p.exposure)
-        qty = min(qty, room / entry, p.cash / entry)
+        qty = min(qty, self.capacity(entry, p))
         return qty.quantize(self.limits.qty_step, rounding=ROUND_DOWN)
+
+    def capacity(self, entry: Decimal, p: Portfolio) -> Decimal:
+        """Cantidad máxima que cabe en la exposición máxima del nivel y en el efectivo."""
+        if entry <= 0:
+            return Decimal("0")
+        room = max(Decimal("0"), p.equity * self.limits.max_exposure - p.exposure)
+        return max(Decimal("0"), min(room, p.cash) / entry)
 
     # --- decisión -----------------------------------------------------------------------
     def evaluate(
         self, proposal: TradeProposal, p: Portfolio
     ) -> tuple[TradeDecision | None, RiskVerdict]:
+        reasons = self._entry_reasons(proposal, p, allow_open=False)
+        qty = (
+            Decimal("0")
+            if reasons
+            else self.position_size(proposal.entry_price, proposal.stop_loss, p)
+        )
+        return self._decide(proposal, qty, reasons)
+
+    def evaluate_target(
+        self,
+        proposal: TradeProposal,
+        p: Portfolio,
+        quantity: Decimal,
+        *,
+        cap_by_stop: bool = True,
+    ) -> tuple[TradeDecision | None, RiskVerdict]:
+        """Valida una compra de `quantity` hacia la posición objetivo de un sleeve (#19).
+
+        Aplica los mismos bloqueos que :meth:`evaluate` (kill switch, pérdida del día,
+        operaciones del día, veto de noticias, SimulationGate, reward/risk, cortos), salvo el
+        de "ya hay una posición abierta": un sleeve puede agregar tramos. La cantidad se
+        recorta a lo que cabe en la exposición máxima del nivel y en el efectivo y, con
+        ``cap_by_stop`` (estrategias con stop real, como Kronos), también a la de
+        :meth:`position_size`. Con stops de catástrofe (salida por señal) el riesgo por
+        operación ya lo acota la exposición del nivel, que sale del drawdown p95 validado.
+        """
+        reasons = self._entry_reasons(proposal, p, allow_open=True)
+        if quantity <= 0:
+            reasons.append("la cantidad propuesta debe ser mayor a 0")
+        qty = Decimal("0")
+        if not reasons:
+            cap = (
+                self.position_size(proposal.entry_price, proposal.stop_loss, p)
+                if cap_by_stop
+                else self.capacity(proposal.entry_price, p)
+            )
+            qty = min(quantity, cap).quantize(self.limits.qty_step, rounding=ROUND_DOWN)
+        return self._decide(proposal, qty, reasons)
+
+    def _entry_reasons(
+        self, proposal: TradeProposal, p: Portfolio, *, allow_open: bool
+    ) -> list[str]:
         L = self.limits
         reasons: list[str] = []
         if self.check_drawdown(p):
@@ -172,7 +226,7 @@ class RiskAgent:
             )
         if proposal.side is OrderSide.SELL and not L.allow_short:
             reasons.append("spot: no se abren cortos")
-        if proposal.symbol in p.open_symbols:
+        if not allow_open and proposal.symbol in p.open_symbols:
             reasons.append(f"ya hay una posición abierta en {proposal.symbol}")
         if proposal.rationale.news_veto:
             reasons.append("veto por noticias")
@@ -186,12 +240,12 @@ class RiskAgent:
             reasons.append("stop igual a la entrada")
         elif reward / risk < L.min_reward_risk:
             reasons.append(f"reward/risk {reward / risk:.2f} < {L.min_reward_risk}")
+        return reasons
 
-        qty = (
-            Decimal("0")
-            if reasons
-            else self.position_size(proposal.entry_price, proposal.stop_loss, p)
-        )
+    def _decide(
+        self, proposal: TradeProposal, qty: Decimal, reasons: list[str]
+    ) -> tuple[TradeDecision | None, RiskVerdict]:
+        L = self.limits
         if not reasons and qty * proposal.entry_price < L.min_notional:
             reasons.append(
                 f"nocional {qty * proposal.entry_price:.2f} < mínimo {L.min_notional} USDT"

@@ -16,6 +16,7 @@ from tm_engine.strategy import (
     _commission_in_quote,
     _OpenTrade,
     _role,
+    _Tranche,
 )
 
 
@@ -64,7 +65,9 @@ def test_rejected_or_denied_entry_releases_sleeve(envelope):
     strategy = AgenticStrategy(AgenticStrategyConfig())
     env = envelope()
     for handler in (strategy.on_order_rejected, strategy.on_order_denied):
-        strategy._open[("trend", "BTCUSDT")] = _OpenTrade(env, ["O-entry", "O-sl", "O-tp"])
+        strategy._open[("trend", "BTCUSDT")] = _OpenTrade(
+            env, ["O-entry", "O-sl", "O-tp"], [_Tranche("O-entry", "O-sl", "O-tp")]
+        )
         handler(SimpleNamespace(client_order_id=SimpleNamespace(value="O-sl"), reason="x"))
         assert ("trend", "BTCUSDT") in strategy._open  # un hijo no libera el sleeve
         handler(SimpleNamespace(client_order_id=SimpleNamespace(value="O-entry"), reason="x"))

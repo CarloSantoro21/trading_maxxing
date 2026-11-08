@@ -44,10 +44,25 @@ services:
     build: { context: ., dockerfile: services/api/Dockerfile }
     ports: ["127.0.0.1:8000:8000"]
 
+  # Orquestador (#19) y ledger de referencia (#57) en un solo worker. La capa compartida
+  # (señales, vetos y SimulationGate, una vez para todos) publica en tm:signals; la capa por
+  # usuario (un BotRunner por bot en running) lee tm:signals y tm:commands y publica en
+  # tm:decisions; el ReferenceService lee el mismo tm:signals con su propio cursor. Se pueden
+  # separar con ORCHESTRATOR_SHARED=0 / ORCHESTRATOR_BOTS=0 / REFERENCE_SERVICE=0.
   agents:
     <<: *python-service
     image: trading-maxxing-agents:local
     build: { context: ., dockerfile: services/agents/Dockerfile }
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      SUPABASE_URL: ${SUPABASE_URL:-http://host.docker.internal:54321}
+      FORECAST_URL: ${FORECAST_URL:-http://forecast:8001}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      TM_DATA_DIR: /app/data/bars
+      ORCHESTRATOR_SYMBOLS: ${ORCHESTRATOR_SYMBOLS:-BTCUSDT,ETHUSDT}
+      ORCHESTRATOR_SHARED: ${ORCHESTRATOR_SHARED:-1}
+      ORCHESTRATOR_BOTS: ${ORCHESTRATOR_BOTS:-1}
+      REFERENCE_SERVICE: ${REFERENCE_SERVICE:-1}
     volumes: ["./data:/app/data:ro"]
 
   engine:

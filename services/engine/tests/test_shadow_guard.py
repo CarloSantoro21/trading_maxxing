@@ -13,8 +13,9 @@ from datetime import UTC, timedelta
 import numpy as np
 import pandas as pd
 import pytest
-from tm_agents.reference import ReferenceLedger, SignalEnvelope, TradingSleeveGuard
+from tm_agents.reference import ReferenceLedger, TradingSleeveGuard
 from tm_agents.registry import StrategyRegistry
+from tm_agents.signals import SignalEvent
 from tm_agents.strategy_stats import StrategyState as S
 from tm_engine.backtest import run_backtest
 from tm_engine.decisions import ScheduledDecisionSource
@@ -72,7 +73,7 @@ def test_engine_service_passes_guard_to_strategy():
     svc.stop()
 
 
-def _signal(ts: pd.Timestamp, long: bool, close: float) -> SignalEnvelope:
+def _signal(ts: pd.Timestamp, long: bool, close: float) -> SignalEvent:
     sig = Signal(
         symbol="BTCUSDT",
         direction=Direction.LONG if long else Direction.FLAT,
@@ -82,7 +83,7 @@ def _signal(ts: pd.Timestamp, long: bool, close: float) -> SignalEnvelope:
         source="kronos",
         generated_at=ts.to_pydatetime(),
     )
-    return SignalEnvelope(signal=sig, close=close)
+    return SignalEvent.from_signal(sig, close)
 
 
 def test_reference_ledger_matches_lab_simulator(daily_bars):
@@ -107,3 +108,39 @@ def test_reference_ledger_matches_lab_simulator(daily_bars):
     for mine, theirs in zip(closed, lab_closed, strict=True):
         assert mine.ret == pytest.approx(theirs.ret, rel=1e-9)
         assert mine.pnl == pytest.approx(theirs.pnl, rel=1e-9)
+
+
+def test_guard_coexists_with_tranches_partial_sells_and_bot_books(make_frame, envelope):
+    """#19 + #57: el guardia filtra por sleeve antes de los tramos y las ventas parciales."""
+    from decimal import Decimal
+
+    guard = TradingSleeveGuard(registry_with(kronos=S.SHADOW, trend=S.ACTIVE))
+
+    def target(env, qty: str, bot: str = "bot-a", **update):
+        return env.model_copy(update={"target_quantity": Decimal(qty), "bot_id": bot, **update})
+
+    decisions = [
+        target(envelope(quantity="1", minute=1), "1"),
+        target(envelope(quantity="1", minute=2), "2"),  # segundo tramo del mismo bot
+        target(envelope(quantity="1", minute=2), "1", bot="bot-b"),  # otro libro
+        target(envelope(sleeve="kronos", quantity="1", minute=2), "1"),  # shadow: guardia
+        target(envelope(quantity="1", minute=3), "3", shadow=True),  # decisión shadow
+        target(envelope(OrderSide.SELL, quantity="1", minute=4), "1"),  # venta parcial
+    ]
+    result = run_backtest(
+        {"BTCUSDT": make_frame(UP)}, ScheduledDecisionSource(decisions), sleeve_guard=guard
+    )
+    assert not any("sleeve:kronos" in o.tags for o in result.orders)
+    assert [(f.bot_id, f.role, f.quantity) for f in result.fills if f.bot_id == "bot-a"] == [
+        ("bot-a", "entry", Decimal("1")),
+        ("bot-a", "entry", Decimal("1")),
+        ("bot-a", "reduce", Decimal("1")),
+        ("bot-a", "tp", Decimal("1")),  # el TP del tramo que quedó, ya achicado a 1
+    ]
+    assert [(f.role, f.quantity) for f in result.fills if f.bot_id == "bot-b"] == [
+        ("entry", Decimal("1")),
+        ("tp", Decimal("1")),
+    ]
+    assert len(result.rejections) == 2
+    assert any("kronos" in r and r.startswith("sin órdenes reales") for r in result.rejections)
+    assert any("shadow: no se ejecuta" in r for r in result.rejections)

@@ -35,7 +35,7 @@ from typing import Any, Literal
 from tm_shared.contracts import Direction, OrderSide
 
 from tm_agents.lifecycle import TradeRecord
-from tm_agents.reference.signals import SignalEnvelope
+from tm_agents.signals import SignalEvent
 
 Sizing = Literal["confidence", "full"]
 
@@ -126,9 +126,9 @@ class SignalResult:
     closed: list[ReferenceTrade] = field(default_factory=list)
 
 
-def target_exposure(envelope: SignalEnvelope, sizing: Sizing) -> float:
+def target_exposure(event: SignalEvent, sizing: Sizing) -> float:
     """Exposición objetivo (0 a 1) del sub-sleeve según la señal."""
-    sig = envelope.signal
+    sig = event.signal
     if sig.direction is not Direction.LONG:
         return 0.0
     return 1.0 if sizing == "full" else float(min(1.0, max(0.0, sig.confidence)))
@@ -234,29 +234,28 @@ class ReferenceLedger:
 
     # --- señales -------------------------------------------------------------------------
 
-    def on_signal(self, envelope: SignalEnvelope) -> SignalResult:
-        """Aplica una señal: valúa el símbolo al cierre y rebalancea si cambió el objetivo.
+    def on_signal(self, event: SignalEvent) -> SignalResult:
+        """Aplica una señal de ``tm:signals``: valúa el símbolo al cierre de la vela
+        (``event.price`` en ``event.bar_close``) y rebalancea si cambió el objetivo.
 
         Raises:
-            ValueError: si la señal no es de esta estrategia, el símbolo no está en el
-                ledger o no trae precio de cierre.
+            ValueError: si la señal no es de esta estrategia o el símbolo no está en el
+                ledger.
         """
-        if envelope.strategy != self.strategy:
-            raise ValueError(f"la señal es de '{envelope.strategy}', no de '{self.strategy}'")
-        book = self.books.get(envelope.symbol)
+        if event.strategy != self.strategy:
+            raise ValueError(f"la señal es de '{event.strategy}', no de '{self.strategy}'")
+        book = self.books.get(event.symbol)
         if book is None:
-            raise ValueError(f"'{self.strategy}' no opera {envelope.symbol}")
-        if envelope.close is None:
-            raise ValueError(f"la señal de {envelope.symbol} no trae precio de cierre")
-        ts = envelope.ts
-        price = float(envelope.close)
+            raise ValueError(f"'{self.strategy}' no opera {event.symbol}")
+        ts = event.bar_close
+        price = float(event.price)
         book.price = price
         self.last_signal_at = ts
-        self.last_timeframe = envelope.signal.timeframe.value
-        target = target_exposure(envelope, self.sizing)
+        self.last_timeframe = event.signal.timeframe.value
+        target = target_exposure(event, self.sizing)
         result = SignalResult()
         if abs(target - book.target) > _EPS:
-            self._rebalance(envelope.symbol, book, target, price, ts, result)
+            self._rebalance(event.symbol, book, target, price, ts, result)
             book.target = target
         self.mark(ts)
         return result

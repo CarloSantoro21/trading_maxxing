@@ -14,7 +14,7 @@ from tm_agents.reference.ledger import (
     max_drawdown,
     target_exposure,
 )
-from tm_agents.reference.signals import SignalEnvelope
+from tm_agents.signals import SignalEvent
 from tm_shared.contracts import Direction, Horizon, OrderSide, Signal, Timeframe
 
 T0 = datetime(2026, 11, 1, tzinfo=UTC)
@@ -24,13 +24,13 @@ FEE = 0.001
 def env(
     strategy: str = "kronos",
     direction: Direction = Direction.LONG,
-    close: float | None = 100.0,
+    close: float = 100.0,
     *,
     hours: float = 0,
     symbol: str = "BTCUSDT",
     confidence: float = 1.0,
     timeframe: Timeframe = Timeframe.H4,
-) -> SignalEnvelope:
+) -> SignalEvent:
     ts = T0 + timedelta(hours=hours)
     sig = Signal(
         symbol=symbol,
@@ -41,7 +41,7 @@ def env(
         source=strategy,
         generated_at=ts,
     )
-    return SignalEnvelope(signal=sig, close=close)
+    return SignalEvent.from_signal(sig, close)
 
 
 def test_full_sizing_round_trip_matches_lab_formula():
@@ -120,7 +120,6 @@ def test_capital_split_by_symbol_and_independent_books():
     [
         (env("trend"), "no de 'kronos'"),
         (env(symbol="SOLUSDT"), "no opera SOLUSDT"),
-        (env(close=None), "no trae precio"),
     ],
 )
 def test_invalid_signals_raise(envelope, match):
