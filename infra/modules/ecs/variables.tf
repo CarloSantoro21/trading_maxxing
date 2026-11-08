@@ -165,3 +165,9 @@ variable "extra_environment" {
   type        = map(map(string))
   default     = {}
 }
+
+variable "existing_role_arn" {
+  description = "Rol de IAM existente para ejecución y tarea (AWS Academy: ARN de LabRole). null = el módulo crea roles con permisos mínimos."
+  type        = string
+  default     = null
+}

@@ -88,6 +88,8 @@ module "ecs" {
   service_sizes  = var.service_sizes
   desired_counts = var.desired_counts
 
+  existing_role_arn = var.existing_role_arn
+
   secret_arns           = module.secrets.arns
   log_group_names       = module.logs_alarms.log_group_names
   artifacts_bucket_arn  = module.s3.bucket_arn

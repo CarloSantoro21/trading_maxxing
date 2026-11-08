@@ -274,14 +274,28 @@ data "aws_iam_policy_document" "ecs_tasks_assume" {
   }
 }
 
+# Con var.existing_role_arn (AWS Academy: LabRole) no se crea ningún rol de IAM y las
+# tareas usan ese rol como rol de ejecución y de tarea.
+locals {
+  create_roles       = var.existing_role_arn == null
+  execution_role_arn = local.create_roles ? aws_iam_role.execution[0].arn : var.existing_role_arn
+  task_role_arns = local.create_roles ? { for k, r in aws_iam_role.task : k => r.arn } : {
+    for k, _ in local.services : k => var.existing_role_arn
+  }
+}
+
 # Rol de ejecución: lo usa el agente de ECS para hacer pull, escribir logs y leer secretos.
 resource "aws_iam_role" "execution" {
+  count = local.create_roles ? 1 : 0
+
   name               = "${var.name}-ecs-execution"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
 }
 
 resource "aws_iam_role_policy_attachment" "execution_managed" {
-  role       = aws_iam_role.execution.name
+  count = local.create_roles ? 1 : 0
+
+  role       = aws_iam_role.execution[0].name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
@@ -294,21 +308,23 @@ data "aws_iam_policy_document" "execution_secrets" {
 }
 
 resource "aws_iam_role_policy" "execution_secrets" {
+  count = local.create_roles ? 1 : 0
+
   name   = "read-secrets"
-  role   = aws_iam_role.execution.id
+  role   = aws_iam_role.execution[0].id
   policy = data.aws_iam_policy_document.execution_secrets.json
 }
 
 # Rol de tarea: lo que el código de cada servicio puede hacer en AWS. Uno por servicio.
 resource "aws_iam_role" "task" {
-  for_each = local.services
+  for_each = local.create_roles ? local.services : {}
 
   name               = "${var.name}-${each.key}-task"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
 }
 
 data "aws_iam_policy_document" "task" {
-  for_each = { for k, _ in local.services : k => k if k != "redis" }
+  for_each = { for k, _ in local.services : k => k if k != "redis" && local.create_roles }
 
   # Lectura de artefactos (pesos, pronósticos precalculados y datos históricos).
   statement {
@@ -368,8 +384,8 @@ resource "aws_ecs_task_definition" "this" {
   network_mode             = "awsvpc"
   cpu                      = local.sizes[each.key].cpu
   memory                   = local.sizes[each.key].memory
-  execution_role_arn       = aws_iam_role.execution.arn
-  task_role_arn            = aws_iam_role.task[each.key].arn
+  execution_role_arn       = local.execution_role_arn
+  task_role_arn            = local.task_role_arns[each.key]
 
   runtime_platform {
     operating_system_family = "LINUX"

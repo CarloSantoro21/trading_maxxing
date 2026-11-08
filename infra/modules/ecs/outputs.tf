@@ -30,12 +30,12 @@ output "redis_security_group_id" {
 
 output "execution_role_arn" {
   description = "Rol de ejecución de las tareas (el deploy necesita iam:PassRole sobre él)."
-  value       = aws_iam_role.execution.arn
+  value       = local.execution_role_arn
 }
 
 output "task_role_arns" {
   description = "Rol de tarea de cada servicio."
-  value       = { for k, r in aws_iam_role.task : k => r.arn }
+  value       = local.task_role_arns
 }
 
 output "images" {

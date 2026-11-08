@@ -7,3 +7,5 @@ alarm_emails       = ["tu-correo@ejemplo.com"]
 # certificate_arn                  = "arn:aws:acm:us-east-1:123456789012:certificate/..."
 # dockerhub_credentials_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:trading-maxxing/dockerhub-..."
 # engine_bot_id                    = "uuid-del-bot-en-supabase"
+# AWS Academy (no permite crear roles de IAM):
+# existing_role_arn = "arn:aws:iam::123456789012:role/LabRole"

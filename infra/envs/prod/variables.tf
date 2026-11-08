@@ -145,3 +145,11 @@ variable "engine_bot_id" {
   type        = string
   default     = ""
 }
+
+# --- AWS Academy -------------------------------------------------------------------------
+
+variable "existing_role_arn" {
+  description = "AWS Academy no permite crear roles: ARN de LabRole para las tareas. null = se crean roles mínimos."
+  type        = string
+  default     = null
+}
