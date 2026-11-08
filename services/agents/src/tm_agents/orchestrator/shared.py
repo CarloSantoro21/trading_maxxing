@@ -150,6 +150,8 @@ AgentFactory = Callable[[StrategyRecord], BaseAgent]
 
 def default_agent_factory(record: StrategyRecord) -> BaseAgent:
     """Construye la estrategia registrada con los ``params`` de su fila en ``strategies``."""
+    import tm_agents.strategies  # noqa: F401  (importar el paquete registra la biblioteca)
+
     registry = registered_strategies()
     if record.name not in registry:
         raise KeyError(f"estrategia sin código registrado: '{record.name}'")
