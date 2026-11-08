@@ -111,9 +111,7 @@ def test_promover_desde_probation(client, alice, make_admin, strategy):
     assert r.json()["to_state"] == "active"
 
 
-def test_promover_desde_shadow_exige_7_dias_limpios(
-    client, alice, make_admin, strategy, fake_db
-):
+def test_promover_desde_shadow_exige_7_dias_limpios(client, alice, make_admin, strategy, fake_db):
     make_admin()
     three_days_ago = (datetime.now(UTC) - timedelta(days=3)).isoformat()
     strategy(state_changed_at=three_days_ago)
