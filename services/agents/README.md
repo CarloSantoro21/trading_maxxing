@@ -99,6 +99,20 @@ res.sleeves, res.unallocated, res.weights, res.excluded
 - `active` recibe su peso completo, `probation` la mitad (lo liberado pasa a las activas; si no hay activas queda en `unallocated`), y `research`, `lab`, `shadow` y `retired` reciben 0. También quedan en 0 las de volatilidad no positiva, Sharpe OOS ≤ 0 o drawdown p95 ≥ `max_drawdown` del perfil.
 - Un sleeve por debajo del nocional mínimo (10 USDT) se elimina y su capital se redistribuye. Los montos se redondean hacia abajo a 0.01 USDT y los centavos sobrantes se reparten por residuos mayores, así que `sum(sleeves) + unallocated == capital`.
 
+## Niveles de riesgo (`tm_agents.risk.RISK_TABLE`)
+
+Tabla única de la capa por usuario (propuesta, sección 3.4; issue #78). El usuario solo elige el nivel y su capital (mínimo `MIN_CAPITAL` = 500 USDT):
+
+| Nivel | Nombre | Drawdown máximo | Riesgo por operación | Exposición máxima |
+| --- | --- | --- | --- | --- |
+| 1 | Conservador | 10 % | 0.25 % | 20 % |
+| 2 | Prudente | 15 % | 0.5 % | 35 % |
+| 3 | Moderado | 20 % | 1 % | 50 % |
+| 4 | Decidido | 30 % | 1.5 % | 70 % |
+| 5 | Agresivo | 40 % | 2 % | 90 % |
+
+`RiskLimits.from_profile(risk_level)` toma los tres límites de la tabla (el `max_drawdown` explícito solo sirve para forzar otro valor en pruebas o backtests) y `get_risk_level(n).max_loss(capital)` da la caída máxima en USDT. La migración `20261109000100_profiles_risk_levels.sql` (que deriva `profiles.max_drawdown`) y `apps/web/src/lib/onboarding/schema.ts` copian la tabla; `tests/test_risk_levels_sync.py` falla si alguna se desalinea.
+
 ## SimulationGate (antes de cada operación)
 
 `tm_agents.simulation_gate` estima, para una decisión con SL y TP, P(TP primero), P(SL primero), P(abierta al final del horizonte) y el valor esperado en R, y bloquea si es ≤ 0.
