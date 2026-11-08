@@ -39,13 +39,26 @@ Siguen activos: Postgres, Auth, PostgREST, Realtime, Studio y Mailpit.
 
 ## Usuario demo
 
-El seed crea un usuario con correo confirmado, su perfil (mediano plazo, riesgo 3, 10,000 USDT, drawdown máximo de 15 %), una meta, un bot corriendo, tres operaciones (dos cerradas y una abierta), cuatro fotos de equity, un backtest terminado y las tres estrategias del MVP con su historial (`trend` en `active`, aprobada por el usuario demo; `kronos` en `shadow` e `intraday_momentum` en `lab`).
+El seed crea un usuario **admin** con correo confirmado, su perfil (riesgo 3, 10,000 USDT; el trigger le deriva un drawdown máximo de 20 %), una meta, un bot corriendo, tres operaciones (dos cerradas y una abierta), cuatro fotos de equity, un backtest terminado y las tres estrategias del MVP con su historial (`trend` en `active`, aprobada por el usuario demo; `kronos` en `shadow` e `intraday_momentum` en `lab`).
 
 | Correo | Contraseña |
 |---|---|
 | `demo@trading-maxxing.local` | `demo1234` |
 
 Solo existe en local.
+
+## Usuarios del equipo (#67)
+
+El registro público está apagado (`enable_signup = false` en `config.toml`; en la nube se apaga igual en *Authentication → Sign In / Providers*). Un admin da de alta a cada persona:
+
+```bash
+make user EMAIL=ana@equipo.dev ROLE=member   # o ROLE=admin
+```
+
+El comando toma la URL y la llave `service_role` de `supabase status` (o de `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` si están definidas), crea el usuario con la API admin de Supabase Auth, con el correo confirmado y una contraseña temporal que imprime una sola vez, y guarda su rol en `public.app_roles`. La API ofrece lo mismo en `POST /admin/users` (solo admin).
+
+- `member`: su propio portafolio (perfil, metas, bots y operaciones aislados por RLS).
+- `admin`: además promueve y retira estrategias y da de alta usuarios. Un usuario sin fila en `app_roles` cuenta como `member`.
 
 ## Esquema
 
@@ -132,7 +145,8 @@ Enums (iguales a los contratos de Python en `packages/shared`):
 
 | Tipo | Valores |
 |---|---|
-| `horizon` | `short`, `medium`, `long` |
+| `horizon` | `short`, `medium`, `long` (ya no se captura; por defecto `medium`) |
+| `app_role` | `admin`, `member` |
 | `direction` | `long`, `short`, `flat` (señales dentro de `trades.rationale`) |
 | `order_side` | `buy`, `sell` |
 | `bot_status` | `stopped`, `running`, `paused`, `killed` |
@@ -141,8 +155,9 @@ Enums (iguales a los contratos de Python en `packages/shared`):
 
 Restricciones principales:
 
-- `risk_level` entre 1 y 5, `capital > 0`, `max_drawdown` en (0, 1) (estrictamente menor que 1, igual que el `RiskAgent`), un perfil por usuario.
-- Símbolos soportados: `BTCUSDT` y `ETHUSDT` (en `profiles.instruments` y `trades.symbol`).
+- `risk_level` entre 1 y 5, `capital >= 500` (USDT de testnet), un perfil por usuario.
+- `max_drawdown` no se captura: el trigger `profiles_derive_max_drawdown` lo deriva del nivel con la tabla única de `tm_agents.risk.RISK_TABLE` (1: 10 %, 2: 15 %, 3: 20 %, 4: 30 %, 5: 40 %) e ignora lo que venga en la fila. `services/agents/tests/test_risk_levels_sync.py` verifica que la migración y el wizard coincidan con esa tabla.
+- Símbolos soportados: `BTCUSDT` y `ETHUSDT` (en `profiles.instruments`, que por defecto lleva ambos, y en `trades.symbol`).
 - Proporciones como fracción: `0.15` = 15 %.
 - En `trades`: cantidades y precios positivos, `fees >= 0`, `exit_price` y `closed_at` van juntos, `closed_at >= opened_at`, y el stop y el objetivo del lado correcto de la entrada (en una compra, `stop_loss < entry_price < take_profit`).
 - En `backtests`: `done` requiere `report` y `failed` requiere `error`.
@@ -180,8 +195,10 @@ RLS está activado en todas las tablas. Cada usuario solo ve y modifica lo suyo,
 | `trades` | vía `bot_id` → perfil | solo leer |
 | `equity_snapshots` | vía `bot_id` → perfil | solo leer |
 | `strategies` | compartida (catálogo global) | solo leer (todas) |
-| `strategy_transitions` | compartida (catálogo global) | solo leer (todas) |
+| `strategy_transitions` | compartida (catálogo global) | leer (todas); un admin inserta transiciones con su propio `user_id` como actor |
+| `app_roles` | `user_id = auth.uid()` | solo leer el suyo (solo `service_role` escribe) |
 
+- El rol se resuelve con `private.is_admin()` (security definer). El trigger del ciclo de vida corre como su dueño, así que la transición de un admin se aplica igual que la de `service_role`, con las mismas reglas.
 - La propiedad a través de perfil o bot se resuelve con `private.owns_profile()` y `private.owns_bot()` (security definer, fuera del esquema expuesto por la API).
 - **Escrituras del backend**: `trades`, `equity_snapshots`, `strategies`, `strategy_transitions` y el avance y reporte de `backtests` los escriben los servicios (engine, agents, api) con la llave `service_role`, que se salta RLS. Esa llave vive solo en el backend, nunca en el frontend.
 - Además de no tener políticas de escritura, `authenticated` no tiene privilegios de INSERT/UPDATE/DELETE sobre `trades` y `equity_snapshots`, ni de UPDATE sobre `backtests`.
@@ -196,6 +213,8 @@ RLS está activado en todas las tablas. Cada usuario solo ve y modifica lo suyo,
 - `01_constraints.test.sql`: cada check (riesgo fuera de rango, capital 0, símbolo no soportado, stop del lado equivocado, etc.) y el trigger de `updated_at`.
 - `02_rls.test.sql`: con dos usuarios, A no ve ni modifica las filas de B; el usuario no escribe operaciones ni equity; `anon` no ve nada y `service_role` sí escribe.
 - `03_strategies.test.sql`: tablas del ciclo de vida, transiciones permitidas y prohibidas, promociones solo humanas, historial completo, y RLS (lectura para `authenticated`, nada para `anon`, escritura solo de `service_role`).
-- `04_profiles_max_drawdown.test.sql`: `max_drawdown = 1` (y 0) se rechaza; 0.99 es válido.
+- `04_profiles_max_drawdown.test.sql`: lo que se mande en `max_drawdown` (1, 0) se reemplaza por el del nivel, así que nunca queda fuera de (0, 1).
+- `05_app_roles.test.sql`: estructura y RLS de `app_roles`, el demo es admin, un member (o un usuario sin rol) no promueve ni retira, y un admin sí, solo a su nombre y con las transiciones permitidas.
+- `06_profiles_risk_levels.test.sql`: drawdown derivado de cada nivel, capital mínimo de 500 y defaults de `horizon` e `instruments`.
 
 En CI corren en el workflow `DB` (`.github/workflows/db.yml`), solo cuando cambia algo en `supabase/`.

@@ -67,18 +67,20 @@ llave `service_role`. Si faltan, el build pasa igual y la app muestra un aviso.
   `AuthProvider`, y `RequireAuth` redirige a `/login?next=…` si no hay sesión. La seguridad
   real la dan las políticas RLS de la base; la protección de rutas solo evita mostrar
   pantallas que no funcionarían.
-- **`/login`**: correo y contraseña. Usuario demo del seed: `demo@trading-maxxing.local` /
-  `demo1234`. Tras entrar va a `next` (solo rutas internas), a `/onboarding` si todavía no
-  hay perfil o a `/` si ya lo hay.
-- **`/onboarding`**: wizard de cuatro pasos (capital y horizonte, riesgo y drawdown,
-  instrumentos, metas). Escribe en `profiles` (upsert por `user_id`) y reemplaza las filas de
-  `goals` con la sesión del usuario, por lo que RLS limita todo a sus propias filas. Si ya hay
-  perfil, el wizard se prellena para editarlo.
+- **`/login`**: correo y contraseña. No hay registro público (#67): un admin da de alta a
+  cada persona con `make user EMAIL=... ROLE=member|admin`. Usuario demo del seed (admin):
+  `demo@trading-maxxing.local` / `demo1234`. Tras entrar va a `next` (solo rutas internas), a
+  `/onboarding` si todavía no hay perfil o a `/` si ya lo hay.
+- **`/onboarding`**: wizard de tres pasos (#78): capital (mínimo 500 USDT), nivel de riesgo
+  del 1 al 5 con una explicación en lenguaje simple y la caída máxima en dólares para el
+  capital capturado, y metas. Ya no pide horizonte, drawdown ni instrumentos: siempre se
+  operan BTC/USDT y ETH/USDT, y la base deriva el drawdown del nivel. Escribe en `profiles`
+  (upsert por `user_id`) y reemplaza las filas de `goals` con la sesión del usuario, por lo
+  que RLS limita todo a sus propias filas. Si ya hay perfil, el wizard se prellena.
 - **Validación** con zod en `src/lib/onboarding/schema.ts`, alineada con los checks de
-  `supabase/migrations/20261107000100_tables.sql`: capital > 0, riesgo entero de 1 a 5,
-  drawdown en (0 %, 100 %] (se guarda como fracción), instrumentos no vacíos dentro de
-  {BTCUSDT, ETHUSDT}, retorno objetivo > 0 % y fecha límite futura. Si cambian los checks de
-  la base, hay que cambiar ese archivo.
+  `supabase/migrations/`: capital >= 500, riesgo entero de 1 a 5, retorno objetivo > 0 % y
+  fecha límite futura. `RISK_TABLE` ahí es copia de `tm_agents.risk.RISK_TABLE`;
+  `services/agents/tests/test_risk_levels_sync.py` falla si se desalinean.
 
 ## Pruebas
 

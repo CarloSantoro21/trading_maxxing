@@ -1,7 +1,16 @@
+import itertools
 from decimal import Decimal as D
 
 import pytest
-from tm_agents.risk import Portfolio, RiskAgent, RiskLimits, TradeProposal
+from tm_agents.risk import (
+    MIN_CAPITAL,
+    RISK_TABLE,
+    Portfolio,
+    RiskAgent,
+    RiskLimits,
+    TradeProposal,
+    get_risk_level,
+)
 from tm_shared.contracts import OrderSide, Rationale, SimResult
 
 
@@ -32,10 +41,71 @@ def test_risk_table(level, pct):
     assert RiskLimits.from_profile(level, 0.2).risk_per_trade == D(pct)
 
 
-@pytest.mark.parametrize("level,dd", [(0, 0.2), (6, 0.2), (3, 0), (3, 1)])
+@pytest.mark.parametrize("level,dd", [(0, 0.2), (6, 0.2), (3, 0), (3, 1), (None, None)])
 def test_invalid_profile(level, dd):
     with pytest.raises(ValueError):
         RiskLimits.from_profile(level, dd)
+
+
+# Tabla de la propuesta, sección 3.4: nivel -> (drawdown máximo, riesgo por operación, exposición)
+PROPUESTA = {
+    1: ("0.10", "0.0025", "0.20"),
+    2: ("0.15", "0.005", "0.35"),
+    3: ("0.20", "0.01", "0.50"),
+    4: ("0.30", "0.015", "0.70"),
+    5: ("0.40", "0.02", "0.90"),
+}
+
+
+def test_risk_table_matches_proposal():
+    assert set(RISK_TABLE) == set(PROPUESTA)
+    for level, (dd, per_trade, exposure) in PROPUESTA.items():
+        spec = RISK_TABLE[level]
+        assert spec.level == level and spec.name
+        assert (spec.max_drawdown, spec.risk_per_trade, spec.max_exposure) == (
+            D(dd),
+            D(per_trade),
+            D(exposure),
+        )
+
+
+def test_risk_table_is_monotonic_and_read_only():
+    specs = [RISK_TABLE[level] for level in sorted(RISK_TABLE)]
+    for low, high in itertools.pairwise(specs):
+        assert low.max_drawdown < high.max_drawdown
+        assert low.risk_per_trade < high.risk_per_trade
+        assert low.max_exposure < high.max_exposure
+    with pytest.raises(TypeError):
+        RISK_TABLE[6] = RISK_TABLE[5]  # type: ignore[index]
+
+
+@pytest.mark.parametrize("level", [1, 2, 3, 4, 5])
+def test_from_profile_uses_table(level):
+    spec = get_risk_level(level)
+    limits = RiskLimits.from_profile(level)
+    assert limits.max_drawdown == spec.max_drawdown
+    assert limits.risk_per_trade == spec.risk_per_trade
+    assert limits.max_exposure == spec.max_exposure
+    assert limits.daily_loss_limit == spec.risk_per_trade * 3
+
+
+def test_from_profile_explicit_drawdown_and_overrides():
+    limits = RiskLimits.from_profile(2, 0.25, max_trades_per_day=2)
+    assert limits.max_drawdown == D("0.25")
+    assert limits.max_trades_per_day == 2
+
+
+@pytest.mark.parametrize("level", [0, 6, "3", 2.5])
+def test_get_risk_level_rejects_out_of_range(level):
+    with pytest.raises(ValueError, match="entre 1 y 5"):
+        get_risk_level(level)
+
+
+def test_max_loss_in_usdt():
+    assert get_risk_level(1).max_loss(MIN_CAPITAL) == D("50")
+    assert get_risk_level(3).max_loss(10_000) == D("2000")
+    assert get_risk_level(5).max_loss(1234.5) == D("493.8")
+    assert D("500") == MIN_CAPITAL
 
 
 def test_pass_sizes_to_one_percent_risk():

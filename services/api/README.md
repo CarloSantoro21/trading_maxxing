@@ -17,10 +17,21 @@ uv run --package tm-api uvicorn tm_api.main:app --reload --port 8000
 | portfolio | `GET /portfolio` (sleeves por bot y totales) |
 | trades | `GET /trades?bot_id=&symbol=&state=open\|closed&limit=&offset=` |
 | backtests | `GET/POST /backtests`, `GET /backtests/{id}` |
+| strategies | `GET /strategies`, `GET /strategies/{name}`, `POST /strategies/{name}/promote` y `/retire` (solo admin) |
+| users | `GET /me` (id, correo y rol), `POST /admin/users` (solo admin; alta con contraseña temporal) |
 
-Las validaciones de Pydantic replican los checks de la base (riesgo 1–5, capital > 0,
-drawdown en (0, 1], instrumentos BTCUSDT/ETHUSDT, retorno objetivo > 0, nombre de bot de
-1 a 100 caracteres), así que los errores salen como 422 con el campo exacto.
+Las validaciones de Pydantic replican los checks de la base (riesgo 1–5, capital mínimo de
+500 USDT, retorno objetivo > 0, nombre de bot de 1 a 100 caracteres), así que los errores
+salen como 422 con el campo exacto. El perfil solo recibe `risk_level` y `capital` (#78):
+la base deriva `max_drawdown` del nivel y pone `horizon = medium` e `instruments =
+[BTCUSDT, ETHUSDT]`; mandar esos campos da 422.
+
+## Roles (#67)
+
+Cada usuario es `admin` o `member` (tabla `app_roles`; sin fila, `member`). Promover o
+retirar estrategias y dar de alta usuarios son acciones de admin: un member recibe 403
+(dependencia `require_admin`), y la base lo vuelve a exigir con RLS. `POST /admin/users`
+necesita `SUPABASE_SERVICE_ROLE_KEY`; sin ella responde 503.
 
 ## Autenticación
 
@@ -32,7 +43,7 @@ valida con `SUPABASE_JWT_SECRET`.
 
 ## Acceso a datos y RLS
 
-La API no usa la service role: reenvía el JWT del usuario a PostgREST
+La API no usa la service role salvo para el alta de usuarios: reenvía el JWT del usuario a PostgREST
 (`SUPABASE_URL/rest/v1`) junto con la llave pública en `apikey`, y PostgreSQL aplica RLS.
 Una fila ajena simplemente no aparece (404). Las migraciones permiten al rol
 `authenticated` todo lo que necesita: CRUD de perfiles, metas y bots, lectura de trades y
@@ -55,6 +66,7 @@ equity, y encolar backtests en estado `queued`.
 | --- | --- |
 | `SUPABASE_URL` | URL de Supabase (en contenedor: `http://host.docker.internal:54321`) |
 | `SUPABASE_ANON_KEY` o `SUPABASE_PUBLISHABLE_KEY` | Llave pública para el header `apikey` |
+| `SUPABASE_SERVICE_ROLE_KEY` o `SUPABASE_SECRET_KEY` | Solo para `POST /admin/users` (opcional) |
 | `SUPABASE_JWT_SECRET` | Solo para tokens HS256 (opcional) |
 | `SUPABASE_JWT_ISSUER` | Si se define, se verifica el claim `iss` |
 | `REDIS_URL` | Redis de los streams |
