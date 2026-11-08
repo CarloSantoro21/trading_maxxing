@@ -34,16 +34,13 @@ describe("OnboardingLoader", () => {
     renderWith(() => ({
       data: {
         id: "p1",
-        horizon: "short",
         risk_level: 5,
         capital: "1234",
-        max_drawdown: "0.3",
-        instruments: ["BTCUSDT"],
+        max_drawdown: "0.4",
         goals: [],
       },
     }));
     expect(await screen.findByLabelText("Capital inicial (USDT)")).toHaveValue(1234);
-    expect(screen.getByRole("radio", { name: /Corto plazo/ })).toBeChecked();
   });
 
   it("muestra el wizard vacío si no hay perfil", async () => {

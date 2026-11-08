@@ -1,13 +1,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   fractionToPct,
-  HORIZONS,
+  isRiskLevel,
   pctToFraction,
-  SYMBOLS,
-  type Horizon,
   type OnboardingFormState,
   type OnboardingValues,
-  type SupportedSymbol,
 } from "./schema";
 
 /**
@@ -15,15 +12,17 @@ import {
  *
  * Todas las consultas van con la sesión del usuario (llave anon + JWT), así que las
  * políticas RLS garantizan que solo toque sus propias filas; aquí no se usa service role.
+ *
+ * El perfil solo guarda nivel de riesgo y capital: la base deriva max_drawdown del nivel
+ * (trigger profiles_derive_max_drawdown) y pone los defaults de horizon e instruments.
  */
 
 export interface ProfileRow {
   id: string;
-  horizon: Horizon;
   risk_level: number;
   capital: number | string;
-  max_drawdown: number | string;
-  instruments: string[];
+  /** Derivado del nivel por la base; solo se lee. */
+  max_drawdown?: number | string | null;
   goals?: { target_return: number | string; deadline: string }[] | null;
 }
 
@@ -39,11 +38,8 @@ export function toDbRows(userId: string, values: OnboardingValues) {
   return {
     profile: {
       user_id: userId,
-      horizon: values.horizon,
       risk_level: values.riskLevel,
       capital: values.capital,
-      max_drawdown: pctToFraction(values.maxDrawdownPct),
-      instruments: values.instruments,
     },
     goals: values.goals.map((g) => ({
       target_return: pctToFraction(g.targetReturnPct),
@@ -54,19 +50,13 @@ export function toDbRows(userId: string, values: OnboardingValues) {
 
 /** Estado del formulario a partir de un perfil existente (para editarlo). */
 export function profileToForm(row: ProfileRow): OnboardingFormState {
-  const instruments = row.instruments.filter((s): s is SupportedSymbol =>
-    (SYMBOLS as readonly string[]).includes(s),
-  );
   const goals = (row.goals ?? []).map((g) => ({
     targetReturnPct: String(fractionToPct(Number(g.target_return))),
     deadline: g.deadline,
   }));
   return {
     capital: String(Number(row.capital)),
-    horizon: (HORIZONS as readonly string[]).includes(row.horizon) ? row.horizon : "",
-    riskLevel: String(row.risk_level),
-    maxDrawdownPct: String(fractionToPct(Number(row.max_drawdown))),
-    instruments,
+    riskLevel: isRiskLevel(row.risk_level) ? String(row.risk_level) : "3",
     goals: goals.length > 0 ? goals : [{ targetReturnPct: "", deadline: "" }],
   };
 }
@@ -78,7 +68,7 @@ export async function fetchProfile(
 ): Promise<ProfileRow | null> {
   const { data, error } = await supabase
     .from("profiles")
-    .select("id, horizon, risk_level, capital, max_drawdown, instruments, goals(target_return, deadline)")
+    .select("id, risk_level, capital, max_drawdown, goals(target_return, deadline)")
     .eq("user_id", userId)
     .maybeSingle();
   if (error) throw new OnboardingSaveError("No se pudo leer tu perfil.", { cause: error });
