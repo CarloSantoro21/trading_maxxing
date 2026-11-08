@@ -279,9 +279,10 @@ data "aws_iam_policy_document" "ecs_tasks_assume" {
 locals {
   create_roles       = var.existing_role_arn == null
   execution_role_arn = local.create_roles ? aws_iam_role.execution[0].arn : var.existing_role_arn
-  task_role_arns = local.create_roles ? { for k, r in aws_iam_role.task : k => r.arn } : {
-    for k, _ in local.services : k => var.existing_role_arn
-  }
+  task_role_arns = merge(
+    { for k, _ in local.services : k => var.existing_role_arn },
+    { for k, r in aws_iam_role.task : k => r.arn },
+  )
 }
 
 # Rol de ejecución: lo usa el agente de ECS para hacer pull, escribir logs y leer secretos.
@@ -317,7 +318,7 @@ resource "aws_iam_role_policy" "execution_secrets" {
 
 # Rol de tarea: lo que el código de cada servicio puede hacer en AWS. Uno por servicio.
 resource "aws_iam_role" "task" {
-  for_each = local.create_roles ? local.services : {}
+  for_each = { for k, _ in local.services : k => k if local.create_roles }
 
   name               = "${var.name}-${each.key}-task"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
