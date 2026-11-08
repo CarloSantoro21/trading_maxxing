@@ -72,6 +72,7 @@ def build_worker(env: Mapping[str, str] | None = None) -> Any | None:
         SharedSignalLayer,
         StoreVetoProvider,
     )
+    from tm_agents.orchestrator.state import PostgRESTTradeStateRepository
     from tm_agents.orchestrator.streams import (
         DECISIONS_STREAM,
         SHADOW_STREAM,
@@ -102,10 +103,13 @@ def build_worker(env: Mapping[str, str] | None = None) -> Any | None:
             news=StoreVetoProvider(RedisVetoStore(client)),
         )
     repository = PostgRESTBotRepository.from_env(env) if has_supabase else InMemoryBotRepository()
+    # Cada bot reconstruye su libro desde la tabla trades al arrancar (#89).
+    trades = PostgRESTTradeStateRepository.from_env(env) if has_supabase else None
     supervisor = BotSupervisor(
         repository,
         RedisStreamSink(client, DECISIONS_STREAM),
         shadow_sink=RedisStreamSink(client, SHADOW_STREAM),
+        trades=trades,
     )
     bots = _flag(env, "ORCHESTRATOR_BOTS")
     return OrchestratorWorker(

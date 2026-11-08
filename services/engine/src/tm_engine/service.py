@@ -207,6 +207,8 @@ class TradingEngineService:
         self.profile: EngineProfile | None = None
         self.strategy: AgenticStrategy | None = None
         self.error: str | None = None
+        self.restored = 0
+        self.restore_error: str | None = None
         self._node: Any | None = None
         self._thread: threading.Thread | None = None
 
@@ -226,6 +228,7 @@ class TradingEngineService:
         self.strategy = build_strategy(
             self.profile, CompositeDecisionSource(sources), self._recorder, self._sleeve_guard
         )
+        self.restored = self._restore_positions(self.strategy)
         if self._credentials is None:
             self.mode = EngineMode.OFFLINE
             self.error = f"faltan {API_KEY_ENV} / {API_SECRET_ENV}"
@@ -238,6 +241,26 @@ class TradingEngineService:
         self.mode = EngineMode.TESTNET
         log.info("motor conectado a Binance Spot Testnet (%s)", ",".join(self.profile.symbols))
         return self.mode
+
+    def _restore_positions(self, strategy: AgenticStrategy) -> int:
+        """Siembra el libro por bot y sleeve con las operaciones abiertas de `trades` (#89).
+
+        Si el recorder no sabe leerlas (memoria) no hay nada que restaurar. Si falla la
+        lectura, el motor arranca igual (las entradas siguen funcionando) pero lo reporta en
+        `status()["restore_error"]`: los cierres de posiciones previas se rechazarían.
+        """
+        self.restore_error = None
+        load = getattr(self._recorder, "open_positions", None)
+        if not callable(load):
+            return 0
+        try:
+            count = strategy.restore_positions(load())
+        except Exception as exc:
+            self.restore_error = f"no se pudieron restaurar las posiciones de trades: {exc}"
+            log.error(self.restore_error)
+            return 0
+        log.info("posiciones restauradas desde trades: %d", count)
+        return count
 
     def _run_node(self) -> None:
         node = self._node
@@ -313,4 +336,6 @@ class TradingEngineService:
             "pending_decisions": self.pending,
             "rejections": len(self.strategy.rejections) if self.strategy else 0,
             "error": self.error,
+            "restored_positions": self.restored,
+            "restore_error": self.restore_error,
         }

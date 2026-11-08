@@ -24,9 +24,17 @@ trae bot, `bot:<id>`, para atribuir los fills y el P&L a su bot y sleeve (ver `S
 Las decisiones `shadow` se rechazan siempre.
 
 Con un `sleeve_guard` (en vivo, `tm_agents.reference.TradingSleeveGuard`) solo se envían
-órdenes de los sleeves cuya estrategia opera con capital (`active` o `probation`). Las
-estrategias en `shadow` nunca llegan al exchange: su decisión se rechaza aquí y su
-desempeño solo se lleva en el ledger de referencia.
+**entradas** (compras) de los sleeves cuya estrategia opera con capital (`active` o
+`probation`). Las estrategias en `shadow` nunca abren posición en el exchange: su decisión se
+rechaza aquí y su desempeño solo se lleva en el ledger de referencia. Los **cierres** (ventas,
+siempre `reduce_only`: en spot una venta nunca aumenta la posición y sin posición se rechaza)
+pasan sin consultar al guardia, sea cual sea el estado del sleeve y aunque el registro no se
+pueda leer (#89): si una estrategia se retira con posición abierta, el BotRunner emite la venta
+de cierre y el motor la ejecuta en vez de dejar la posición huérfana en el exchange.
+
+`restore_positions` siembra el libro por `bot/sleeve` al arrancar (desde las operaciones
+abiertas de la tabla `trades`, ver `SupabaseTradeRecorder.open_positions`), para que un cierre
+que llegue después de un reinicio del motor encuentre su posición.
 
 Binance Spot no acepta listas de órdenes ligadas (OCO) desde el adaptador de Nautilus, así que
 en vivo los hijos se emulan localmente (`emulation_trigger`) y la estrategia gestiona las
@@ -37,7 +45,7 @@ matching soporta OTO/OUO de forma nativa.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
@@ -55,7 +63,7 @@ from tm_shared.contracts import OrderSide, TradeDecision
 
 from tm_engine.decisions import DecisionEnvelope, DecisionSource
 from tm_engine.instruments import instrument_id
-from tm_engine.recorder import FillRecord, FillRecorder, MemoryFillRecorder
+from tm_engine.recorder import FillRecord, FillRecorder, MemoryFillRecorder, RestoredPosition
 from tm_engine.sleeves import (
     SleeveLedger,
     book_key,
@@ -190,8 +198,11 @@ class AgenticStrategy(Strategy):
         decision = envelope.decision
         if envelope.shadow:
             return self._reject(envelope, "decisión de una estrategia en shadow: no se ejecuta")
-        if self._sleeve_guard is not None and not self._sleeve_guard(envelope.sleeve):
-            reason = getattr(self._sleeve_guard, "reason", None)
+        # Un cierre (venta reduce_only) nunca se bloquea por el estado del sleeve (#89).
+        closing = decision.side is OrderSide.SELL
+        guard = self._sleeve_guard
+        if not closing and guard is not None and not guard(envelope.sleeve):
+            reason = getattr(guard, "reason", None)
             why = reason(envelope.sleeve) if callable(reason) else "el sleeve no opera capital"
             return self._reject(envelope, f"sin órdenes reales: {why}")
         risk = decision.rationale.risk
@@ -236,6 +247,10 @@ class AgenticStrategy(Strategy):
         trade = self._open.get(key)
         if trade is None:
             trade = self._open[key] = _OpenTrade(envelope, [entry, sl, tp])
+        else:
+            # La decisión vigente es la del último tramo (su rationale va en los fills).
+            trade.envelope = envelope
+            trade.order_ids.extend((entry, sl, tp))
         trade.tranches.append(_Tranche(entry_id=entry, sl_id=sl, tp_id=tp))
         self.accepted.append(envelope)
         self.submit_order_list(bracket)
@@ -431,6 +446,25 @@ class AgenticStrategy(Strategy):
                 self._open.pop(key)
             self.rejections.append(Rejection(trade.envelope, f"orden de entrada {reason}"))
             self.log.warning(f"entrada de {key[0]} en {key[1]} {reason}")
+
+    # --- reinicio ------------------------------------------------------------------------
+
+    def restore_positions(self, positions: Iterable[RestoredPosition]) -> int:
+        """Siembra el libro con posiciones abiertas antes de un reinicio; devuelve cuántas.
+
+        Solo se usa al arrancar, con el libro vacío. Las posiciones quedan sin tramos: los SL y
+        TP emulados no sobreviven al reinicio (ver docs/arquitectura/orquestador.md), así que
+        una venta posterior las cierra a mercado como cualquier cierre completo.
+        """
+        count = 0
+        for pos in positions:
+            if pos.quantity <= 0:
+                continue
+            book = book_key(pos.bot_id, pos.sleeve)
+            self.ledger.restore(book, pos.symbol, pos.quantity, pos.avg_price)
+            count += 1
+            self.log.info(f"posición restaurada {book} {pos.quantity} {pos.symbol}")
+        return count
 
     # --- consultas -----------------------------------------------------------------------
 

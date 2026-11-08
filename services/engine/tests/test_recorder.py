@@ -54,7 +54,11 @@ def test_open_partial_and_close_trade(recorder, envelope, t0):
     assert json.loads(patch.calls.last.request.content)["entry_price"] == "101"
 
     recorder.on_fill(_fill(t0, OrderSide.SELL, "tp", "1", "110", "1", "0.11", "8.89"))
-    assert patch.call_count == 1  # cierre parcial: todavía no se cierra la fila
+    # cierre parcial: la fila sigue abierta, pero su posición queda al día (#89)
+    partial = json.loads(patch.calls.last.request.content)
+    assert patch.call_count == 2 and "exit_price" not in partial
+    assert partial["rationale"]["position"]["open_quantity"] == "1"
+    assert partial["rationale"]["sleeve"] == "trend"
     recorder.on_fill(_fill(t0, OrderSide.SELL, "tp", "1", "112", "0", "0.11", "10.89"))
     closing = json.loads(patch.calls.last.request.content)
     assert patch.calls.last.request.url.params["id"] == "eq.t-1"
@@ -75,7 +79,15 @@ def test_entry_without_decision_has_minimal_rationale(recorder, t0):
     post = respx.post(ENDPOINT).mock(return_value=httpx.Response(201, json=[{"id": "t-2"}]))
     recorder.on_fill(_fill(t0, OrderSide.BUY, "entry", "1", "100", "1"))
     body = json.loads(post.calls.last.request.content)
-    assert body["rationale"] == {"sleeve": "trend"}
+    assert body["rationale"] == {
+        "sleeve": "trend",
+        "position": {
+            "open_quantity": "1",
+            "realized_pnl": "-0.1",
+            "exit_notional": "0",
+            "target_fraction": None,
+        },
+    }
     assert body["stop_loss"] is None
 
 

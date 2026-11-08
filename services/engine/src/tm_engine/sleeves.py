@@ -116,6 +116,12 @@ class SleeveLedger:
     def quantity(self, sleeve: str, symbol: str) -> Decimal:
         return self._sleeves[sleeve].quantity(symbol) if sleeve in self._sleeves else ZERO
 
+    def restore(self, sleeve: str, symbol: str, quantity: Decimal, avg_price: Decimal) -> None:
+        """Deja la posición de ``sleeve`` en ``symbol`` como estaba antes de un reinicio."""
+        pos = self.get(sleeve).positions.setdefault(symbol, SleevePosition())
+        pos.quantity = Decimal(quantity)
+        pos.avg_price = Decimal(avg_price)
+
     def apply_fill(
         self,
         *,

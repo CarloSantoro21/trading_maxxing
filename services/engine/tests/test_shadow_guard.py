@@ -49,9 +49,12 @@ def test_shadow_sleeve_never_reaches_the_venue(make_frame, envelope):
     )
     assert not any("sleeve:kronos" in o.tags for o in result.orders)
     assert all(f.sleeve == "trend" for f in result.fills) and result.fills
-    shadow = [r for r in result.rejections if "kronos" in r]
-    assert len(shadow) == 2
-    assert all(r.startswith("sin órdenes reales") and "shadow" in r for r in shadow)
+    # La compra la frena el guardia; la venta es un cierre (#89): pasa el guardia y la rechaza
+    # el motor porque el sleeve no tiene posición (en spot no se abren cortos).
+    assert len(result.rejections) == 2
+    entry, close = result.rejections
+    assert entry.startswith("sin órdenes reales") and "kronos" in entry and "shadow" in entry
+    assert close.startswith("sin posición en el sleeve")
     assert "kronos" not in result.sleeves
 
 

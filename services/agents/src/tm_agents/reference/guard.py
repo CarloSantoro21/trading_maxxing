@@ -1,12 +1,18 @@
-"""TradingSleeveGuard: solo los sleeves con capital pueden mandar órdenes reales.
+"""TradingSleeveGuard: solo los sleeves con capital pueden abrir posiciones reales.
 
-Una estrategia en ``shadow`` (o en cualquier estado sin capital) nunca envía órdenes al
+Una estrategia en ``shadow`` (o en cualquier estado sin capital) nunca abre posición en el
 exchange: solo vive en su ledger de referencia. El motor (``AgenticStrategy``) consulta este
-guardia antes de convertir una decisión en órdenes y la rechaza si el sleeve no está en
+guardia antes de convertir una **entrada** en órdenes y la rechaza si el sleeve no está en
 ``active`` ni en ``probation``.
 
-Falla cerrado: si la estrategia no existe o no se puede leer el registro, no se opera.
-El estado se guarda en caché ``ttl`` segundos para no pegarle a Supabase en cada decisión.
+Los **cierres** (órdenes ``reduce_only``: en spot, ventas que no aumentan la posición) se
+permiten siempre, en cualquier estado (#89). Si el LifecycleMonitor retira una estrategia con
+posición abierta, el BotRunner emite la venta de cierre y esa venta tiene que llegar al
+exchange; bloquearla dejaría la posición huérfana, protegida solo por su SL/TP de catástrofe.
+
+Falla cerrado para las entradas: si la estrategia no existe o no se puede leer el registro,
+no se abren posiciones (los cierres siguen pasando). El estado se guarda en caché ``ttl``
+segundos para no pegarle a Supabase en cada decisión.
 """
 
 from __future__ import annotations
@@ -56,7 +62,10 @@ class TradingSleeveGuard:
         self._cache[sleeve] = (now, state)
         return state
 
-    def allows(self, sleeve: str) -> bool:
+    def allows(self, sleeve: str, *, reduce_only: bool = False) -> bool:
+        """True si el sleeve puede mandar la orden; un cierre (``reduce_only``) siempre puede."""
+        if reduce_only:
+            return True
         return can_send_orders(self.state(sleeve))
 
     def reason(self, sleeve: str) -> str:
@@ -65,5 +74,5 @@ class TradingSleeveGuard:
             return f"el sleeve '{sleeve}' no tiene estrategia registrada; no se opera"
         return f"la estrategia '{sleeve}' está en {state.value}: sin capital no envía órdenes"
 
-    def __call__(self, sleeve: str) -> bool:
-        return self.allows(sleeve)
+    def __call__(self, sleeve: str, *, reduce_only: bool = False) -> bool:
+        return self.allows(sleeve, reduce_only=reduce_only)
