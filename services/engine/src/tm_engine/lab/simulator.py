@@ -1,7 +1,7 @@
 """Simulador vectorizado de un sleeve spot (solo largo) con comisión por lado.
 
 Reproduce lo que hace `AgenticStrategy` sobre el venue simulado de Nautilus, pero sin el
-motor de eventos, para poder correr la cuadrícula de parámetros de 16 ventanas en segundos:
+motor de eventos, para poder correr la cuadrícula de parámetros de 20 ventanas en segundos:
 
 - La estrategia entrega una serie objetivo por vela (`1` = estar comprado, `0` = en USDT),
   indexada por la apertura de la vela; el objetivo de la vela `t` se ejecuta **al cierre**

@@ -1,4 +1,4 @@
-"""Laboratorio de Kronos (#13): umbrales en jul-dic 2024 y holdout 2025 detrás de la bandera."""
+"""Laboratorio de Kronos (#13): umbrales en jul-dic 2024, OOS 2025 y holdout 2026 con bandera."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ STEPS = 3
 SAMPLES = 5
 
 
-def _bars_4h(start="2024-06-30", end="2026-01-01", seed=0):
+def _bars_4h(start="2024-06-30", end="2026-11-01", seed=0):
     idx = pd.date_range(start, end, freq="4h", tz="UTC", inclusive="left", name="open_time")
     rng = np.random.default_rng(seed)
     close = np.round(100.0 * np.cumprod(1.0 + rng.normal(0.0, 0.01, len(idx))), 2)
@@ -68,7 +68,7 @@ def _write_forecasts(root, symbol, fc: pd.DataFrame) -> None:
 @pytest.fixture
 def kronos_env(tmp_path):
     bars = _bars_4h()
-    fc = _forecasts(bars, "2024-07-01", "2026-01-01")
+    fc = _forecasts(bars, "2024-07-01", "2026-11-01")
     _write_forecasts(tmp_path, "BTCUSDT", fc)
     opened: list[tuple[pd.Timestamp, pd.Timestamp]] = []
 
@@ -99,16 +99,21 @@ def test_median_returns_and_targets():
     assert kronos_targets(bars, med, 0.02).sum() == 0.0
 
 
-def test_kronos_lab_picks_threshold_without_touching_2025(kronos_env):
+def test_kronos_lab_picks_threshold_without_touching_2026(kronos_env):
     cfg = KronosLabConfig(
         symbols=("BTCUSDT",), forecasts_dir=str(kronos_env["root"]), n_simulations=200,
         thresholds=(0.0, 0.5),
     )  # fmt: skip
     result = kronos_lab(cfg, bar_loader=kronos_env["bar_loader"])
     assert result["holdout"] is None
-    assert all(end <= pd.Timestamp("2025-01-01", tz="UTC") for _, end in kronos_env["opened"])
+    assert all(end <= pd.Timestamp("2026-01-01", tz="UTC") for _, end in kronos_env["opened"])
     cov = result["coverage"]["BTCUSDT"]
-    assert cov["last"] < "2025-01-01"
+    assert cov["last"] < "2026-01-01"
+    # 2025 es out-of-sample: se evalúa con el umbral elegido, Monte Carlo a 1 año y criterios
+    oos = result["out_of_sample"]
+    assert oos["strategy"]["start"] == "2025-01-01" and oos["strategy"]["end"] == "2026-01-01"
+    assert oos["trades"] > 0 and oos["montecarlo"]["horizon_days"] == 365
+    assert {"approved", "reasons"} <= set(oos["approval"])
     # pronóstico perfecto: el umbral 0 gana; con 0.5 nunca entra
     assert result["chosen"]["min_return"] == 0.0
     assert result["grid"]["0.5000"]["trades"] == 0
@@ -118,17 +123,21 @@ def test_kronos_lab_picks_threshold_without_touching_2025(kronos_env):
     assert ins["equity_daily"][0] == ["2024-07-01", 100000.0]
 
 
-def test_kronos_files_of_2025_are_not_opened_without_flag(kronos_env):
+def test_kronos_files_of_2026_are_not_opened_without_flag(kronos_env):
     root = kronos_env["root"]
-    start, end = pd.Timestamp("2024-07-01", tz="UTC"), pd.Timestamp("2025-01-01", tz="UTC")
+    start, end = pd.Timestamp("2024-07-01", tz="UTC"), pd.Timestamp("2026-01-01", tz="UTC")
     files = forecast_files(root, "BTCUSDT", start, end)
-    assert files and all(f.stem < "2025-01-01" for f in files)
+    assert files and all(f.stem < "2026-01-01" for f in files)
     loaded = dir_forecast_loader(root)("BTCUSDT", start, end)
     assert pd.DatetimeIndex(loaded["decision_time"]).max() < end
     with pytest.raises(FileNotFoundError):
         dir_forecast_loader(root)("ETHUSDT", start, end)
     with pytest.raises(HoldoutError):
-        kronos_lab(KronosLabConfig(is_end="2025-03-01", forecasts_dir=str(root)))
+        kronos_lab(KronosLabConfig(is_end="2026-03-01", forecasts_dir=str(root)))
+    with pytest.raises(HoldoutError):
+        kronos_lab(KronosLabConfig(oos_end="2026-03-01", forecasts_dir=str(root)))
+    with pytest.raises(ValueError, match="después"):
+        kronos_lab(KronosLabConfig(oos_start="2024-12-01", forecasts_dir=str(root)))
 
 
 def test_kronos_holdout_runs_only_with_flag(kronos_env):
@@ -138,7 +147,7 @@ def test_kronos_holdout_runs_only_with_flag(kronos_env):
     )  # fmt: skip
     result = kronos_lab(cfg, bar_loader=kronos_env["bar_loader"])
     hold = result["holdout"]
-    assert hold["strategy"]["start"] == "2025-01-01"
+    assert hold["strategy"]["start"] == "2026-01-01" and hold["strategy"]["end"] == "2026-11-01"
     assert hold["trades"] > 0
     assert {"approved", "reasons"} <= set(hold["approval"])
     assert hold["montecarlo"]["max_drawdown_p95"] >= hold["montecarlo"]["max_drawdown_p50"]
