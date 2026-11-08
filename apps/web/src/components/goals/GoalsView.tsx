@@ -124,7 +124,7 @@ export function GoalsView({ fetcher }: { fetcher?: Fetcher }) {
 
       <section className={cardClass} aria-labelledby="goal-title">
         <h2 id="goal-title" className="sr-only">
-          Meta
+          Proyección de la meta
         </h2>
         {goals === null && !error && (
           <p role="status" className="text-neutral-500">
