@@ -49,9 +49,9 @@ PATHS = {
 
 @pytest.fixture
 def base() -> datetime:
-    # Después de "ahora": el historial del registro en memoria usa el reloj real. Se fija al
-    # inicio del día UTC siguiente para que las horas que suman las pruebas no crucen de día
-    # (el ledger guarda un punto de equity por día UTC y la prueba fallaba después de las 15 h).
+    # Después de "ahora" (el historial del registro en memoria usa el reloj real) y al
+    # inicio de un día UTC, para que base + 0..9 h no cruce la medianoche: la equity es
+    # diaria y la prueba espera un solo punto.
     tomorrow = datetime.now(UTC) + timedelta(days=1)
     return tomorrow.replace(hour=0, minute=1, second=0, microsecond=0)
 
