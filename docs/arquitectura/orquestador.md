@@ -185,9 +185,14 @@ solo cambia su `state` en el `catalog` del siguiente evento (por ejemplo, `activ
 Las estrategias en `shadow` hacen todo el ciclo con el peso que tendrían si fueran activas,
 sobre un libro virtual aparte, y se publican en `tm:shadow` con `shadow=true`. Nunca llegan a
 `tm:decisions`, y el motor rechaza cualquier sobre con `shadow=true` por si acaso. Además, en
-vivo el motor consulta el `TradingSleeveGuard` (#57) antes de cada orden: solo los sleeves de
-estrategias en `active` o `probation` envían órdenes; `shadow`, `research`, `lab`, `retired` o
-un error del registro se rechazan (falla cerrado). El ledger de referencia de una estrategia
+vivo el motor consulta el `TradingSleeveGuard` (#57) antes de cada **entrada**: solo los
+sleeves de estrategias en `active` o `probation` abren posición; las compras de `shadow`,
+`research`, `lab`, `retired` o con un error del registro se rechazan (falla cerrado). Los
+**cierres** (ventas `reduce_only`; en spot una venta nunca aumenta la posición) pasan siempre,
+sea cual sea el estado del sleeve y aunque el registro falle (#89): si el LifecycleMonitor
+retira una estrategia con posición abierta, el BotRunner emite la venta y el motor la ejecuta
+en vez de dejar la posición huérfana. Lo prueba de punta a punta
+`services/engine/tests/test_orchestrator_hardening.py`. El ledger de referencia de una estrategia
 en shadow lo lleva el `ReferenceService`, no el bot.
 
 ### Comandos (`tm:commands`)
@@ -214,6 +219,31 @@ trae `target_quantity`:
 - una venta con objetivo 0, o que cubre toda la posición, cierra completo (como en el #69).
 
 Sin `target_quantity` se conserva el comportamiento anterior.
+
+## Reinicios: fuente de verdad (#89)
+
+**La fuente de verdad es la tabla `trades`**, que escribe el motor (`SupabaseTradeRecorder`)
+con los fills reales: una fila por operación de cada bot y sleeve, abierta mientras
+`closed_at` es nulo, con lo que sigue abierto en `rationale.position` (`open_quantity`,
+`realized_pnl`, `target_fraction`). El libro virtual del bot y el libro por `bot/sleeve` del
+motor son derivados y se reconstruyen de ahí al arrancar:
+
+- **BotRunner** (`tm_agents.orchestrator.state`): el `BotSupervisor` lee las filas del bot con
+  `PostgRESTTradeStateRepository` antes de arrancar su runner (al sincronizar los bots en
+  `running` y con el comando `start`) y siembra posiciones, efectivo
+  (`capital + P&L cerrado + P&L parcial - costo de lo abierto`) y pico del equity. Si la
+  lectura falla, el bot no arranca (no opera con un libro equivocado) y se reintenta en el
+  siguiente ciclo.
+- **Motor** (`TradingEngineService._restore_positions`): siembra el libro por `bot/sleeve` con
+  `SupabaseTradeRecorder.open_positions()`, para que un cierre que llegue después del reinicio
+  encuentre su posición. Si falla, el motor arranca igual y lo reporta en
+  `status()["restore_error"]`.
+
+Los SL/TP emulados localmente no sobreviven al reinicio del motor: las posiciones restauradas
+quedan sin tramos y se cierran con la siguiente venta del bot (a mercado). No se reconstruye el
+libro shadow (lo lleva el `ReferenceService`) ni el contador de operaciones del día.
+`test_worker_restart_keeps_each_bot_positions` y `test_engine_restores_its_book_from_trades`
+prueban el reinicio.
 
 ## Backtest y en vivo
 
@@ -252,10 +282,10 @@ Otras variables: `TM_DATA_DIR`, `ORCHESTRATOR_SYMBOLS`, `ORCHESTRATOR_TICK_SECON
 
 ## Limitaciones conocidas
 
-- **El libro del bot es virtual y vive en memoria.** Supone que cada decisión se llena al precio
-  del evento con 0.1 % de comisión. Si el worker se reinicia, los bots empiezan sin posiciones
-  aunque el motor tenga posiciones abiertas; falta reconstruir el libro desde la tabla `trades`
-  o desde los fills del motor.
+- **El libro del bot es virtual.** Supone que cada decisión se llena al precio del evento con
+  0.1 % de comisión; al reiniciarse se realinea con la tabla `trades` (ver «Reinicios»), pero
+  entre reinicios puede diferir ligeramente de los fills reales. El pico del equity restaurado
+  es una cota inferior (solo la curva de P&L cerrado).
 - **Salidas por SL/TP real (Kronos).** Las ejecuta el motor; el libro virtual las refleja
   cuando el precio de un evento posterior del símbolo cruza el nivel (cierres de vela, no
   máximos y mínimos intravela).
