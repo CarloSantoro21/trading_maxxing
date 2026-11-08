@@ -92,7 +92,7 @@ select results_eq(
 -- Inserciones a nombre de otro: violan la política
 select throws_ok(
   $$ insert into public.profiles (user_id, horizon, risk_level, capital, max_drawdown)
-     values ('c0000000-0000-0000-0000-00000000000c', 'short', 1, 100, 0.1) $$,
+     values ('c0000000-0000-0000-0000-00000000000c', 'short', 1, 500, 0.1) $$,
   '42501', null, 'A no puede crear un perfil para otro usuario'
 );
 select throws_ok(
@@ -195,9 +195,9 @@ set local role authenticated;
 
 select is_empty('select 1 from public.trades', 'C no ve ninguna operación');
 select lives_ok(
-  $$ insert into public.profiles (user_id, horizon, risk_level, capital, max_drawdown)
-     values ('c0000000-0000-0000-0000-00000000000c', 'medium', 3, 2000, 0.2) $$,
-  'C puede crear su propio perfil'
+  $$ insert into public.profiles (user_id, risk_level, capital)
+     values ('c0000000-0000-0000-0000-00000000000c', 3, 2000) $$,
+  'C puede crear su propio perfil solo con nivel de riesgo y capital'
 );
 
 reset role;
