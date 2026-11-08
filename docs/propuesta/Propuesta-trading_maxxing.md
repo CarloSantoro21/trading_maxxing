@@ -36,7 +36,7 @@ Una estrategia entra a la biblioteca solo si tiene evidencia publicada en cripto
 | Estrategia | Agente | Evidencia | Timeframe |
 |---|---|---|---|
 | Pronóstico con Kronos | KronosAgent | Shi et al., *Kronos: A Foundation Model for the Language of Financial Markets*, AAAI 2026. En zero-shot, su RankIC de precio es ~93 % mayor que el del mejor modelo base. Sus datos de preentrenamiento llegan a junio de 2024 (apéndice D del paper) | 4 h |
-| Trend following (canales Donchian en varios periodos) | TrendAgent | Liu, Tsyvinski y Goldstein, *Risks and Returns of Cryptocurrency*, Review of Financial Studies, 2021 (momentum de serie de tiempo en BTC, ETH y XRP). Zarattini, Pagani y Barbon, *Catching Crypto Trends*, SFI 25-80, 2025 | 1 día |
+| Trend following (canales Donchian en varios periodos) | TrendAgent | Liu y Tsyvinski, *Risks and Returns of Cryptocurrency*, Review of Financial Studies, 2021 (momentum de serie de tiempo en BTC, ETH y XRP). Zarattini, Pagani y Barbon, *Catching Crypto Trends*, SFI 25-80, 2025 | 1 día |
 | Momentum intradía | IntradayMomentumAgent | Shen, Urquhart y Wang, *Bitcoin intraday time-series momentum*, Financial Review, 2022: el retorno de la primera media hora predice el de la última, in-sample y out-of-sample | 30 min |
 
 Se evaluaron y descartaron Noise Band (solo tiene evidencia en SPY), la ruptura de la caja asiática (forex, con ventaja marginal) y el Initial Balance en tercios (no encontramos estudios). Las noticias no son una estrategia: el NewsAgent solo puede vetar entradas.
