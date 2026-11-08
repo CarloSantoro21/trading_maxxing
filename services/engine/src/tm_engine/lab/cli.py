@@ -3,11 +3,14 @@
     uv run --package tm-engine python -m tm_engine.lab run --strategy trend \\
         --symbols BTCUSDT ETHUSDT --data-dir data/bars --out-dir reports/lab
 
+    # TrendAgent con volatility targeting (#83): vol_target y vol_window en la cuadrícula
+    uv run --package tm-engine python -m tm_engine.lab run --strategy trend_vol ...
+
     uv run --package tm-engine python -m tm_engine.lab kronos \\
         --symbols BTCUSDT ETHUSDT --data-dir data/bars --forecasts-dir data/forecasts
 
 Escribe `<out-dir>/<estrategia>.json` (con la serie diaria de equity), `<estrategia>.md` y
-`<estrategia>.png`. El holdout (2025) solo se corre con `--holdout`.
+`<estrategia>.png`. El holdout (2026, enero a octubre) solo se corre con `--holdout`.
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from tm_engine.lab.config import GLOBAL_MAX_DRAWDOWN, WalkForwardConfig
+from tm_engine.lab.config import GLOBAL_MAX_DRAWDOWN, OOS_END, OOS_START, WalkForwardConfig
 
 
 def _common(p: argparse.ArgumentParser) -> None:
@@ -42,7 +45,7 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--holdout",
         action="store_true",
-        help="Corre sobre el holdout (2025). Solo una vez, al final del desarrollo.",
+        help="Corre sobre el holdout (2026). Solo una vez, al final del desarrollo.",
     )
     p.add_argument("--no-plot", action="store_true")
 
@@ -50,14 +53,18 @@ def _common(p: argparse.ArgumentParser) -> None:
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="tm_engine.lab", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    run = sub.add_parser("run", help="Walk-forward de trend o intraday_momentum")
-    run.add_argument("--strategy", required=True, choices=["trend", "intraday_momentum"])
-    run.add_argument("--oos-start", default="2021-01-01")
-    run.add_argument("--oos-end", default="2025-01-01", help="Exclusivo")
+    run = sub.add_parser("run", help="Walk-forward de trend, trend_vol o intraday_momentum")
+    run.add_argument(
+        "--strategy", required=True, choices=["trend", "trend_vol", "intraday_momentum"]
+    )
+    run.add_argument("--oos-start", default=OOS_START)
+    run.add_argument("--oos-end", default=OOS_END, help="Exclusivo")
     run.add_argument("--is-months", type=int, default=12)
     run.add_argument("--oos-months", type=int, default=3)
     _common(run)
-    kr = sub.add_parser("kronos", help="Umbrales de Kronos (jul-dic 2024) y su holdout")
+    kr = sub.add_parser(
+        "kronos", help="Umbrales de Kronos (jul-dic 2024), out-of-sample 2025 y holdout 2026"
+    )
     kr.add_argument("--forecasts-dir", default="data/forecasts")
     _common(kr)
     return parser.parse_args(argv)
@@ -93,6 +100,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         summary = {
             "chosen": result["chosen"],
             "in_sample": {k: v for k, v in result["in_sample"].items() if k != "equity_daily"},
+            "out_of_sample": result["out_of_sample"]["approval"],
             "holdout": None if result["holdout"] is None else result["holdout"].get("approval"),
         }
         print(json.dumps(summary, indent=2))
