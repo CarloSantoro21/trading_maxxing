@@ -1,0 +1,177 @@
+name: Terraform
+
+# Revisa la infraestructura (infra/) en cada PR que la toca. Todo lo de abajo corre SIN
+# credenciales de AWS: fmt, init sin backend, validate y tflint.
+#
+# El job `plan` queda listo para cuando haya cuenta (#39): se salta solo si no están
+# configurados ni el rol de OIDC (variable AWS_PLAN_ROLE_ARN) ni las credenciales temporales
+# de AWS Academy (secrets AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY y AWS_SESSION_TOKEN).
+# Ver infra/README.md.
+
+on:
+  pull_request:
+    branches: [develop, main]
+    paths:
+      - "infra/**"
+      - ".github/workflows/terraform.yml"
+  push:
+    branches: [develop, main]
+    paths:
+      - "infra/**"
+      - ".github/workflows/terraform.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  static:
+    name: Terraform (fmt + validate + tflint)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: [bootstrap, envs/staging, envs/prod]
+    defaults:
+      run:
+        working-directory: infra/${{ matrix.stack }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.17.1"
+          terraform_wrapper: false
+
+      - name: Formato
+        run: terraform fmt -check -recursive -diff
+        working-directory: infra
+
+      - name: Init sin backend
+        run: terraform init -backend=false
+
+      - name: Validate
+        run: terraform validate -no-color
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.59.1
+
+      # tflint es opcional: avisa pero no bloquea el PR.
+      - name: tflint
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          tflint --init --config "$GITHUB_WORKSPACE/infra/.tflint.hcl"
+          tflint --config "$GITHUB_WORKSPACE/infra/.tflint.hcl" --format compact
+
+  plan:
+    name: Terraform plan (${{ matrix.env }})
+    needs: static
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC
+      pull-requests: write # comentario con el plan
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [staging, prod]
+    defaults:
+      run:
+        working-directory: infra/envs/${{ matrix.env }}
+    env:
+      PLAN_ROLE_ARN: ${{ vars.AWS_PLAN_ROLE_ARN }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      HAS_ACADEMY_CREDS: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SESSION_TOKEN != '' }}
+      TF_VAR_dockerhub_username: ${{ vars.DOCKERHUB_USERNAME || secrets.DOCKERHUB_USERNAME }}
+    steps:
+      - name: ¿Hay credenciales de AWS?
+        id: gate
+        run: |
+          if [ -z "$TF_STATE_BUCKET" ]; then
+            echo "Falta la variable TF_STATE_BUCKET: se omite el plan (pendiente hasta tener cuenta de AWS)."
+            echo "mode=none" >> "$GITHUB_OUTPUT"
+          elif [ -n "$PLAN_ROLE_ARN" ]; then
+            echo "mode=oidc" >> "$GITHUB_OUTPUT"
+          elif [ "$HAS_ACADEMY_CREDS" = "true" ]; then
+            echo "mode=academy" >> "$GITHUB_OUTPUT"
+          else
+            echo "Sin AWS_PLAN_ROLE_ARN ni credenciales de AWS Academy: se omite el plan."
+            echo "mode=none" >> "$GITHUB_OUTPUT"
+          fi
+        working-directory: .
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.mode != 'none'
+
+      - name: Credenciales por OIDC
+        if: steps.gate.outputs.mode == 'oidc'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.PLAN_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Credenciales temporales de AWS Academy
+        if: steps.gate.outputs.mode == 'academy'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - uses: hashicorp/setup-terraform@v3
+        if: steps.gate.outputs.mode != 'none'
+        with:
+          terraform_version: "1.17.1"
+          terraform_wrapper: false
+
+      - name: Init con backend S3
+        if: steps.gate.outputs.mode != 'none'
+        run: terraform init -backend-config="bucket=${TF_STATE_BUCKET}"
+
+      - name: Plan
+        id: plan
+        if: steps.gate.outputs.mode != 'none'
+        run: |
+          set -o pipefail
+          terraform plan -no-color -lock-timeout=120s -out=tfplan | tee plan.txt
+
+      - name: Comentar el plan en el PR
+        if: steps.gate.outputs.mode != 'none' && always() && steps.plan.outcome != 'skipped'
+        uses: actions/github-script@v7
+        env:
+          ENV_NAME: ${{ matrix.env }}
+          PLAN_OUTCOME: ${{ steps.plan.outcome }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = `infra/envs/${process.env.ENV_NAME}/plan.txt`;
+            let plan = fs.existsSync(path) ? fs.readFileSync(path, 'utf8') : '(sin salida)';
+            if (plan.length > 60000) plan = plan.slice(-60000);
+            const body = [
+              `### terraform plan: \`${process.env.ENV_NAME}\` (${process.env.PLAN_OUTCOME})`,
+              '<details><summary>Ver plan</summary>',
+              '',
+              '```',
+              plan,
+              '```',
+              '</details>',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
