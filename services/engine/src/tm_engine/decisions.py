@@ -4,12 +4,21 @@ El orquestador publica cada `TradeDecision` en el stream de Redis `tm:decisions`
 sobre (`DecisionEnvelope`) que dice a qué sleeve pertenece. Formato de cada entrada del stream
 (un solo campo `data` con JSON):
 
-    XADD tm:decisions * data '{"id": "...", "sleeve": "trend", "decision": {...TradeDecision}}'
+    XADD tm:decisions * data '{"id": "...", "bot_id": "...", "sleeve": "trend",
+                               "target_quantity": "0.015", "shadow": false,
+                               "decision": {...TradeDecision}}'
 
 - `id`: identificador opcional de la decisión (para idempotencia y trazabilidad).
+- `bot_id`: bot dueño de la decisión (#19); cada bot lleva su propio libro de sleeves.
 - `sleeve`: nombre de la estrategia dueña del capital (`trend`, `intraday_momentum`, `kronos`).
   Si falta, se usa el `source` de la primera señal del rationale o `default`.
+- `target_quantity`: posición del sleeve después de la decisión. Con ella hay compras que
+  agregan y ventas parciales; `0` o ausente = una venta cierra todo el sleeve.
+- `shadow`: decisión de una estrategia en shadow; el motor la rechaza siempre.
 - `decision`: el `TradeDecision` de `tm_shared` serializado con `model_dump(mode="json")`.
+
+El modelo vive en `tm_shared.contracts` (lo construye el orquestador de `tm_agents`) y aquí
+se reexporta.
 
 En backtest se usa `ScheduledDecisionSource`, que suelta cada decisión cuando el reloj del
 motor alcanza su `decided_at`.
@@ -23,35 +32,12 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
-from tm_shared.contracts import TradeDecision
-
-from tm_engine.sleeves import DEFAULT_SLEEVE
+from pydantic import ValidationError
+from tm_shared.contracts import DecisionEnvelope
 
 log = logging.getLogger(__name__)
 
 DECISIONS_STREAM = "tm:decisions"
-
-
-class DecisionEnvelope(BaseModel):
-    """Decisión del orquestador con el sleeve al que se atribuye."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    id: str | None = None
-    sleeve: str = Field(default="", pattern=r"^[a-z0-9_\-]{0,64}$")
-    decision: TradeDecision
-
-    @model_validator(mode="after")
-    def _default_sleeve(self) -> DecisionEnvelope:
-        if not self.sleeve:
-            signals = self.decision.rationale.signals
-            name = signals[0].source.lower() if signals else DEFAULT_SLEEVE
-            object.__setattr__(self, "sleeve", name)
-        return self
-
-    def to_json(self) -> str:
-        return self.model_dump_json()
 
 
 class DecisionSource(Protocol):
@@ -121,6 +107,17 @@ class RedisStreamDecisionSource:
                 if envelope is not None:
                     out.append(envelope)
         return out
+
+
+__all__ = [
+    "DECISIONS_STREAM",
+    "DecisionEnvelope",
+    "DecisionSource",
+    "RedisStreamDecisionSource",
+    "ScheduledDecisionSource",
+    "parse_entry",
+    "publish_decision",
+]
 
 
 def publish_decision(

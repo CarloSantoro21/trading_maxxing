@@ -142,3 +142,41 @@ class TradeDecision(_Frozen):
         if self.entry_price is None:
             return None
         return abs(self.entry_price - self.stop_loss)
+
+
+#: Sleeve al que se atribuye una decisión que no dice de quién es.
+DEFAULT_SLEEVE = "default"
+
+
+class DecisionEnvelope(_Frozen):
+    """Sobre de una `TradeDecision` en el stream `tm:decisions` (orquestador -> motor).
+
+    - `id`: identificador opcional (idempotencia y trazabilidad).
+    - `bot_id`: bot dueño de la decisión. Cada bot lleva su libro de sleeves; `None` es el
+      motor de un solo portafolio (backtests y pruebas).
+    - `sleeve`: estrategia dueña del capital. Si falta, se usa el `source` de la primera
+      señal del rationale o `default`.
+    - `target_quantity`: posición del sleeve en el símbolo **después** de ejecutar la
+      decisión. Si viene, el motor acepta compras que agregan a una posición abierta y
+      ventas parciales por `decision.quantity`; con `0` (o sin el campo, como antes del
+      #19) una venta cierra todo el sleeve.
+    - `shadow`: decisión de una estrategia en shadow. El motor nunca la ejecuta.
+    """
+
+    id: str | None = None
+    bot_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_\-]{1,64}$")
+    sleeve: str = Field(default="", pattern=r"^[a-z0-9_\-]{0,64}$")
+    target_quantity: Decimal | None = Field(default=None, ge=0)
+    shadow: bool = False
+    decision: TradeDecision
+
+    @model_validator(mode="after")
+    def _default_sleeve(self) -> DecisionEnvelope:
+        if not self.sleeve:
+            signals = self.decision.rationale.signals
+            name = signals[0].source.lower() if signals else DEFAULT_SLEEVE
+            object.__setattr__(self, "sleeve", name)
+        return self
+
+    def to_json(self) -> str:
+        return self.model_dump_json()

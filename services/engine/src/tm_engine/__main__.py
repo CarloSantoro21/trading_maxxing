@@ -45,9 +45,13 @@ def redis_from_env() -> Any | None:
 
 
 def recorder_from_env() -> Any | None:
-    """Supabase si hay service role y `ENGINE_BOT_ID`; si no, fills solo en memoria."""
-    bot_id = os.environ.get("ENGINE_BOT_ID")
-    if not bot_id or not os.environ.get("SUPABASE_SERVICE_ROLE_KEY"):
+    """Supabase si hay service role; si no, fills solo en memoria.
+
+    Cada fill se escribe para el bot de su decisión (#19). `ENGINE_BOT_ID` es opcional: es el
+    bot de respaldo para decisiones sin `bot_id` (un solo portafolio).
+    """
+    bot_id = os.environ.get("ENGINE_BOT_ID") or None
+    if not os.environ.get("SUPABASE_SERVICE_ROLE_KEY"):
         return None
     from tm_engine.recorder import SupabaseTradeRecorder
 

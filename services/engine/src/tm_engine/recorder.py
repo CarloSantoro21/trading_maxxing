@@ -5,6 +5,11 @@ usuarios; el backend escribe). Cada operación abre una fila al llenarse la entr
 (`exit_price`, `closed_at`, `pnl`, `fees`) cuando el sleeve queda sin posición en el símbolo.
 La tabla no tiene columna de sleeve: se guarda en `rationale.sleeve` junto con la justificación
 completa de la decisión.
+
+Con varios bots en un mismo motor (#19), cada fill trae su `bot_id` (de la etiqueta `bot:<id>`
+de la orden) y la fila se escribe para ese bot; `bot_id` del constructor es el respaldo para
+los fills sin bot. Las compras que agregan a una posición y las ventas parciales se acumulan
+en la misma fila hasta que el sleeve queda sin posición.
 """
 
 from __future__ import annotations
@@ -38,6 +43,7 @@ class FillRecord:
     client_order_id: str
     ts: datetime
     decision: TradeDecision | None = None
+    bot_id: str | None = None
 
 
 class FillRecorder(Protocol):
@@ -73,7 +79,7 @@ class SupabaseTradeRecorder:
 
     def __init__(
         self,
-        bot_id: str,
+        bot_id: str | None = None,
         *,
         url: str | None = None,
         service_key: str | None = None,
@@ -92,10 +98,14 @@ class SupabaseTradeRecorder:
             "Content-Type": "application/json",
             "Prefer": "return=representation",
         }
-        self._open: dict[tuple[str, str], _OpenRow] = {}
+        self._open: dict[tuple[str, str, str], _OpenRow] = {}
 
     def on_fill(self, record: FillRecord) -> None:
-        key = (record.sleeve, record.symbol)
+        bot_id = record.bot_id or self.bot_id
+        if not bot_id:
+            log.warning("fill sin bot: no se registra en Supabase (%s)", record.client_order_id)
+            return
+        key = (bot_id, record.sleeve, record.symbol)
         if record.side is OrderSide.BUY and key in self._open:
             self._add_to_trade(key, record)
         elif record.side is OrderSide.BUY:
@@ -105,14 +115,14 @@ class SupabaseTradeRecorder:
         else:
             log.warning("venta sin operación abierta en Supabase: %s", key)
 
-    def _open_trade(self, key: tuple[str, str], record: FillRecord) -> None:
+    def _open_trade(self, key: tuple[str, str, str], record: FillRecord) -> None:
         decision = record.decision
         rationale: dict[str, Any] = (
             decision.rationale.model_dump(mode="json") if decision is not None else {}
         )
         rationale["sleeve"] = record.sleeve
         row = {
-            "bot_id": self.bot_id,
+            "bot_id": key[0],
             "symbol": record.symbol,
             "side": record.side.value,
             "quantity": str(record.quantity),
@@ -134,7 +144,7 @@ class SupabaseTradeRecorder:
             entry_quantity=record.quantity,
         )
 
-    def _add_to_trade(self, key: tuple[str, str], record: FillRecord) -> None:
+    def _add_to_trade(self, key: tuple[str, str, str], record: FillRecord) -> None:
         """Fill parcial adicional de la entrada: actualiza cantidad y precio promedio."""
         row = self._open[key]
         row.fees += record.commission
@@ -150,7 +160,7 @@ class SupabaseTradeRecorder:
             },
         )
 
-    def _close_trade(self, key: tuple[str, str], record: FillRecord) -> None:
+    def _close_trade(self, key: tuple[str, str, str], record: FillRecord) -> None:
         row = self._open[key]
         row.fees += record.commission
         row.pnl += record.realized_pnl
