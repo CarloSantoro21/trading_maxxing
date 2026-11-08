@@ -3,6 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthProvider } from "@/components/auth/AuthProvider";
+import { AppShell } from "@/components/nav/AppShell";
 import { createFakeSupabase, type Responder } from "@/test/fakeSupabase";
 import { OnboardingLoader } from "./OnboardingLoader";
 
@@ -23,7 +24,9 @@ function renderWith(respond: Responder) {
   });
   render(
     <AuthProvider client={fake.client}>
-      <OnboardingLoader />
+      <AppShell>
+        <OnboardingLoader />
+      </AppShell>
     </AuthProvider>,
   );
   return fake;
@@ -53,10 +56,19 @@ describe("OnboardingLoader", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo leer tu perfil");
   });
 
-  it("cierra sesión y vuelve a /login", async () => {
+  it("cierra sesión desde la barra y vuelve a /login", async () => {
     const fake = renderWith(() => ({ data: null }));
     await userEvent.click(await screen.findByRole("button", { name: "Cerrar sesión" }));
     await waitFor(() => expect(replace).toHaveBeenCalledWith("/login"));
     expect(fake.auth.signOut).toHaveBeenCalled();
+  });
+
+  it("marca Mi perfil como la página actual en la navegación", async () => {
+    renderWith(() => ({ data: null }));
+    const nav = screen.getByRole("navigation", { name: "Principal" });
+    expect(nav).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Mi perfil" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "Dashboard" })).toHaveAttribute("href", "/dashboard");
+    expect(screen.getByRole("link", { name: "Estrategias" })).toHaveAttribute("href", "/strategies");
   });
 });

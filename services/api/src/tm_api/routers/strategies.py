@@ -5,9 +5,17 @@ Cualquier usuario autenticado lee las estrategias (son compartidas). Promover
 admin: la API responde 403 a un member y la base lo vuelve a exigir con RLS. La transición se
 registra con el user_id del admin como actor, en `strategy_transitions`, cuyo trigger valida
 las reglas del ciclo de vida y actualiza `strategies.state`.
+
+Promover desde shadow exige al menos `MIN_SHADOW_DAYS` días en shadow sin fallas (propuesta,
+sección 3.3). Los días se cuentan igual que la columna calculada `shadow_days_clean` de la
+base: desde lo más reciente entre `state_changed_at` y `live_metrics.shadow.clean_since`.
 """
 
 from __future__ import annotations
+
+from collections.abc import Mapping
+from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, status
 
@@ -28,11 +36,51 @@ _ADMIN_ERRORS = {
     **_ERRORS,
     403: {"description": "El usuario no es admin"},
     404: {"description": "No existe la estrategia"},
-    409: {"description": "La estrategia no está en un estado desde el que se permita"},
+    409: {
+        "description": (
+            "La estrategia no está en un estado desde el que se permita, o lleva menos de "
+            "7 días en shadow sin fallas"
+        )
+    },
 }
 
 #: Estados desde los que se puede promover a active (solo una persona lo hace).
 PROMOTABLE = frozenset({StrategyState.SHADOW, StrategyState.PROBATION})
+#: Días mínimos en shadow sin fallas para promover (igual que tm_agents.reference).
+MIN_SHADOW_DAYS = 7
+
+
+def _parse_ts(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        ts = value
+    elif isinstance(value, str) and value:
+        try:
+            ts = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
+
+
+def shadow_days_clean(strategy: Mapping[str, Any], now: datetime | None = None) -> float | None:
+    """Días en shadow sin fallas; ``None`` si la estrategia no está en shadow.
+
+    Replica ``public.shadow_days_clean``: cuenta desde lo más reciente entre la entrada al
+    estado y ``live_metrics.shadow.clean_since`` (la última falla, la escribe el
+    ReferenceService).
+    """
+    if strategy.get("state") != StrategyState.SHADOW.value:
+        return None
+    changed = _parse_ts(strategy.get("state_changed_at"))
+    if changed is None:
+        return 0.0
+    metrics = strategy.get("live_metrics") or {}
+    shadow = metrics.get("shadow") if isinstance(metrics, Mapping) else None
+    clean = _parse_ts(shadow.get("clean_since")) if isinstance(shadow, Mapping) else None
+    since = max(changed, clean) if clean else changed
+    now = now or datetime.now(UTC)
+    return max(0.0, (now - since).total_seconds() / 86_400)
 
 
 async def _get(db: Database, user: CurrentUser, name: str) -> Row:
@@ -52,6 +100,16 @@ async def _transition(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Solo se promueve desde shadow o probation; {name} está en {from_state}",
         )
+    if to_state is StrategyState.ACTIVE and from_state is StrategyState.SHADOW:
+        days = shadow_days_clean(strategy) or 0.0
+        if days < MIN_SHADOW_DAYS:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"{name} lleva {days:.1f} días en shadow sin fallas; "
+                    f"se requieren al menos {MIN_SHADOW_DAYS}"
+                ),
+            )
     if to_state is StrategyState.RETIRED and from_state is StrategyState.RETIRED:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"{name} ya está retirada")
     await db.insert(
