@@ -105,7 +105,7 @@ def _trend_config(**kw):
     return WalkForwardConfig(**{**base, **kw})
 
 
-def _frames(daily_bars, end="2026-01-01"):
+def _frames(daily_bars, end="2026-11-01"):
     return {
         "BTCUSDT": daily_bars("2020-01-01", end, _cycle),
         "ETHUSDT": daily_bars("2020-01-01", end, lambda t: _cycle(t + 40) / 10),
@@ -129,11 +129,16 @@ def test_walk_forward_on_known_trend(daily_bars, frames_loader):
     assert report.stability["distinct"] >= 1
     assert sum(report.stability["counts"].values()) == 4
     mc = report.montecarlo
+    # el criterio usa simulaciones de un año; el horizonte completo es referencia
     assert mc["block_size"] == 20 and mc["horizon_days"] == 365
     assert mc["max_drawdown"]["p95"] >= mc["max_drawdown"]["p50"]
-    assert mc["max_drawdown_1y"] is None  # el horizonte ya es de un año
+    assert mc["full_horizon"]["horizon_days"] == 365  # el tramo de prueba dura un año
     names = [c["name"] for c in report.approval["checks"]]
     assert names == ["oos_sharpe", "max_drawdown_p95", "min_trades"]
+    dd = report.approval["checks"][1]
+    assert dd["value"] == pytest.approx(mc["max_drawdown"]["p95"])
+    assert "a 1 año" in dd["reason"]
+    assert report.approval["criteria"]["drawdown_horizon_days"] == 365
     assert report.approved == report.approval["approved"]
     assert isinstance(report.approval["beats_buy_and_hold_sharpe"], bool)
 
@@ -158,14 +163,14 @@ def test_flat_market_never_trades(daily_bars, frames_loader):
 def test_holdout_is_not_read_without_the_flag(daily_bars, frames_loader):
     frames = _frames(daily_bars)
     loader = frames_loader(frames)
-    cfg = _trend_config(oos_start="2024-01-01", oos_end="2025-01-01")
+    cfg = _trend_config(oos_start="2025-01-01", oos_end="2026-01-01")
     base = walk_forward(cfg, loader=loader)
-    assert all(end <= pd.Timestamp("2025-01-01", tz="UTC") for *_, end in loader.calls)
+    assert all(end <= pd.Timestamp("2026-01-01", tz="UTC") for *_, end in loader.calls)
 
     # Si el holdout cambia por completo, el resultado de desarrollo no se mueve.
     crazy = {s: f.copy() for s, f in frames.items()}
     for f in crazy.values():
-        f.loc[f.index >= "2025-01-01", ["open", "high", "low", "close"]] *= 50
+        f.loc[f.index >= "2026-01-01", ["open", "high", "low", "close"]] *= 50
     again = walk_forward(cfg, loader=frames_loader(crazy))
     pd.testing.assert_series_equal(base.equity, again.equity)
 
@@ -177,15 +182,16 @@ def test_holdout_is_not_read_without_the_flag(daily_bars, frames_loader):
     pd.testing.assert_series_equal(base.equity, leaked.equity)
 
     with pytest.raises(HoldoutError):
-        walk_forward(_trend_config(oos_end="2025-04-01"), loader=loader)
+        walk_forward(_trend_config(oos_end="2026-04-01"), loader=loader)
 
 
 def test_holdout_runs_only_with_the_flag(daily_bars, frames_loader):
     loader = frames_loader(_frames(daily_bars))
     report = walk_forward(_trend_config().holdout(), loader=loader)
-    assert report.windows[0].window.label == "2025-T1"
-    assert report.aggregate["start"] == "2025-01-01"
-    assert any(end > pd.Timestamp("2025-01-01", tz="UTC") for *_, end in loader.calls)
+    assert report.windows[0].window.label == "2026-T1"
+    assert report.windows[-1].window.label == "2026-10"
+    assert report.aggregate["start"] == "2026-01-01" and report.aggregate["end"] == "2026-11-01"
+    assert any(end > pd.Timestamp("2026-01-01", tz="UTC") for *_, end in loader.calls)
 
 
 def test_missing_data_raises(frames_loader, daily_bars):
@@ -332,10 +338,113 @@ def test_cli_run_writes_json_markdown_and_png(daily_bars, frames_loader, tmp_pat
     assert main([*args, "--n-sims", "100", "--out-dir", str(out)]) == 0
     assert {p.name for p in out.iterdir()} == {"trend.json", "trend.md", "trend.png"}
     assert "2021-T2" in (out / "trend.md").read_text()
-    # con --holdout el nombre lo dice y las ventanas son las de 2025
+    # con --holdout el nombre lo dice y las ventanas son las de 2026
     assert (
         main([*args[:3], "--holdout", "--no-plot", "--n-sims", "100", "--out-dir", str(out)]) == 0
     )
     data = json.loads((out / "trend-holdout.json").read_text())
     assert data["config"]["include_holdout"] is True
-    assert data["windows"][0]["label"] == "2025-T1"
+    assert data["windows"][0]["label"] == "2026-T1"
+
+
+# --- volatility targeting (trend_vol, #83) -------------------------------------------------
+
+
+def _noisy(t, seed=0):
+    rng = np.random.default_rng(seed)
+    return _cycle(t) * np.exp(np.cumsum(rng.normal(0, 0.03, len(t))))
+
+
+def test_trend_vol_targets_match_trend_agent(daily_bars):
+    from tm_engine.lab.strategies import TrendVolAdapter
+
+    bars = daily_bars("2020-01-01", "2021-06-01", _noisy)
+    adapter = TrendVolAdapter()
+    assert adapter.n_sub_sleeves == 40
+    params = {"lookbacks": [10, 20, 40, 80], "vol_target": 0.4, "vol_window": 20}
+    fitted = adapter.fit(params, bars)
+    assert adapter.describe(fitted) == "10/20/40/80 vol 40%/20d"
+    targets = adapter.targets(bars, fitted)
+    assert len(targets) == 40
+    agent = TrendAgent(lookbacks=fitted["lookbacks"], vol_target=0.4, vol_window=20)
+    checked = 0
+    for t in (60, 150, 230, 300, 420, 500):
+        now = (bars.index[t] + DAY).to_pydatetime()
+        sig = agent.analyze(AgentContext(symbol="BTCUSDT", now=now, bars={Timeframe.D1: bars}))
+        for k, n in enumerate(fitted["lookbacks"]):
+            lots = sum(tg.iloc[t] for tg in targets[k * 10 : (k + 1) * 10])
+            # los lotes comprados son la exposición del agente redondeada a décimos
+            assert abs(lots / 10 - sig.metadata["exposures"][str(n)]) <= 0.05 + 1e-12, (t, n)
+            checked += lots > 0
+        exposure = np.mean([tg.iloc[t] for tg in targets])
+        assert abs(exposure - sig.confidence) <= 0.05 + 1e-12
+    assert checked > 0
+
+
+def test_trend_vol_grid_and_validation():
+    from tm_engine.lab.strategies import TrendVolAdapter
+
+    grid = TrendVolAdapter().default_grid()
+    assert len(grid) == 4 * 3 * 3
+    assert {"lookbacks": [20, 50, 100, 200], "vol_target": 0.5, "vol_window": 30} in grid
+    assert isinstance(get_adapter("trend_vol"), TrendVolAdapter)
+    with pytest.raises(ValueError, match="lots"):
+        TrendAdapter(vol_targets=(0.4,))
+    with pytest.raises(ValueError, match="lots"):
+        TrendAdapter(lots=0)
+    with pytest.raises(ValueError, match="trend_vol"):
+        TrendAdapter().fit({"lookbacks": [1, 2, 3, 4], "vol_target": 0.4}, pd.DataFrame())
+
+
+def test_merge_lot_trades_counts_one_trade_per_period():
+    from tm_engine.lab.simulator import SimTrade
+    from tm_engine.lab.walkforward import merge_lot_trades
+
+    ts = pd.date_range("2024-01-01", periods=10, freq="D", tz="UTC")
+
+    def tr(sleeve, a, b, pnl=1.0):
+        return SimTrade(
+            sleeve, "BTCUSDT", ts[a], None if b is None else ts[b], 1.0, 100.0, 101.0, 0.2,
+            pnl, pnl / 100,
+        )  # fmt: skip
+
+    trades = [
+        tr("trend_vol_0_0", 0, 5),
+        tr("trend_vol_0_1", 1, 3),  # traslapa con el lote 0: misma operación
+        tr("trend_vol_0_0", 6, 8),  # nueva entrada después de salir de todo
+        tr("trend_vol_0_1", 7, None, pnl=-2.0),  # abierta al final
+        tr("trend_vol_1_0", 2, 4),  # otro periodo
+    ]
+    merged = merge_lot_trades(trades, lots=10)
+    assert [(t.sleeve, t.entry_ts, t.exit_ts) for t in merged] == [
+        ("trend_vol_0", ts[0], ts[5]),
+        ("trend_vol_1", ts[2], ts[4]),
+        ("trend_vol_0", ts[6], None),
+    ]
+    first = merged[0]
+    assert first.quantity == 2.0 and first.pnl == 2.0 and first.commissions == pytest.approx(0.4)
+    assert merged[2].pnl == -1.0 and merged[2].is_open
+    assert merge_lot_trades(trades, lots=1) == trades
+
+
+def test_trend_vol_walk_forward_lowers_exposure(daily_bars, frames_loader):
+    # precios con 2 decimales, como los de Binance: así Nautilus y el simulador coinciden
+    frames = {
+        "BTCUSDT": daily_bars("2020-01-01", "2026-11-01", _noisy).round(2),
+        "ETHUSDT": daily_bars("2020-01-01", "2026-11-01", lambda t: _noisy(t + 40, 1) * 5).round(2),
+    }
+    grid = [{"lookbacks": [10, 20, 40, 80]}]
+    plain = walk_forward(_trend_config(grid=grid), loader=frames_loader(frames))
+    vol_grid = [{"lookbacks": [10, 20, 40, 80], "vol_target": 0.3, "vol_window": 20}]
+    cfg = _trend_config(strategy="trend_vol", grid=vol_grid, engine="nautilus")
+    sized = walk_forward(cfg, loader=frames_loader(frames))
+    assert 0 < sized.aggregate["exposure"] < plain.aggregate["exposure"]
+    assert sized.aggregate["volatility"] < plain.aggregate["volatility"]
+    # los trades se cuentan por periodo (no por lote): del mismo orden que sin vol targeting
+    assert 0 < sized.aggregate["trades"] <= plain.aggregate["trades"] * 1.5
+    assert sum(d["trades"] for d in sized.per_symbol.values()) == sized.aggregate["trades"]
+    assert all(t.sleeve.count("_") == 2 for t in sized.trades)  # trend_vol_<k>
+    ex = sized.execution
+    assert ex["n_rejections"] == 0, ex["rejections"]
+    assert ex["max_rel_diff"] < 1e-6
+    assert "vol 30%/20d" in sized.windows[0].params_label

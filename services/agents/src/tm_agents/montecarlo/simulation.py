@@ -25,6 +25,7 @@ def simulate(
     ruin_level: float = 0.5,
     block_size: int = 1,
     trades_per_year: float | None = None,
+    horizon: int | None = None,
 ) -> MCReport:
     """Corre ``n_simulations`` remuestreos de ``trades`` y devuelve un :class:`MCReport`.
 
@@ -44,6 +45,9 @@ def simulate(
             aplica con ``method="bootstrap"``.
         trades_per_year: si se indica, se reporta también la distribución del
             CAGR anualizando el retorno geométrico por trade.
+        horizon: número de pasos de cada secuencia (por defecto, los de ``trades``).
+            Solo aplica con ``method="bootstrap"``: con 365 retornos diarios mide el
+            drawdown "de un año", que es lo que usa el criterio de aprobación.
     """
     returns = _validate_trades(trades)
     n_trades = returns.shape[0]
@@ -53,6 +57,10 @@ def simulate(
         raise ValueError(f"method debe ser 'reshuffle' o 'bootstrap', no {method!r}")
     if method == "reshuffle" and block_size != 1:
         raise ValueError("block_size solo aplica con method='bootstrap'")
+    if horizon is not None:
+        _validate_positive_int("horizon", horizon)
+        if method == "reshuffle" and horizon != n_trades:
+            raise ValueError("horizon solo aplica con method='bootstrap'")
     if block_size > n_trades:
         raise ValueError(f"block_size ({block_size}) no puede exceder el número de trades")
     if not _is_real(initial_capital) or not math.isfinite(initial_capital) or initial_capital <= 0:
@@ -68,7 +76,7 @@ def simulate(
     if method == "reshuffle":
         paths = reshuffle_paths(returns, n_simulations, rng)
     else:
-        paths = bootstrap_paths(returns, n_simulations, rng, block_size)
+        paths = bootstrap_paths(returns, n_simulations, rng, block_size, length=horizon)
 
     return build_report(
         paths,
@@ -110,6 +118,7 @@ def bootstrap(
     initial_capital: float = 1.0,
     ruin_level: float = 0.5,
     trades_per_year: float | None = None,
+    horizon: int | None = None,
 ) -> MCReport:
     """Monte Carlo por bootstrap (con reemplazo, opcional por bloques). Ver :func:`simulate`."""
     return simulate(
@@ -121,6 +130,7 @@ def bootstrap(
         initial_capital=initial_capital,
         ruin_level=ruin_level,
         trades_per_year=trades_per_year,
+        horizon=horizon,
     )
 
 

@@ -4,6 +4,8 @@ Backtest formal del [IntradayMomentumAgent](../../services/agents/src/tm_agents/
 
 > **Veredicto: RECHAZADO.** Sharpe out-of-sample de −2.56 (se requiere > 0.5) y drawdown p95 de 42.6 % (se requiere < 40 %). Pierde 34.5 % en 4 años mientras comprar y mantener gana 290 %. Las comisiones (35,945 USDT, 36 % del capital) explican la mayor parte, pero **ni siquiera sin comisiones** tiene ventaja en este periodo (Sharpe −0.54). Confirma el chequeo rápido de [intraday-momentum.md](intraday-momentum.md): la estrategia se queda en `research` y no recibe capital.
 
+> **Confirmado con la ventana nueva (8 de noviembre de 2026):** con el walk-forward 2021–2025 (20 tramos, 2025 como out-of-sample) y el drawdown p95 a 1 año, sigue **RECHAZADA**: Sharpe out-of-sample de −2.65, retorno de −39.7 % (comprar y mantener: +254.7 %), 546 trades y 42,400 USDT de comisiones; el p95 a 1 año es de 15.1 %, así que ahora solo falla el Sharpe. Las tablas de abajo son de la corrida 2021–2024.
+
 ## 1. Cómo se corrió
 
 ```bash

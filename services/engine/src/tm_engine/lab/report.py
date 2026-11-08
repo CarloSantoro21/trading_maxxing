@@ -95,7 +95,7 @@ def to_markdown(report: WalkForwardReport, image: str | None = None) -> str:
     verdict = "APROBADA" if report.approved else "RECHAZADA"
     lines += [
         f"**Veredicto: {verdict}** con los criterios de `ApprovalCriteria` "
-        f"(drawdown p95 a tamaño completo < {_pct(cfg.max_drawdown, 0)}).",
+        f"(drawdown p95 a 1 año y a tamaño completo < {_pct(cfg.max_drawdown, 0)}).",
         "",
     ]
     lines += ["### Agregado out-of-sample contra comprar y mantener", ""]
@@ -115,7 +115,7 @@ def to_markdown(report: WalkForwardReport, image: str | None = None) -> str:
         f"| Trades ganadores | {_pct(agg['win_rate'])} | — |",
         f"| Comisiones pagadas | {_money(agg['commissions'])} USDT "
         f"({_pct(agg['commissions_pct_capital'])} del capital) | — |",
-        f"| Tiempo con posición | {_pct(agg['exposure'])} | 100 % |",
+        f"| Exposición media | {_pct(agg['exposure'])} | 100 % |",
         f"| Años out-of-sample | {_num(agg['oos_years'], 2)} | — |",
         "",
     ]
@@ -175,34 +175,42 @@ def to_markdown(report: WalkForwardReport, image: str | None = None) -> str:
 
     mc = report.montecarlo
     dd = mc["max_drawdown"]
+    n_days = len(report.equity) - 1
     lines += ["### Monte Carlo del drawdown", ""]
     lines += [
-        f"Block bootstrap de los {mc['horizon_days']} retornos diarios out-of-sample del sleeve "
+        f"Block bootstrap de los {n_days:,} retornos diarios out-of-sample del sleeve "
         f"(bloques de {mc['block_size']} días, {mc['n_simulations']:,} simulaciones, semilla "
-        f"{cfg.seed}). Cada simulación cubre el mismo horizonte que el backtest.",
+        f"{cfg.seed}). El criterio usa simulaciones de **{mc['horizon_days']} días (1 año)**; "
+        "el horizonte completo del backtest se da solo como referencia.",
         "",
-        "| Drawdown máximo | p50 | p95 | p99 |",
-        "|---|---|---|---|",
-        f"| Simulado | {_pct(dd['p50'])} | {_pct(dd['p95'])} | {_pct(dd['p99'])} |",
+        "| Drawdown máximo | p50 | p95 | p99 | Prob. de ruina |",
+        "|---|---|---|---|---|",
+        f"| Horizonte de 1 año (criterio) | {_pct(dd['p50'])} | {_pct(dd['p95'])} | "
+        f"{_pct(dd['p99'])} | {_pct(mc['probability_of_ruin'])} |",
+    ]
+    full = mc.get("full_horizon")
+    if full:
+        fd = full["max_drawdown"]
+        lines.append(
+            f"| Horizonte completo ({full['horizon_days']:,} días, referencia) | "
+            f"{_pct(fd['p50'])} | {_pct(fd['p95'])} | {_pct(fd['p99'])} | "
+            f"{_pct(full['probability_of_ruin'])} |"
+        )
+    lines += [
         "",
-        f"Probabilidad de ruina (perder la mitad del capital en algún punto): "
-        f"{_pct(mc['probability_of_ruin'])}.",
+        "La probabilidad de ruina es la de perder la mitad del capital en algún punto.",
         "",
     ]
-    one = mc.get("max_drawdown_1y")
-    if one:
-        lines += [
-            "Como referencia, con el mismo bootstrap pero en horizontes de un año (el criterio "
-            f'habla de "un año malo"): p50 {_pct(one["p50"])}, p95 {_pct(one["p95"])} y p99 '
-            f"{_pct(one['p99'])}. El veredicto usa el horizonte completo, que es más exigente.",
-            "",
-        ]
 
     lines += ["### Criterios de aprobación", ""]
     lines += ["| Criterio | Valor | Umbral | ¿Pasa? |", "|---|---|---|---|"]
     names = {
         "oos_sharpe": ("Sharpe out-of-sample", lambda v: _num(v), lambda t: f"> {t:.2f}"),
-        "max_drawdown_p95": ("Drawdown p95", lambda v: _pct(v), lambda t: f"< {_pct(t, 0)}"),
+        "max_drawdown_p95": (
+            "Drawdown p95 a 1 año",
+            lambda v: _pct(v),
+            lambda t: f"< {_pct(t, 0)}",
+        ),
         "min_trades": (
             "Evidencia (trades)",
             lambda v: f"{v:.0f} en {agg['oos_years']:.1f} años",
@@ -216,9 +224,8 @@ def to_markdown(report: WalkForwardReport, image: str | None = None) -> str:
     exposure = report.approval["exposure_by_risk_level"]
     lines += [
         "",
-        "Exposición por nivel de riesgo si se aprobara, `min(1, drawdown del nivel / p95)`: "
-        + ", ".join(f"nivel {k}: {_pct(v, 0)}" for k, v in exposure.items())
-        + ".",
+        "Exposición por nivel de riesgo si se aprobara, `min(1, drawdown del nivel / p95 a 1 "
+        "año)`: " + ", ".join(f"nivel {k}: {_pct(v, 0)}" for k, v in exposure.items()) + ".",
     ]
     beats = report.approval["beats_buy_and_hold_sharpe"]
     lines += [

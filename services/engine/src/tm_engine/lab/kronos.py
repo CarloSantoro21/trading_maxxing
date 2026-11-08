@@ -1,4 +1,4 @@
-"""Laboratorio del sleeve Kronos: umbrales en jul-dic 2024 y holdout 2025.
+"""Laboratorio del sleeve Kronos: umbrales en jul-dic 2024, out-of-sample 2025 y holdout 2026.
 
 Kronos vio datos hasta junio de 2024 en su preentrenamiento, así que no se evalúa antes. No se
 reentrena: con los pronósticos precalculados (`services/forecast/scripts/precompute.py`,
@@ -7,8 +7,10 @@ mediano mínimo de las trayectorias para estar en largo, con el Sharpe de jul-di
 cierre de 4 h la señal es la del `KronosAgent`: largo si la mediana de `close` de la última
 vela pronosticada / último cierre - 1 supera `min_return`; si no, USDT.
 
-El holdout 2025 solo se lee con `include_holdout=True`: ahí se corre una vez el umbral elegido,
-con Monte Carlo y criterios de aprobación. Sin la bandera no se abre ningún archivo de 2025.
+Con el umbral elegido se corre 2025 como out-of-sample (con Monte Carlo y criterios de
+aprobación; 2025 dejó de ser holdout porque se revisó en #84). El holdout es 2026 (enero a
+octubre) y solo se lee con `include_holdout=True`: sin la bandera no se abre ningún archivo
+de 2026.
 """
 
 from __future__ import annotations
@@ -20,11 +22,17 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from tm_agents.montecarlo import ApprovalCriteria, bootstrap, evaluate
+from tm_agents.montecarlo import ONE_YEAR_DAYS, ApprovalCriteria, bootstrap, evaluate
 from tm_marketdata.resample import resample_ohlcv
 from tm_marketdata.storage import ParquetStore
 
-from tm_engine.lab.config import GLOBAL_MAX_DRAWDOWN, HoldoutError, utc
+from tm_engine.lab.config import (
+    GLOBAL_MAX_DRAWDOWN,
+    HOLDOUT_END,
+    HOLDOUT_START,
+    HoldoutError,
+    utc,
+)
 from tm_engine.lab.execution import run_nautilus
 from tm_engine.lab.metrics import daily_returns, perf_stats
 from tm_engine.lab.simulator import (
@@ -48,8 +56,10 @@ class KronosLabConfig:
     forecasts_dir: str = "data/forecasts"
     is_start: str = "2024-07-01"
     is_end: str = "2025-01-01"
-    holdout_start: str = "2025-01-01"
-    holdout_end: str = "2026-01-01"
+    oos_start: str = "2025-01-01"
+    oos_end: str = "2026-01-01"
+    holdout_start: str = HOLDOUT_START
+    holdout_end: str = HOLDOUT_END
     include_holdout: bool = False
     thresholds: Sequence[float] = DEFAULT_THRESHOLDS
     capital: float = 100_000.0
@@ -158,10 +168,13 @@ def kronos_lab(
     forecast_loader: ForecastLoader | None = None,
     bar_loader: BarLoader | None = None,
 ) -> dict[str, Any]:
-    """Elige `min_return` en jul-dic 2024; con `include_holdout` además corre 2025."""
+    """Elige `min_return` en jul-dic 2024, lo prueba en 2025 y con `include_holdout` en 2026."""
     is_start, is_end = utc(config.is_start), utc(config.is_end)
-    if is_end > utc(config.holdout_start):
-        raise HoldoutError("el periodo de ajuste de Kronos no puede cruzar el holdout")
+    holdout_start = utc(config.holdout_start)
+    if is_end > holdout_start or utc(config.oos_end) > holdout_start:
+        raise HoldoutError("el ajuste y el out-of-sample de Kronos no pueden cruzar el holdout")
+    if utc(config.oos_start) < is_end:
+        raise ValueError("el out-of-sample de Kronos debe empezar después del ajuste")
     end = config.data_end
     forecast_loader = forecast_loader or dir_forecast_loader(config.forecasts_dir)
     bar_loader = bar_loader or store_bar_loader(config.data_dir)
@@ -207,6 +220,10 @@ def kronos_lab(
             "symbols": list(config.symbols),
             "is_start": config.is_start,
             "is_end": config.is_end,
+            "oos_start": config.oos_start,
+            "oos_end": config.oos_end,
+            "holdout_start": config.holdout_start,
+            "holdout_end": config.holdout_end,
             "include_holdout": config.include_holdout,
             "thresholds": list(config.thresholds),
             "fee": config.fee,
@@ -216,13 +233,30 @@ def kronos_lab(
         "chosen": {"min_return": best},
         "grid": scores,
         "in_sample": _period_report(best_runs, hold_is, is_start, is_end),
+        "out_of_sample": _evaluate_period(
+            config, frames, medians, best, utc(config.oos_start), utc(config.oos_end)
+        ),
         "holdout": None,
     }
     if not config.include_holdout:
         return result
 
-    h0, h1 = utc(config.holdout_start), utc(config.holdout_end)
-    runs = _run(frames, medians, best, h0, h1, config.capital, config.fee)
+    result["holdout"] = _evaluate_period(
+        config, frames, medians, best, utc(config.holdout_start), utc(config.holdout_end)
+    )
+    return result
+
+
+def _evaluate_period(
+    config: KronosLabConfig,
+    frames: Mapping[str, pd.DataFrame],
+    medians: Mapping[str, pd.Series],
+    min_return: float,
+    h0: pd.Timestamp,
+    h1: pd.Timestamp,
+) -> dict[str, Any]:
+    """Corre `min_return` en `[h0, h1)` con Monte Carlo (drawdown a 1 año) y criterios."""
+    runs = _run(frames, medians, min_return, h0, h1, config.capital, config.fee)
     if config.engine == "nautilus":
         nt = run_nautilus(
             {s: slice_bars(f, h0, h1, H4) for s, f in frames.items()},
@@ -233,25 +267,28 @@ def kronos_lab(
             fee=config.fee,
         )
         runs = nt.runs
-    hold = buy_and_hold(frames, capital=config.capital, fee=config.fee, period=H4, start=h0, end=h1)
+    hold = buy_and_hold(
+        dict(frames), capital=config.capital, fee=config.fee, period=H4, start=h0, end=h1
+    )
     report = _period_report(runs, hold, h0, h1)
     rets = daily_returns(daily_equity(runs, h0, h1)).to_numpy()
+    block = min(config.block_size, len(rets))
     mc = bootstrap(
-        rets, config.n_simulations, seed=config.seed, block_size=min(config.block_size, len(rets))
+        rets, config.n_simulations, seed=config.seed, block_size=block, horizon=ONE_YEAR_DAYS
     )
     sharpe = report["strategy"]["sharpe"]
     verdict = evaluate(
         mc,
         sharpe if sharpe is not None else float("nan"),
         report["trades"],
-        ApprovalCriteria(max_drawdown_p95=config.max_drawdown),
+        ApprovalCriteria(max_drawdown_p95=config.max_drawdown, drawdown_horizon=ONE_YEAR_DAYS),
         oos_years=report["strategy"]["days"] / 365.25,
     )
     report["montecarlo"] = {
+        "horizon_days": mc.n_trades,
         "max_drawdown_p50": mc.max_drawdown.p50,
         "max_drawdown_p95": mc.max_drawdown.p95,
         "max_drawdown_p99": mc.max_drawdown.p99,
     }
     report["approval"] = {"approved": verdict.approved, "reasons": list(verdict.reasons)}
-    result["holdout"] = report
-    return result
+    return report

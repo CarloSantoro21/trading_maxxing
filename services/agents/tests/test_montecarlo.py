@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from tm_agents.montecarlo import (
+    ONE_YEAR_DAYS,
     ApprovalCriteria,
     MCReport,
     bootstrap,
@@ -422,3 +423,55 @@ def test_low_frequency_alternative(n_trades, oos_years, expected):
 def test_low_frequency_criteria_validation(kwargs):
     with pytest.raises(ValueError):
         ApprovalCriteria(**kwargs)
+
+
+# --- Horizonte fijo del drawdown (criterio de 1 año) -------------------------
+
+
+def test_bootstrap_horizon_sets_the_path_length():
+    daily = np.random.default_rng(0).normal(0.001, 0.02, 1461)
+    one_year = bootstrap(daily, 200, seed=1, block_size=20, horizon=ONE_YEAR_DAYS)
+    assert one_year.n_trades == 365
+    full = bootstrap(daily, 200, seed=1, block_size=20)
+    assert full.n_trades == 1461
+    # un año acumula menos caída que cuatro
+    assert one_year.max_drawdown.p95 < full.max_drawdown.p95
+    # el horizonte puede ser mayor que la serie (bootstrap circular) e iid
+    longer = bootstrap(daily[:100], 50, seed=2, horizon=300)
+    assert longer.n_trades == 300
+
+
+def test_bootstrap_paths_length_is_reproducible():
+    rets = np.arange(10, dtype=np.float64)
+    a = bootstrap_paths(rets, 5, np.random.default_rng(3), 4, length=25)
+    b = bootstrap_paths(rets, 5, np.random.default_rng(3), 4, length=25)
+    assert a.shape == (5, 25)
+    np.testing.assert_array_equal(a, b)
+    assert bootstrap_paths(rets, 5, np.random.default_rng(3), 4).shape == (5, 10)
+
+
+def test_horizon_validation():
+    with pytest.raises(ValueError, match="horizon"):
+        simulate(np.full(20, 0.01), 10, seed=0, method="reshuffle", horizon=10)
+    with pytest.raises(ValueError, match="horizon"):
+        bootstrap(np.full(20, 0.01), 10, seed=0, horizon=0)
+    # en reshuffle se acepta el mismo largo que la serie
+    assert simulate(np.full(20, 0.01), 10, seed=0, horizon=20).n_trades == 20
+
+
+def test_evaluate_requires_the_criteria_horizon():
+    daily = np.random.default_rng(0).normal(0.001, 0.01, 800)
+    criteria = ApprovalCriteria(max_drawdown_p95=0.40, drawdown_horizon=ONE_YEAR_DAYS)
+    full = bootstrap(daily, 100, seed=0, block_size=20)
+    with pytest.raises(ValueError, match="365"):
+        evaluate(full, oos_sharpe=1.0, n_trades=100, criteria=criteria)
+    one_year = bootstrap(daily, 100, seed=0, block_size=20, horizon=ONE_YEAR_DAYS)
+    result = evaluate(one_year, oos_sharpe=1.0, n_trades=100, criteria=criteria)
+    dd = next(c for c in result.checks if c.name == "max_drawdown_p95")
+    assert "p95 a 1 año" in dd.reason
+    other = ApprovalCriteria(max_drawdown_p95=0.40, drawdown_horizon=30)
+    short = bootstrap(daily, 100, seed=0, block_size=20, horizon=30)
+    reason = next(c for c in evaluate(short, 1.0, 100, other).checks if c.name.startswith("max"))
+    assert "a 30 pasos" in reason.reason
+    with pytest.raises(ValueError):
+        ApprovalCriteria(drawdown_horizon=0)

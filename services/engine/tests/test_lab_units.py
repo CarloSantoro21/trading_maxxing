@@ -31,17 +31,17 @@ DAY = pd.Timedelta(days=1)
 # --- ventanas ------------------------------------------------------------------------------
 
 
-def test_default_windows_are_16_quarters_with_12_months_in_sample():
+def test_default_windows_are_20_quarters_with_12_months_in_sample():
     windows = WalkForwardConfig(strategy="trend").windows()
-    assert len(windows) == 16
+    assert len(windows) == 20
     assert [w.label for w in windows[:2]] == ["2021-T1", "2021-T2"]
-    assert windows[-1].label == "2024-T4"
+    assert windows[-1].label == "2025-T4"
     first, last = windows[0], windows[-1]
     assert (first.is_start, first.is_end) == (utc("2020-01-01"), utc("2021-01-01"))
     assert (last.is_start, last.oos_start, last.oos_end) == (
-        utc("2023-10-01"),
         utc("2024-10-01"),
-        utc("2025-01-01"),
+        utc("2025-10-01"),
+        utc("2026-01-01"),
     )
     for a, b in itertools.pairwise(windows):
         assert b.oos_start == a.oos_end  # los tramos OOS se pegan sin huecos ni traslapes
@@ -59,14 +59,15 @@ def test_window_sizes_are_configurable_and_clip_to_data_start():
 
 
 def test_windows_crossing_the_holdout_need_the_flag():
-    cfg = WalkForwardConfig(strategy="trend", oos_end="2025-04-01")
+    cfg = WalkForwardConfig(strategy="trend", oos_end="2026-04-01")
     with pytest.raises(HoldoutError, match="holdout"):
         cfg.windows()
-    assert cfg.data_end == utc("2025-01-01")
+    assert cfg.data_end == utc("2026-01-01")
+    # holdout 2026 de enero a octubre: tres trimestres y octubre
     holdout = WalkForwardConfig(strategy="trend").holdout()
     assert holdout.include_holdout
-    assert [w.label for w in holdout.windows()] == ["2025-T1", "2025-T2", "2025-T3", "2025-T4"]
-    assert holdout.data_end == utc("2026-01-01")
+    assert [w.label for w in holdout.windows()] == ["2026-T1", "2026-T2", "2026-T3", "2026-10"]
+    assert holdout.data_end == utc("2026-11-01")
     assert holdout.to_dict()["include_holdout"] is True
 
 

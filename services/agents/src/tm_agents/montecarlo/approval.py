@@ -8,6 +8,10 @@ from decimal import Decimal
 
 from tm_agents.montecarlo.report import MCReport
 
+# Horizonte del drawdown p95 del criterio 2: un año de retornos diarios (aprobado el
+# 2026-11-07, ver docs/estrategias/criterios-de-aprobacion.md).
+ONE_YEAR_DAYS = 365
+
 
 @dataclass(frozen=True, slots=True)
 class ApprovalCriteria:
@@ -23,6 +27,11 @@ class ApprovalCriteria:
             este número de trades si además hay ``low_freq_min_oos_years`` años
             out-of-sample con exposición diaria.
         low_freq_min_oos_years: años out-of-sample requeridos por la alternativa.
+        drawdown_horizon: número de pasos que debe tener cada simulación del
+            Monte Carlo que se evalúa (``MCReport.n_trades``). El laboratorio usa
+            ``ONE_YEAR_DAYS`` (365 retornos diarios): el drawdown p95 se mide en un
+            horizonte de un año. ``None`` acepta cualquier horizonte (p. ej. un
+            remuestreo de trades).
     """
 
     min_oos_sharpe: float = 0.5
@@ -30,6 +39,7 @@ class ApprovalCriteria:
     min_trades: int = 100
     low_freq_min_trades: int = 30
     low_freq_min_oos_years: float = 3.0
+    drawdown_horizon: int | None = None
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.min_oos_sharpe):
@@ -42,6 +52,8 @@ class ApprovalCriteria:
             raise ValueError("low_freq_min_trades debe estar entre 1 y min_trades")
         if not self.low_freq_min_oos_years > 0:
             raise ValueError("low_freq_min_oos_years debe ser positivo")
+        if self.drawdown_horizon is not None and self.drawdown_horizon < 1:
+            raise ValueError("drawdown_horizon debe ser mayor o igual a 1")
 
     @classmethod
     def for_profile(
@@ -103,9 +115,24 @@ def evaluate(
     ``oos_years`` (años out-of-sample con exposición diaria) habilita la
     alternativa de baja frecuencia del criterio de evidencia: al menos
     ``low_freq_min_trades`` trades y ``low_freq_min_oos_years`` años.
+
+    Si ``criteria.drawdown_horizon`` está definido, ``report`` debe tener ese
+    número de pasos por simulación (si no, ``ValueError``): así no se evalúa por
+    error el drawdown del horizonte completo contra un criterio de un año.
     """
     criteria = criteria or ApprovalCriteria()
+    horizon = criteria.drawdown_horizon
+    if horizon is not None and report.n_trades != horizon:
+        raise ValueError(
+            f"el criterio mide el drawdown en {horizon} pasos y el Monte Carlo tiene "
+            f"{report.n_trades}: usa bootstrap(..., horizon={horizon})"
+        )
     dd_p95 = report.max_drawdown.p95
+    horizon_txt = ""
+    if horizon == ONE_YEAR_DAYS:
+        horizon_txt = " a 1 año"
+    elif horizon is not None:
+        horizon_txt = f" a {horizon} pasos"
 
     sharpe_ok = math.isfinite(oos_sharpe) and oos_sharpe > criteria.min_oos_sharpe
     dd_ok = dd_p95 < criteria.max_drawdown_p95
@@ -134,7 +161,7 @@ def evaluate(
             value=dd_p95,
             threshold=criteria.max_drawdown_p95,
             reason=(
-                f"Drawdown máximo p95 de {dd_p95:.1%} "
+                f"Drawdown máximo p95{horizon_txt} de {dd_p95:.1%} "
                 f"(se requiere menor a {criteria.max_drawdown_p95:.1%})"
             ),
         ),
