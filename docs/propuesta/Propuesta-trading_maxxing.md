@@ -14,7 +14,7 @@ trading_maxxing: plataforma multiestrategia de trading de criptomonedas. Un comi
 
 ## 2. Descripción del proyecto
 
-En trading_maxxing el usuario define su perfil de inversión: capital, horizonte (corto, mediano o largo plazo), nivel de riesgo del 1 al 5, drawdown máximo, instrumentos y metas. Con ese perfil, un comité de agentes analiza el mercado en cada vela y propone y ejecuta operaciones de forma controlada.
+En trading_maxxing cada usuario (el autor y un equipo de menos de 10 personas) tiene su propio portafolio y solo decide tres cosas: su capital, su nivel de riesgo del 1 al 5 y sus metas. Todo lo demás es compartido: el laboratorio, las estrategias, sus señales y su ciclo de vida se calculan una sola vez para todos, y cada portafolio las ejecuta en la proporción que corresponde a su nivel de riesgo.
 
 Problema. Un inversionista individual no puede vigilar el mercado todo el día. Además, la mayoría de los bots y las estrategias que circulan en redes nunca se validan fuera de los datos con los que se diseñaron, así que el usuario no sabe si tienen ventaja real o si fue suerte.
 
@@ -22,7 +22,7 @@ Solución. Un sistema que:
 
 1. Mantiene una biblioteca de estrategias intercambiables. Todas cumplen el mismo contrato (`analyze(ctx) -> Signal`) y solo se incluyen las que tienen evidencia publicada en criptomonedas, además de Kronos.
 2. Valida cada estrategia antes de dejarla operar: backtest in-sample, prueba out-of-sample y Monte Carlo sobre la secuencia de operaciones. Solo las que pasan criterios fijos reciben capital.
-3. Asigna a cada estrategia su propio bolsillo de capital (sleeve) según el horizonte del perfil y los resultados de su validación. Cada estrategia opera su bolsillo de forma independiente, con su propio P&L.
+3. Asigna a cada estrategia su propio bolsillo de capital (sleeve) dentro de cada portafolio, según los resultados de su validación. El nivel de riesgo del usuario decide qué fracción de cada sleeve se invierte y cuánto queda en USDT.
 4. Simula cada operación antes de ejecutarla con trayectorias históricas reconstruidas por bootstrap; en el sleeve de Kronos se suman las trayectorias que genera el propio modelo. Si el valor esperado no es positivo, la bloquea.
 5. Controla el riesgo con reglas deterministas: tamaño de posición, stop-loss y take-profit, drawdown máximo y botón de paro.
 6. Ejecuta sobre NautilusTrader en Binance Spot Testnet y muestra en un dashboard el portafolio, el P&L, la justificación de cada operación y la probabilidad de alcanzar la meta.
@@ -62,7 +62,7 @@ Por qué encajan. NautilusTrader resuelve la parte crítica (ejecución, órdene
 |---|---|---|---|
 | web (Next.js) | Onboarding, perfil, dashboard, backtests | — | /onboarding, /dashboard, /strategies, /backtests, /trades |
 | api (FastAPI) | API REST, validación, disparo de jobs | — | POST /profiles, GET /portfolio, POST /backtests, POST /bots/{id}/start, POST /bots/{id}/stop, GET /trades |
-| InvestmentProfile | Preferencias del usuario | Python | validate(), to_risk_limits() |
+| InvestmentProfile | Capital, nivel de riesgo (1 a 5) y metas del usuario | Python | validate(), to_risk_limits() |
 | InvestmentGoal | Metas de rendimiento | Python | progress(equity), probability(sim) |
 | BaseAgent (abstracta) | Contrato común de las estrategias | — | analyze(ctx) -> Signal |
 | KronosAgent | Señal y trayectorias a partir de Kronos | Kronos-small | analyze(ctx), trajectories(ctx) |
@@ -70,7 +70,7 @@ Por qué encajan. NautilusTrader resuelve la parte crítica (ejecución, órdene
 | IntradayMomentumAgent | Momentum de la primera a la última media hora | Python | analyze(ctx) |
 | NewsAgent | Veto ante noticias de alto impacto | LLM (Groq) | fetch_news(symbol), classify(articles), veto(ctx) |
 | AgentOrchestrator | Ciclo por vela: corre cada sleeve activo y en shadow | Python | run_cycle(profile), run_sleeve(sleeve, ctx) |
-| PortfolioAllocator | Capital por sleeve (validación, horizonte, correlación) | Python | allocate(profile, strategies) -> dict[str, Decimal] |
+| PortfolioAllocator | Pesos globales por estrategia (validación y correlación) y exposición por usuario según su nivel de riesgo | Python | weights(strategies), allocate(profile, weights) -> dict[str, Decimal] |
 | StrategyRegistry | Estado del ciclo de vida de cada estrategia (tabla `strategies`) | Python + Supabase | get(name), transition(name, to, reason), active(), shadow() |
 | LifecycleMonitor | Detecta deterioro en vivo y degrada estrategias | Python | check(strategy, live_stats, mc_report) -> Transition |
 | SimulationGate | Monte Carlo antes de cada operación | numpy | simulate(decision, paths) -> SimResult, approve(sim) |
@@ -108,21 +108,45 @@ Fase 1, laboratorio (antes de que una estrategia opere):
 3. Al final se corre una sola vez sobre el holdout (2025), que nunca se usa durante el desarrollo.
    - Excepción, Kronos: como ya vio datos hasta junio de 2024, no se evalúa antes de esa fecha. No se reentrena, así que solo se ajustan sus umbrales con julio–diciembre de 2024, y 2025 es su holdout.
 4. MonteCarloService reordena las operaciones 10,000 veces y obtiene la distribución del drawdown máximo y la probabilidad de ruina.
-5. La estrategia se aprueba solo si cumple criterios fijos: Sharpe out-of-sample mayor a 0.5, drawdown del percentil 95 por debajo del límite del perfil y al menos 100 operaciones. Si los cumple, pasa a **shadow** (sección 3.3).
+5. La estrategia se aprueba solo si cumple criterios fijos (docs/estrategias/criterios-de-aprobacion.md): Sharpe out-of-sample mayor a 0.5, drawdown p95 a tamaño completo por debajo de un techo global de 40 %, y al menos 100 operaciones (o 30 operaciones y 3 años out-of-sample, si es de baja frecuencia). Si los cumple, pasa a **shadow** (sección 3.3).
 
 Fase 2, producción (en cada cierre de vela):
 
 1. El orquestador arma el contexto: velas recientes, portafolio y perfil.
 2. Cada estrategia activa o en shadow corre en su propio sleeve, en paralelo, cuando cierra una vela de su timeframe: TrendAgent una vez al día, IntradayMomentumAgent cada 30 minutos y KronosAgent cada 4 horas. Cada una emite su señal para su propio bolsillo.
 3. NewsAgent clasifica las noticias recientes y puede vetar nuevas entradas. Ante un impacto alto veta el símbolo afectado durante 4 horas, y ante uno crítico (pérdida de paridad de una stablecoin o colapso de un exchange) veta todo el mercado durante 24 horas. Las posiciones abiertas conservan su SL y TP.
-4. Una señal `long` sin posición abre una compra en el sleeve; una señal `flat` con posición la cierra. Los sleeves en shadow solo registran lo que habrían hecho.
+4. Las señales se calculan **una sola vez para todos** (capa compartida) y se publican en Redis. Cada bot (el portafolio de un usuario) las ejecuta en su sleeve: una señal `long` compra la fracción que indique su confianza (en el TrendAgent cada canal controla 1/4 del sleeve) y una `flat` vende. Los sleeves en shadow solo registran lo que habrían hecho.
 5. SimulationGate calcula, con los SL y TP propuestos, la probabilidad de llegar al objetivo antes que al stop con 10,000 trayectorias históricas reconstruidas por bootstrap (velas reales de la misma hora del día en los últimos 60 días). En el sleeve de Kronos se combinan con sus ~20 trayectorias. Si el valor esperado no es positivo, bloquea la operación.
-6. RiskAgent calcula el tamaño de la posición dentro del capital del sleeve, fija SL y TP y revisa los límites del sleeve y del portafolio completo (exposición total y drawdown). Responde PASS o BLOCK con la razón.
+6. RiskAgent calcula el tamaño de la posición dentro del capital del sleeve y con la exposición del nivel de riesgo del usuario, fija SL y TP y revisa los límites del sleeve y del portafolio completo (exposición total y drawdown). Responde PASS o BLOCK con la razón.
 7. La decisión se publica en Redis. AgenticStrategy envía una orden bracket a Binance Testnet.
 8. La operación se guarda en Supabase, el ExplainerAgent redacta la justificación y el dashboard se actualiza con Supabase Realtime.
 9. Mientras la posición está abierta, el SL y el TP la cierran automáticamente. Si se rebasa el drawdown máximo, el kill switch cierra todo y detiene el bot.
 
 Monte Carlo se usa en tres puntos: en el laboratorio (remuestreo de operaciones), antes de cada operación (SimulationGate) y en el dashboard (probabilidad de alcanzar la meta). Además, la distribución del laboratorio sirve de referencia para detectar cuándo una estrategia deja de funcionar (sección 3.3).
+
+### 3.4 Qué es de la app y qué es de cada usuario
+
+| Nivel app (se calcula una vez para todos) | Nivel usuario (por portafolio) |
+|---|---|
+| Datos de mercado, símbolos (BTCUSDT, ETHUSDT) | Capital (mínimo 500 USDT de testnet) |
+| Catálogo de estrategias, laboratorio y criterios de aprobación | Nivel de riesgo del 1 al 5 |
+| Señales de cada estrategia, pronósticos de Kronos, SimulationGate | Metas (retorno y fecha) |
+| Noticias y vetos | Bot encendido, apagado y paro de emergencia |
+| Estado de cada estrategia (shadow, activa, retirada), juzgado con un portafolio de referencia a tamaño completo | Tamaño de cada sleeve y límites del RiskAgent (derivados de su nivel) |
+| Pesos globales por estrategia | Órdenes, posiciones, P&L y dashboard (aislados por RLS) |
+| Cuenta de Binance Testnet, usuarios y roles | |
+
+Niveles de riesgo:
+
+| Nivel | Drawdown máximo tolerado | Riesgo por operación | Exposición máxima |
+|---|---|---|---|
+| 1 Conservador | 10 % | 0.25 % | 20 % |
+| 2 | 15 % | 0.5 % | 35 % |
+| 3 Moderado | 20 % | 1 % | 50 % |
+| 4 | 30 % | 1.5 % | 70 % |
+| 5 Agresivo | 40 % | 2 % | 90 % |
+
+La exposición de cada sleeve en un portafolio es `min(1, drawdown_máximo_del_nivel / drawdown_p95_de_la_estrategia)`: en spot el drawdown escala casi en proporción a lo invertido, así que un usuario conservador invierte una fracción menor de cada sleeve y el resto queda en USDT.
 
 ### 3.3 Ciclo de vida de las estrategias
 
