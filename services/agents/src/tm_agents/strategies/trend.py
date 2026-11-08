@@ -1,6 +1,6 @@
 """TrendAgent: trend following con un conjunto de canales Donchian (velas diarias).
 
-Evidencia: Liu, Tsyvinski y Goldstein (RFS 2021) documentan momentum de serie de tiempo
+Evidencia: Liu y Tsyvinski (RFS 2021) documentan momentum de serie de tiempo
 en BTC, ETH y XRP a escala diaria y semanal; Zarattini, Pagani y Barbon, *Catching Crypto
 Trends* (SFI 25-80, 2025), usan un conjunto de modelos Donchian con varios periodos.
 
