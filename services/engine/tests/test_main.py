@@ -40,3 +40,13 @@ def test_redis_and_recorder_from_env(monkeypatch):
     monkeypatch.setenv("SUPABASE_URL", "http://supabase.test")
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "secret")
     assert worker.recorder_from_env().bot_id == "bot-1"
+
+
+def test_sleeve_guard_from_env(monkeypatch):
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
+    assert worker.sleeve_guard_from_env() is None
+    monkeypatch.setenv("SUPABASE_URL", "http://supabase.test")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "secret")
+    guard = worker.sleeve_guard_from_env()
+    assert type(guard).__name__ == "TradingSleeveGuard"

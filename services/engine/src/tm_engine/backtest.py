@@ -11,7 +11,7 @@ le inyecte (por ejemplo `ScheduledDecisionSource`).
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
@@ -80,6 +80,7 @@ def run_backtest(
     starting_usdt: Decimal | int = 100_000,
     fee: Decimal = SPOT_FEE,
     log_level: str = "ERROR",
+    sleeve_guard: Callable[[str], bool] | None = None,
 ) -> BacktestResult:
     """Corre AgenticStrategy sobre las velas dadas y devuelve el resultado por sleeve."""
     engine = build_engine(
@@ -90,6 +91,7 @@ def run_backtest(
         AgenticStrategyConfig(bar_types=tuple(str(bar_type(s, timeframe)) for s in frames)),
         source=source,
         recorder=recorder,
+        sleeve_guard=sleeve_guard,
     )
     engine.add_strategy(strategy)
     try:
