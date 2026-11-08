@@ -1,0 +1,8 @@
+# Copia a terraform.tfvars (no se sube al repo) y ajusta.
+region            = "us-east-1"
+github_repository = "CarloSantoro21/trading_maxxing"
+budget_limit_usd  = 50
+budget_emails     = ["tu-correo@ejemplo.com"]
+
+# AWS Academy (Learner Lab): no permite crear OIDC ni roles de IAM.
+# enable_github_oidc = false

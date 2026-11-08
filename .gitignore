@@ -35,6 +35,9 @@ models/
 *.tfstate.*
 *.tfplan
 .terraform.lock.hcl.bak
+# Valores locales de cada stack (correos, usuario de Docker Hub, bucket del estado)
+infra/**/terraform.tfvars
+infra/**/backend.hcl
 
 # Sistema
 .DS_Store
