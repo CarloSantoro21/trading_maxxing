@@ -1,0 +1,2 @@
+# Copia a backend.hcl (no se sube al repo) con la salida `backend_config` del bootstrap.
+bucket = "trading-maxxing-tfstate-123456789012"

@@ -1,0 +1,38 @@
+[project]
+name = "tm-forecast"
+version = "0.1.0"
+description = "Servicio de pronóstico con Kronos (FastAPI)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "tm-shared",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "torch>=2.5",
+    # Dependencias del código de Kronos (src/tm_forecast/kronos)
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "einops>=0.8",
+    "huggingface-hub>=0.33",
+    "safetensors>=0.4",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+# Script scripts/precompute.py: lee las velas locales con tm_marketdata (y pyarrow)
+precompute = ["tm-marketdata"]
+
+# PyTorch: en Linux (CI y Docker) ruedas de CPU, sin CUDA; en macOS, PyPI (trae MPS)
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tm_forecast"]
