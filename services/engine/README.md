@@ -102,7 +102,8 @@ inválidas, saldo insuficiente y P&L atribuido por sleeve.
 ## Laboratorio: walk-forward, holdout y Monte Carlo (`tm_engine.lab`)
 
 ```bash
-# Trend o momentum intradía: 16 tramos de 12 meses in-sample + 3 out-of-sample (2021-T1 a 2024-T4)
+# Trend, trend_vol (#83) o momentum intradía: 20 tramos de 12 meses in-sample + 3 out-of-sample
+# (2021-T1 a 2025-T4); el holdout 2026 solo con --holdout
 uv run --package tm-engine python -m tm_engine.lab run --strategy trend \
     --symbols BTCUSDT ETHUSDT --data-dir data/bars --out-dir reports/lab
 
@@ -113,15 +114,15 @@ uv run --package tm-engine python -m tm_engine.lab kronos --data-dir data/bars \
 
 | Módulo | Qué hace |
 | --- | --- |
-| `lab/config.py` | `WalkForwardConfig` (tamaños de ventana configurables) y la guarda del holdout: sin `include_holdout=True` (`--holdout`) no se cargan velas de 2025 y pedir ventanas que lo crucen lanza `HoldoutError`. |
-| `lab/strategies.py` | Adaptadores de `TrendAgent` e `IntradayMomentumAgent`: series objetivo (1 = largo, 0 = USDT) con las mismas funciones que `analyze`, y la cuadrícula in-sample de cada una. |
+| `lab/config.py` | `WalkForwardConfig` (tamaños de ventana configurables) y la guarda del holdout: sin `include_holdout=True` (`--holdout`) no se cargan velas de 2026 y pedir ventanas que lo crucen lanza `HoldoutError`. |
+| `lab/strategies.py` | Adaptadores de `TrendAgent` (con y sin volatility targeting, `trend_vol`) e `IntradayMomentumAgent`: series objetivo (1 = largo, 0 = USDT) con las mismas funciones que `analyze`, y la cuadrícula in-sample de cada una. `trend_vol` reparte cada periodo en 10 lotes para tener exposición fraccional. |
 | `lab/simulator.py` | Simulador vectorizado de un sleeve spot con comisión por lado; equity a mercado por vela y diario. |
 | `lab/execution.py` | Convierte las órdenes en `TradeDecision` y las corre en `run_backtest` (Nautilus). |
-| `lab/walkforward.py` | `walk_forward(config)`: cuadrícula por Sharpe in-sample, out-of-sample en Nautilus, comparación con comprar y mantener, `bootstrap` del drawdown y `evaluate`. |
+| `lab/walkforward.py` | `walk_forward(config)`: cuadrícula por Sharpe in-sample, out-of-sample en Nautilus, comparación con comprar y mantener, `bootstrap` del drawdown a 1 año (365 días; el horizonte completo es referencia) y `evaluate`. |
 | `lab/report.py` | JSON (con la serie diaria de equity), Markdown y PNG. |
-| `lab/kronos.py` | Umbral de Kronos en jul-dic 2024 con los pronósticos precalculados y holdout 2025 detrás de la bandera. |
+| `lab/kronos.py` | Umbral de Kronos en jul-dic 2024 con los pronósticos precalculados, out-of-sample 2025 y holdout 2026 detrás de la bandera. |
 
-La cuadrícula in-sample (16 ventanas × hasta 9 combinaciones) corre en el simulador vectorizado; el
+La cuadrícula in-sample (20 ventanas × hasta 36 combinaciones) corre en el simulador vectorizado; el
 tramo out-of-sample completo se ejecuta en Nautilus y el reporte registra la diferencia entre los
 dos (en los backtests reales fue < 1e-11 relativo). La prueba
 `test_nautilus_matches_vectorized_simulator` valida la equivalencia orden por orden en un caso

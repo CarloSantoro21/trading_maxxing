@@ -104,11 +104,11 @@ El código fuente del diagrama está en [classes.mmd](classes.mmd).
 Fase 1, laboratorio (antes de que una estrategia opere):
 
 1. MarketDataService descarga la historia de BTC/USDT y ETH/USDT de Binance.
-2. BacktestService corre un walk-forward con comisiones y slippage: optimiza en 12 meses (in-sample), prueba en los 3 siguientes (out-of-sample) y avanza 3 meses, de 2020 a 2024. Los tramos out-of-sample se concatenan en una sola curva.
-3. Al final se corre una sola vez sobre el holdout (2025), que nunca se usa durante el desarrollo.
-   - Excepción, Kronos: como ya vio datos hasta junio de 2024, no se evalúa antes de esa fecha. No se reentrena, así que solo se ajustan sus umbrales con julio–diciembre de 2024, y 2025 es su holdout.
-4. MonteCarloService reordena las operaciones 10,000 veces y obtiene la distribución del drawdown máximo y la probabilidad de ruina.
-5. La estrategia se aprueba solo si cumple criterios fijos (docs/estrategias/criterios-de-aprobacion.md): Sharpe out-of-sample mayor a 0.5, drawdown p95 a tamaño completo por debajo de un techo global de 40 %, y al menos 100 operaciones (o 30 operaciones y 3 años out-of-sample, si es de baja frecuencia). Si los cumple, pasa a **shadow** (sección 3.3).
+2. BacktestService corre un walk-forward con comisiones y slippage: optimiza en 12 meses (in-sample), prueba en los 3 siguientes (out-of-sample) y avanza 3 meses, con datos desde 2020 y 20 tramos de prueba de 2021-T1 a 2025-T4. Los tramos out-of-sample se concatenan en una sola curva.
+3. Al final se corre una sola vez sobre el holdout (2026, de enero a octubre), que nunca se usa durante el desarrollo. 2025 era el holdout original, pero se revisó en la investigación de estrategias nuevas y pasó a ser out-of-sample.
+   - Excepción, Kronos: como ya vio datos hasta junio de 2024, no se evalúa antes de esa fecha. No se reentrena, así que solo se ajustan sus umbrales con julio–diciembre de 2024; 2025 es su out-of-sample y 2026 su holdout.
+4. MonteCarloService remuestrea los retornos diarios del sleeve 10,000 veces (block bootstrap, simulaciones de un año) y obtiene la distribución del drawdown máximo y la probabilidad de ruina.
+5. La estrategia se aprueba solo si cumple criterios fijos (docs/estrategias/criterios-de-aprobacion.md): Sharpe out-of-sample mayor a 0.5, drawdown p95 a 1 año y a tamaño completo por debajo de un techo global de 40 %, y al menos 100 operaciones (o 30 operaciones y 3 años out-of-sample, si es de baja frecuencia). Si los cumple, pasa a **shadow** (sección 3.3).
 
 Fase 2, producción (en cada cierre de vela):
 
