@@ -5,6 +5,8 @@ description = "Velas de Binance: histórico en Parquet, REST, cache en Redis y s
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "httpx>=0.28",
+    "matplotlib>=3.8",
+    "mplfinance>=0.12.10b0",
     "pandas>=2.2",
     "pyarrow>=17.0",
     "redis>=5.0",
