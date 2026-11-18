@@ -1,0 +1,10 @@
+# Calendario económico manual. Editar al menos semanalmente.
+events:
+  - event: "FOMC rate decision"
+    scheduled_at: "2026-12-10T19:00:00Z"
+    impact: high
+    region: US
+  - event: "US CPI (noviembre)"
+    scheduled_at: "2026-12-11T13:30:00Z"
+    impact: high
+    region: US
