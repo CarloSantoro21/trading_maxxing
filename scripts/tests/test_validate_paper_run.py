@@ -3,6 +3,7 @@
 Validan que las métricas numéricas (P&L neto, Sharpe diario, drawdown, hit rate) salgan bien
 sobre un CSV sintético pequeño con las mismas columnas que `public.trades` del backend.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -126,9 +127,7 @@ def test_max_drawdown_detects_mid_window_dip(synthetic_csv: Path) -> None:
     metrics = VPR.compute_metrics(fills, capital=Decimal("1000"))
     # El pico después del trade 1 es 1009.79; el valle tras el trade 2 es 1007.572.
     # Drawdown = (1009.79 - 1007.572) / 1009.79 ≈ 0.002196.
-    assert metrics.max_drawdown_pct == pytest.approx(
-        (1009.79 - 1007.572) / 1009.79, rel=1e-6
-    )
+    assert metrics.max_drawdown_pct == pytest.approx((1009.79 - 1007.572) / 1009.79, rel=1e-6)
 
 
 def test_empty_fills_returns_zeroed_metrics() -> None:

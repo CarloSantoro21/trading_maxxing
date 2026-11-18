@@ -14,6 +14,7 @@ Salida: un JSON machine-readable (por defecto) o un fragmento markdown listo par
 
 Este script es solo lectura. No conecta con Binance ni muta Supabase.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -259,9 +260,7 @@ def compute_metrics(
     total_pnl = sum((f.net_pnl(fee_per_side) for f in fills), Decimal("0"))
     total_fees = sum(
         (
-            f.fees
-            if f.fees > 0
-            else (f.entry_price + f.exit_price) * f.quantity * fee_per_side
+            f.fees if f.fees > 0 else (f.entry_price + f.exit_price) * f.quantity * fee_per_side
             for f in fills
         ),
         Decimal("0"),
