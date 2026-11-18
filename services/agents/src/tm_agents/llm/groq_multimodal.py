@@ -27,8 +27,8 @@ from pydantic import ValidationError
 
 from tm_agents.llm.base import Image, LLMError, MultimodalLLMClient, T
 from tm_agents.llm.groq import (
-    GROQ_BASE_URL,
     _RETRYABLE_STATUS,
+    GROQ_BASE_URL,
     _retry_after,
     _RetryableError,
 )
@@ -173,9 +173,7 @@ class GroqMultimodalClient(MultimodalLLMClient):
                     delay,
                 )
                 self._sleep(delay)
-        raise LLMError(
-            f"Groq vision falló tras {self.max_retries + 1} intentos: {last}"
-        ) from last
+        raise LLMError(f"Groq vision falló tras {self.max_retries + 1} intentos: {last}") from last
 
     def close(self) -> None:
         if self._owns_client:

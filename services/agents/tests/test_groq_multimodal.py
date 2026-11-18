@@ -33,9 +33,7 @@ def _client(**kw):
 @respx.mock
 def test_groq_multimodal_happy_path_encodes_image() -> None:
     """La imagen viaja como `data:image/png;base64,...` y la respuesta se valida."""
-    route = respx.post(URL).mock(
-        return_value=_completion('{"label": "bull", "confidence": 0.9}')
-    )
+    route = respx.post(URL).mock(return_value=_completion('{"label": "bull", "confidence": 0.9}'))
     client, delays = _client()
 
     img_bytes = b"\x89PNG\r\n\x1a\nFAKE"
