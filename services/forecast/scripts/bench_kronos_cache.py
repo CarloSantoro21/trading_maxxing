@@ -108,9 +108,7 @@ def run(
     for device in devices:
         print(f"\n=== device: {device} ===")
         tokenizer = (
-            KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
-            .to(device)
-            .eval()
+            KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base").to(device).eval()
         )
         model = Kronos.from_pretrained("NeoQuasar/Kronos-small").to(device).eval()
         x, stamp_x, stamp_y = _build_tensors(context, pred_len, device)
@@ -119,13 +117,27 @@ def run(
             for use_cache in (False, True):
                 for _ in range(warmup):
                     _bench_once(
-                        tokenizer, model, x, stamp_x, stamp_y,
-                        max_context, pred_len, samples, use_cache,
+                        tokenizer,
+                        model,
+                        x,
+                        stamp_x,
+                        stamp_y,
+                        max_context,
+                        pred_len,
+                        samples,
+                        use_cache,
                     )
                 times = [
                     _bench_once(
-                        tokenizer, model, x, stamp_x, stamp_y,
-                        max_context, pred_len, samples, use_cache,
+                        tokenizer,
+                        model,
+                        x,
+                        stamp_x,
+                        stamp_y,
+                        max_context,
+                        pred_len,
+                        samples,
+                        use_cache,
                     )
                     for _ in range(repeats)
                 ]

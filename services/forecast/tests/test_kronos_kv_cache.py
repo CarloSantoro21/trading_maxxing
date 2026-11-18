@@ -60,9 +60,9 @@ def _make_inputs(seed: int, ctx: int, horizon: int):
     y_stamp = torch.zeros(1, horizon, 5, dtype=torch.float32)
     for seq, length in ((x_stamp, ctx), (y_stamp, horizon)):
         for t in range(length):
-            seq[0, t, 0] = (t * 15) % 60   # minute
-            seq[0, t, 1] = (t // 4) % 24   # hour
-            seq[0, t, 2] = (t // 96) % 7   # weekday
+            seq[0, t, 0] = (t * 15) % 60  # minute
+            seq[0, t, 1] = (t // 4) % 24  # hour
+            seq[0, t, 2] = (t // 96) % 7  # weekday
             seq[0, t, 3] = ((t // 96) % 28) + 1  # day
             seq[0, t, 4] = ((t // 2688) % 12) + 1  # month
     return x, x_stamp, y_stamp
