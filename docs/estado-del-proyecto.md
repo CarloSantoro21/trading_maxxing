@@ -2,6 +2,8 @@
 
 Documento de traspaso para el equipo. Lo que está aquí ya está en `develop` y en `main`.
 
+> **Actualización del 17 de noviembre de 2026:** ya tenemos la rúbrica oficial y manda sobre este documento. Ver **[docs/rubrica.md](rubrica.md)**. El cambio principal: el backend se despliega en **Azure App Service** (ya no en AWS) y el deploy a dev y a prod es obligatorio, sin esperar al go/no-go.
+
 ## Resumen
 
 **38 de 53 issues cerrados.** Están completos el motor, los datos, el laboratorio, los agentes, la API, la base de datos, el frontend principal y el CI/CD de pruebas e imágenes. Lo que falta está en la tabla de pendientes y depende sobre todo de cuentas externas: Binance Testnet, AWS, Cloudflare y Docker Hub.
