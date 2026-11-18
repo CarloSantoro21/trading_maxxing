@@ -1,0 +1,82 @@
+"""Pruebas de <NombreAgent>: regla, ausencia de look-ahead, historia corta y metadata."""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import pytest
+from tm_agents.base import AgentContext, build_strategies
+from tm_agents.strategies.<nombre_modulo> import <NombreAgent>  # TODO: ajusta la importación.
+from tm_shared.contracts import Direction, Timeframe
+
+
+def daily(closes, start: str = "2024-01-01") -> pd.DataFrame:
+    """OHLCV diario sintético: `close == open` para facilitar el razonamiento."""
+    closes = np.asarray(closes, dtype=float)
+    idx = pd.date_range(start, periods=len(closes), freq="D", tz="UTC", name="open_time")
+    return pd.DataFrame(
+        {
+            "open": closes,
+            "high": closes * 1.01,
+            "low": closes * 0.99,
+            "close": closes,
+            "volume": 1.0,
+        },
+        index=idx,
+    )
+
+
+def ctx_for(bars: pd.DataFrame, now=None) -> AgentContext:
+    now = now or (bars.index[-1] + pd.Timedelta(days=1)).to_pydatetime()
+    # TODO: ajusta el Timeframe si tu estrategia no es diaria.
+    return AgentContext(symbol="BTCUSDT", now=now, bars={Timeframe.D1: bars})
+
+
+def test_baseline_rule() -> None:
+    """Un caso donde la regla claramente dispara: la dirección y la confianza son conocidas."""
+    bars = daily(100 * 1.01 ** np.arange(200))  # TODO: construye el caso que dispara.
+    sig = <NombreAgent>().analyze(ctx_for(bars))
+    assert sig.direction is Direction.LONG
+    assert sig.confidence > 0
+
+
+def test_no_lookahead_ignores_unclosed_bar() -> None:
+    """Modificar la vela aún abierta en `now` no debe cambiar la señal."""
+    bars = daily(100 * 1.01 ** np.arange(60))
+    spike = bars.copy()
+    spike.iloc[-1, spike.columns.get_loc("close")] = 1.0
+    now = (bars.index[-1] + pd.Timedelta(hours=12)).to_pydatetime()
+    a = <NombreAgent>().analyze(ctx_for(bars, now))
+    b = <NombreAgent>().analyze(ctx_for(spike, now))
+    assert a == b
+
+
+def test_insufficient_history_is_flat() -> None:
+    """Con pocas velas la señal es flat con confianza 0."""
+    sig = <NombreAgent>().analyze(ctx_for(daily([100, 101, 102])))
+    assert sig.direction is Direction.FLAT
+    assert sig.confidence == 0.0
+
+
+def test_metadata_has_documented_keys() -> None:
+    """Las llaves documentadas existen y tienen el tipo esperado."""
+    bars = daily(100 * 1.01 ** np.arange(200))
+    sig = <NombreAgent>().analyze(ctx_for(bars))
+    # TODO: ajusta las llaves a las que exponga tu estrategia.
+    assert "bars_used" in sig.metadata
+    assert "last_close" in sig.metadata
+    assert isinstance(sig.metadata["bars_used"], int)
+
+
+def test_registered_and_buildable() -> None:
+    """La estrategia está en el registro y se puede construir desde la config."""
+    # TODO: usa el nombre con el que decoraste la clase.
+    agents = build_strategies({"<nombre_corto>": {"lookback": 30}})
+    assert isinstance(agents[0], <NombreAgent>)
+    assert agents[0].params["lookback"] == 30
+
+
+@pytest.mark.parametrize("bad", [0, 1, -5])
+def test_invalid_params_raise(bad: int) -> None:
+    with pytest.raises(ValueError):
+        <NombreAgent>(lookback=bad)
