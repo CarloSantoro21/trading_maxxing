@@ -112,8 +112,7 @@ def _template_fallback(rationale: Mapping[str, Any]) -> str:
     parts: list[str] = []
     if total > 0:
         parts.append(
-            f"{action} de {symbol} por voto del conjunto: "
-            f"{long_votes}/{total} agentes en largo."
+            f"{action} de {symbol} por voto del conjunto: {long_votes}/{total} agentes en largo."
         )
     else:
         parts.append(f"{action} de {symbol}.")
@@ -197,9 +196,7 @@ def _confidence_from(signals: list[Any], rationale: Mapping[str, Any]) -> float 
     if isinstance(direct, int | float):
         return float(direct)
     dominant = _dominant_direction(signals)
-    aligned = (
-        [s for s in signals if _signal_direction(s) == dominant] if dominant else signals
-    )
+    aligned = [s for s in signals if _signal_direction(s) == dominant] if dominant else signals
     confidences = [c for s in aligned if (c := _get(s, "confidence")) is not None]
     if not confidences:
         return None

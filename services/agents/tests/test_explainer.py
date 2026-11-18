@@ -136,9 +136,7 @@ def test_explain_fallback_on_arbitrary_exception():
 
 def test_explain_without_llm_returns_template():
     """Sin LLM configurado se usa directamente la plantilla."""
-    out = asyncio.run(
-        ExplainerAgent(None).explain(_rationale_dict(long_votes=2, total=3))
-    )
+    out = asyncio.run(ExplainerAgent(None).explain(_rationale_dict(long_votes=2, total=3)))
     assert "2/3 agentes en largo" in out
 
 
