@@ -11,6 +11,11 @@ pnpm lint
 pnpm typecheck
 pnpm build          # export estático en out/
 pnpm check:export   # verifica que out/ tenga todas las rutas de src/app
+
+# E2E con Playwright (#28)
+pnpm exec playwright install chromium   # solo la primera vez
+pnpm e2e:mocked     # flujo completo sin backend (lo que corre CI)
+pnpm e2e            # flujo completo contra `make up` (perfiles, bots, señales reales)
 ```
 
 Requiere Node 24 LTS (ver `.nvmrc` en la raíz).
@@ -84,8 +89,28 @@ llave `service_role`. Si faltan, el build pasa igual y la app muestra un aviso.
 
 ## Pruebas
 
-Las pruebas no usan red: `src/test/fakeSupabase.ts` simula el cliente de Supabase (query
-builder encadenable y `auth`) y registra cada llamada para verificar qué se escribe.
+Las pruebas unitarias no usan red: `src/test/fakeSupabase.ts` simula el cliente de Supabase
+(query builder encadenable y `auth`) y registra cada llamada para verificar qué se escribe.
+
+### E2E con Playwright (#28)
+
+El flujo completo (login → onboarding → crear bot → arrancarlo → trade visible en el
+dashboard) vive en `tests/e2e/`:
+
+- `tests/e2e/full-flow.mocked.spec.ts` intercepta las llamadas de Supabase y de la API con
+  `page.route()`, así que corre sin `make up`. Es la variante que corre localmente y la
+  que puede correr CI; `pnpm e2e:mocked` arranca `pnpm dev` con variables de entorno
+  "mocked" y lanza solo este spec.
+- `tests/e2e/full-flow.spec.ts` apunta al stack real. Cada paso hace `test.skip(...)` si
+  Supabase (`/auth/v1/health`) o la API (`/healthz`) no responden, para no romper el
+  verde cuando el entorno no está arriba. Un run completo necesita `make up`
+  (o `docker compose up`) y el usuario demo del seed.
+
+Antes de la primera corrida: `pnpm exec playwright install chromium`. Los artefactos
+(`playwright-report/`, `test-results/`) están en `.gitignore`.
+
+El checklist manual (con hueco para la liga del video de demostración) está en
+`docs/e2e-checklist.md`.
 
 ## Cloudflare Pages (entrega final, #45)
 
