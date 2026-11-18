@@ -169,11 +169,11 @@ investigación → laboratorio → shadow → activa → en observación → ret
 - Pronóstico: Kronos-small con PyTorch en CPU, servido con FastAPI.
 - Motor de trading: NautilusTrader.
 - Base de datos y autenticación: Supabase (Postgres, Auth, Realtime y Row Level Security).
-- Mensajería y cache: Redis (ElastiCache en la nube, contenedor en local).
+- Mensajería y cache: Redis (Azure Cache for Redis Basic C0 en la nube, contenedor en local).
 - Contenedores: Docker y Docker Compose, con las imágenes publicadas en Docker Hub.
-- Infraestructura como código: Terraform, con el estado en S3 y bloqueo con DynamoDB.
-- CI/CD: GitHub Actions, con autenticación a AWS por OIDC.
-- Nube: AWS (ECS Fargate, Application Load Balancer, ElastiCache, Secrets Manager, CloudWatch y S3).
+- Infraestructura como código: Terraform con el provider `azurerm` y módulos por recurso (repo separado `trading_maxxing-infra`).
+- CI/CD: GitHub Actions, con autenticación a Azure por OIDC (sin llaves de larga duración) y a Cloudflare por API Token.
+- Nube: Azure App Service Plan Linux B1 con dos Web Apps de contenedor (`tm-api-<env>` y `tm-agents-<env>`), Application Insights + Log Analytics y Azure Cache for Redis (Basic C0). El frontend se publica en Cloudflare Pages.
 - Calidad: pytest y pytest-cov, Vitest y React Testing Library, ruff, ESLint y Prettier.
 
 ## 5. Plan de trabajo
@@ -184,7 +184,7 @@ El plan está en el [GitHub Project Board](https://github.com/users/CarloSantoro
 - M2, Motor, pronóstico y estrategias (hasta el 18 de noviembre): datos de mercado, servicio de Kronos, integración con Nautilus, TrendAgent, IntradayMomentumAgent y laboratorio de backtest con Monte Carlo.
 - M3, Agentes, simulación y API (hasta el 24 de noviembre): KronosAgent, NewsAgent, SimulationGate, RiskAgent, orquestador con sleeves, PortfolioAllocator, ciclo de vida de estrategias y API REST.
 - M4, Frontend y validación local (hasta el 1 de diciembre): dashboard, onboarding, backtests en la interfaz, pruebas end-to-end en local y validación go/no-go con paper trading continuo.
-- M5, Entrega: deploy y demo (hasta el 6 de diciembre): Terraform, CD a AWS, frontend en Cloudflare Pages, monitoreo, documentación y demo final.
+- M5, Entrega: deploy y demo (hasta el 6 de diciembre): Terraform de Azure, CD del backend a Azure App Service (dev y prod con aprobación), frontend en Cloudflare Pages (dev y prod), Application Insights conectado, documentación y demo final.
 
 Issues: https://github.com/CarloSantoro21/trading_maxxing/issues
 
@@ -202,7 +202,7 @@ Proyecto del curso **Infraestructura para el Desarrollo Continuo** (ITESO, otoñ
 - Contaminación de Kronos: sus datos de preentrenamiento llegan a junio de 2024, así que solo se evalúa de julio de 2024 en adelante.
 - Comisiones: en Binance Spot cada operación cuesta ~0.1 % por lado. El laboratorio las incluye siempre y compara cada estrategia contra comprar y mantener.
 - Señales malas pueden generar pérdidas: operamos solo en testnet, la SimulationGate bloquea operaciones con valor esperado negativo y el RiskAgent aplica el drawdown máximo y un botón de paro.
-- Costos de AWS: desarrollo y validación 100 % en local; en la nube, tareas Fargate ARM mínimas, sin NAT Gateway, alerta de presupuesto y `terraform destroy` después de la demo.
+- Costos en la nube: la cuenta es **Azure for Students** (100 USD de crédito, sin tarjeta). Dos planes App Service B1 (~13 USD al mes cada uno) y Azure Cache for Redis Basic C0; `terraform destroy` del ambiente de dev fuera de ventanas de demo.
 - Límites de las APIs de noticias y del LLM: cache en Redis, llamadas solo al cierre de vela y una interfaz LLMClient para cambiar de proveedor.
 - Calendario ajustado: las estrategias deterministas se implementan antes que las dependientes de modelos, y el ExplainerAgent y la proyección de metas son opcionales si falta tiempo.
 
