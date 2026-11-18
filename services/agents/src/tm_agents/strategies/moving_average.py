@@ -62,7 +62,7 @@ class MovingAverageAgent(BaseAgent):
 
         metadata: dict[str, object] = {
             "windows": list(self.windows),
-            "bars_used": int(len(bars)),
+            "bars_used": len(bars),
             "last_close": float(closes[-1]) if len(closes) else None,
         }
 
