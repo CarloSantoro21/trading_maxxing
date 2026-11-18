@@ -81,4 +81,15 @@ docker compose -f docker-compose.yml -f docker-compose.hub.yml up -d
 
 Cómo contribuir: [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Wiki
+
+- **Wiki en GitHub:** https://github.com/CarloSantoro21/trading_maxxing/wiki
+- **Fuente de verdad:** [`docs/wiki/`](docs/wiki/) en este repo (`Home.md`, `Arquitectura.md`, `Project-Board.md`, `_Sidebar.md`, `_Footer.md` e imágenes en `docs/wiki/img/`).
+- **Sincronización:** `scripts/publish_wiki.sh` clona el repo `.wiki.git`, copia el contenido de `docs/wiki/` y hace push. La primera vez hay que inicializar la Wiki creando una página vacía desde la interfaz de GitHub.
+
+```bash
+scripts/publish_wiki.sh                           # usa CarloSantoro21/trading_maxxing
+scripts/publish_wiki.sh otro-owner/otro-repo      # para un fork
+```
+
 Proyecto académico. Opera solo en entornos de prueba y no es asesoría financiera.
