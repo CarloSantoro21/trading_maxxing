@@ -123,9 +123,7 @@ class TsmomAgent(BaseAgent):
                     "anchor": self.anchor,
                     "lookback": self.lookback,
                     "bars_used": len(bars),
-                    "reason": (
-                        f"historial insuficiente: {len(bars)} < {min_bars} velas cerradas"
-                    ),
+                    "reason": (f"historial insuficiente: {len(bars)} < {min_bars} velas cerradas"),
                 },
             )
 
