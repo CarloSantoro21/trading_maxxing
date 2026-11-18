@@ -47,9 +47,7 @@ class MacroEvent(BaseModel):
 
 
 class EconomicCalendar(Protocol):
-    def events_within(
-        self, hours: int, now: datetime | None = None
-    ) -> list[MacroEvent]: ...
+    def events_within(self, hours: int, now: datetime | None = None) -> list[MacroEvent]: ...
 
 
 def _now_utc(now: datetime | None) -> datetime:
@@ -63,11 +61,7 @@ def _filter_horizon(
 ) -> list[MacroEvent]:
     start = _now_utc(now)
     end = start + timedelta(hours=hours)
-    chosen = [
-        ev
-        for ev in events
-        if start <= _coerce_tz(ev.scheduled_at) <= end
-    ]
+    chosen = [ev for ev in events if start <= _coerce_tz(ev.scheduled_at) <= end]
     chosen.sort(key=lambda e: _coerce_tz(e.scheduled_at))
     return chosen
 
@@ -82,9 +76,7 @@ class YamlEconomicCalendar:
     def __init__(self, path: Path | str = DEFAULT_CALENDAR_PATH) -> None:
         self.path = Path(path)
 
-    def events_within(
-        self, hours: int, now: datetime | None = None
-    ) -> list[MacroEvent]:
+    def events_within(self, hours: int, now: datetime | None = None) -> list[MacroEvent]:
         events = self._load_all()
         return _filter_horizon(events, hours, now)
 
@@ -99,9 +91,7 @@ class YamlEconomicCalendar:
         if raw is None:
             return []
         if not isinstance(raw, Mapping):
-            raise ValueError(
-                f"calendario YAML inválido en {self.path}: raíz debe ser un mapping"
-            )
+            raise ValueError(f"calendario YAML inválido en {self.path}: raíz debe ser un mapping")
         rows = raw.get("events") or []
         if not isinstance(rows, list):
             raise ValueError(
@@ -159,9 +149,7 @@ class FinnhubEconomicCalendar:
         if self._owns_client:
             self._http.close()
 
-    def events_within(
-        self, hours: int, now: datetime | None = None
-    ) -> list[MacroEvent]:
+    def events_within(self, hours: int, now: datetime | None = None) -> list[MacroEvent]:
         if not self._api_key:
             logger.info("FINNHUB_API_KEY ausente; usando calendario YAML")
             return self._fallback.events_within(hours, now)

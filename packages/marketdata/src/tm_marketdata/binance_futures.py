@@ -243,9 +243,7 @@ class BinanceFuturesClient:
                 try:
                     return response.json()
                 except ValueError as exc:
-                    raise BinanceFuturesError(
-                        f"respuesta no JSON en {url}: {exc}"
-                    ) from exc
+                    raise BinanceFuturesError(f"respuesta no JSON en {url}: {exc}") from exc
             if status not in RETRY_STATUSES:
                 raise BinanceFuturesError(
                     f"{status} en {url} (no reintentable)", status_code=status
