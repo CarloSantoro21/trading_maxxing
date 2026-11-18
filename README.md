@@ -8,7 +8,7 @@ Plataforma multiestrategia de trading de criptomonedas: un comité de agentes co
 - **Documentación final (arquitectura, setup, pipeline, decisiones, demo):** [docs/final/README.md](docs/final/README.md)
 - Propuesta: [docs/propuesta/Propuesta-trading_maxxing.md](docs/propuesta/Propuesta-trading_maxxing.md) ([PDF](docs/propuesta/Propuesta-trading_maxxing.pdf))
 - Plan de trabajo: [Project Board](https://github.com/users/CarloSantoro21/projects/2) e [Issues](https://github.com/CarloSantoro21/trading_maxxing/issues)
-- Stack: Next.js, FastAPI, Supabase, Redis, Docker y Docker Hub, GitHub Actions, Terraform, AWS ECS Fargate
+- Stack: Next.js, FastAPI, Supabase, Redis, Docker y Docker Hub, GitHub Actions, Azure App Service (backend), Cloudflare Pages (frontend), Terraform (`azurerm`, repo [`trading_maxxing-infra`](https://github.com/CarloSantoro21/trading_maxxing-infra))
 
 ## Estructura
 

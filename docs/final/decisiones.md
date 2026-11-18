@@ -39,18 +39,20 @@ Referencias: [`supabase/README.md`](../../supabase/README.md); propuesta secció
 
 Referencias: propuesta secciones 2.1 y 2.2; [`services/forecast/README.md`](../../services/forecast/README.md); PRs #61 y #70.
 
-## 4. Local primero, nube diferida hasta go/no-go
+## 4. ~~Local primero, nube diferida hasta go/no-go~~ (superada por la #11)
 
-- **Contexto.** El proyecto es académico con presupuesto limitado. AWS incluso en Fargate ARM cuesta ~100–120 USD/mes; sin validación del sistema, ese dinero no aporta.
-- **Decisión.** Todo corre en localhost durante el desarrollo (Mac M5 con 16 GB RAM). La nube solo se activa para la entrega o si la validación **go/no-go** da `go`, con criterios previos (≥ 5 días de paper trading sin caídas, estrategias aprobadas y P&L neto positivo con drawdown dentro del límite).
-- **Consecuencias.**
-  - Las issues de despliegue llevan la etiqueta `deploy-diferido`.
-  - Terraform está escrito y validado en CI sin aplicarse (ver `infra/README.md`). Se puede desplegar con `terraform apply` en cuanto haya cuenta.
+> **Superada el 17-nov-2026 por la ADR #11** (Azure App Service + Cloudflare Pages, deploy obligatorio). Se conserva por trazabilidad.
+
+- **Contexto (antes del 17-nov-2026).** El proyecto es académico con presupuesto limitado. AWS incluso en Fargate ARM cuesta ~100–120 USD/mes; sin validación del sistema, ese dinero no aporta.
+- **Decisión (antes).** Todo corre en localhost durante el desarrollo (Mac M5 con 16 GB RAM). La nube solo se activa para la entrega o si la validación **go/no-go** da `go`, con criterios previos (≥ 5 días de paper trading sin caídas, estrategias aprobadas y P&L neto positivo con drawdown dentro del límite).
+- **Consecuencias (antes).**
+  - Las issues de despliegue llevaban la etiqueta `deploy-diferido`.
+  - Terraform estaba escrito y validado en CI sin aplicarse (ver `infra/README.md`). Se podía desplegar con `terraform apply` en cuanto hubiera cuenta de AWS.
   - Alerta de presupuesto incluida (`infra/modules/budget`, 50 USD).
   - Plan de salida: `terraform destroy` después de la demo.
-  - Riesgo: AWS Academy puede no cubrir todos los servicios necesarios. Mitigación: módulos pensados para ARM Fargate, sin NAT Gateway, con ElastiCache mínimo.
+- **Por qué quedó superada.** La rúbrica oficial (ver [`docs/rubrica.md`](../rubrica.md), PR #104) solo acepta **Azure Portal o Cloudflare**, pide **dos ambientes (dev y prod)** en los dos repos y evalúa métricas del **App Service Plan**. El deploy ya no depende del go/no-go: es obligatorio. El Terraform de AWS en `infra/` queda deprecado; la infraestructura se rehace con `azurerm` en el repo [`trading_maxxing-infra`](https://github.com/CarloSantoro21/trading_maxxing-infra) (ADR #11).
 
-Referencias: propuesta sección 5.0; [`infra/README.md`](../../infra/README.md); issue [#44](https://github.com/CarloSantoro21/trading_maxxing/issues/44).
+Referencias: propuesta sección 5.0; [`infra/README.md`](../../infra/README.md); issue [#44](https://github.com/CarloSantoro21/trading_maxxing/issues/44) (reescrito al nuevo alcance).
 
 ## 5. Capa compartida + capa por usuario (sección 3.4 de la propuesta)
 
@@ -116,10 +118,28 @@ Referencias: PR #77; [`apps/web/README.md`](../../apps/web/README.md).
 - **Decisión.** Git Flow simplificado (ver [`CONTRIBUTING.md`](../../CONTRIBUTING.md)), Conventional Commits, CI obligatorio en PR, `develop` y `main` protegidas. Squash a `develop`, merge commit a `main`, tag `vX.Y.Z` tras cada release.
 - **Consecuencias.** `main` recibe solo releases; `develop` siempre está desplegable; los PRs son unidades revisables. Como `develop` no es la rama por defecto, `Closes #N` no cierra issues automáticamente y se hace a mano al fusionar.
 
+## 11. Migración a Azure App Service + Cloudflare Pages (supersede #4)
+
+- **Fecha.** 2026-11-17.
+- **Contexto.** Llegó la rúbrica oficial del curso (ver [`docs/rubrica.md`](../rubrica.md), PR #104). Solo acepta **Azure Portal o Cloudflare** como nube, pide **dos ambientes (dev y prod)** en el repo del backend y en el del frontend, evalúa **APM** y **métricas del App Service Plan** (CPU, memoria, requests) y exige un **repo separado de Terraform**. El deploy ya no depende del go/no-go: cuenta como entregable.
+- **Decisión.**
+  - **Backend**: **Azure App Service** (plan B1) con contenedores Linux para `api` y `agents`. Imágenes en Docker Hub. Dos ambientes (dev y prod) cada uno en su resource group, con el mismo plan por ambiente. Observabilidad con **Application Insights** (OpenTelemetry) y **Azure Monitor** (CPU, memoria y requests del App Service Plan).
+  - **Frontend**: se mantiene **Cloudflare Pages** (export estático, ADR #8) pero ahora con **dos proyectos**: `trading-maxxing-dev` (branch `develop`) y `trading-maxxing-prod` (branch `main`, con *required reviewer*).
+  - **Infraestructura como código**: repo separado [`trading_maxxing-infra`](https://github.com/CarloSantoro21/trading_maxxing-infra) con provider **`azurerm`** y stacks `envs/dev` y `envs/prod`. OIDC federado desde GitHub Actions para `apply`.
+  - **Pipelines**: push a `develop` publica a Docker Hub y despliega automáticamente a los dos ambientes dev; push a `main` requiere aprobación manual en los *environments* `prod`.
+  - **Secretos**: **Azure Key Vault** por ambiente, consumidos por las Web Apps con `@Microsoft.KeyVault(...)`.
+- **Consecuencias.**
+  - El Terraform de AWS en `infra/` (PR #79) queda **deprecado**. Se retira cuando el repo de infra tome el relevo.
+  - Los pipelines del monorepo cambian: ya no son solo CI, también hacen CD a dev y prod (ver [`pipeline.md`](pipeline.md)).
+  - El pipeline del backend suma **UAT con Playwright** (issue [#28](https://github.com/CarloSantoro21/trading_maxxing/issues/28)) además de la cobertura ≥ 70 %.
+  - La API expone un **endpoint de demo que lanza un error controlado** para mostrar el flujo APM (issue [#29](https://github.com/CarloSantoro21/trading_maxxing/issues/29)).
+  - Riesgo: la cuenta **Azure for Students** (100 USD de crédito) basta para un plan B1 por ambiente durante la demo; después hay que destruir con Terraform para no gastar el crédito.
+- **Alternativas descartadas.** Mantener AWS (no cumple la rúbrica); mover todo a Cloudflare Workers (no soporta los contenedores del backend); Azure Container Apps (más caro y con escalado innecesario para la demo).
+
+Referencias: [`docs/rubrica.md`](../rubrica.md); [`arquitectura.md §Despliegue`](arquitectura.md#despliegue-azure-app-service--cloudflare-pages); [`pipeline.md`](pipeline.md); issues [#26](https://github.com/CarloSantoro21/trading_maxxing/issues/26), [#27](https://github.com/CarloSantoro21/trading_maxxing/issues/27), [#29](https://github.com/CarloSantoro21/trading_maxxing/issues/29), [#39](https://github.com/CarloSantoro21/trading_maxxing/issues/39), [#44](https://github.com/CarloSantoro21/trading_maxxing/issues/44), [#45](https://github.com/CarloSantoro21/trading_maxxing/issues/45).
+
 ## Decisiones aplazadas
 
 - **ExplainerAgent (LLM)**: queda fuera del camino de decisión, depende de Groq. Issue [#37](https://github.com/CarloSantoro21/trading_maxxing/issues/37).
-- **CD a AWS**: el workflow está diseñado; aplica al tener cuenta. Issue [#27](https://github.com/CarloSantoro21/trading_maxxing/issues/27).
-- **E2E con Playwright**: issue [#28](https://github.com/CarloSantoro21/trading_maxxing/issues/28).
 - **Caché de KV para Kronos**: opcional. Issue [#62](https://github.com/CarloSantoro21/trading_maxxing/issues/62).
 - **Skill `nueva-estrategia` para Claude Code**: opcional. Issue [#59](https://github.com/CarloSantoro21/trading_maxxing/issues/59).

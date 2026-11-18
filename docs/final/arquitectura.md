@@ -1,6 +1,8 @@
 # Arquitectura end-to-end
 
-Vista de alto nivel del sistema completo. Para el diseño conceptual, lee la [propuesta](../propuesta/Propuesta-trading_maxxing.md) (secciones 3.2, 3.3 y 3.4). Para el detalle del flujo por vela, lee [arquitectura/orquestador.md](../arquitectura/orquestador.md).
+Vista de alto nivel del sistema completo. Para el diseño conceptual, lee la [propuesta](../propuesta/Propuesta-trading_maxxing.md) (secciones 3.2, 3.3 y 3.4). Para el detalle del flujo por vela, lee [arquitectura/orquestador.md](../arquitectura/orquestador.md). Para el contrato con el curso, ver la [rúbrica oficial](../rubrica.md) (PR #104).
+
+> **Actualización del 17 de noviembre de 2026.** La rúbrica solo acepta **Azure Portal o Cloudflare** como nube, y evalúa métricas del **App Service Plan**. Por eso el backend se despliega en **Azure App Service** (API y agents) con **Application Insights** para el APM, y el frontend en **Cloudflare Pages**. El Terraform vive en un repo aparte, **`trading_maxxing-infra`**, con el provider **`azurerm`**. La propuesta original en AWS/ECS Fargate queda documentada como antecedente histórico en [`decisiones.md`](decisiones.md).
 
 ## Componentes
 
@@ -44,13 +46,13 @@ Las responsabilidades por servicio están en sus READMEs:
 - [`services/forecast/README.md`](../../services/forecast/README.md)
 - [`apps/web/README.md`](../../apps/web/README.md)
 - [`supabase/README.md`](../../supabase/README.md)
-- [`infra/README.md`](../../infra/README.md)
+- Infraestructura: repo externo [`trading_maxxing-infra`](https://github.com/CarloSantoro21/trading_maxxing-infra) (el Terraform de AWS en [`infra/`](../../infra/) del monorepo está deprecado; ver [`decisiones.md`](decisiones.md))
 
 ## Diagramas
 
 - [Clases](../propuesta/img/classes.png) · fuente: [`docs/propuesta/classes.mmd`](../propuesta/classes.mmd)
-- [Infraestructura (AWS)](../propuesta/img/infra.png) · fuente: [`docs/propuesta/infra.py`](../propuesta/infra.py)
-- [Deployment](../propuesta/img/deploy.png) · fuente: [`docs/propuesta/deploy.py`](../propuesta/deploy.py)
+- [Infraestructura](../propuesta/img/infra.png) · fuente: [`docs/propuesta/infra.py`](../propuesta/infra.py) *(versión histórica en AWS; la de Azure + Cloudflare se rehace en el issue [#7](https://github.com/CarloSantoro21/trading_maxxing/issues/7))*
+- [Deployment](../propuesta/img/deploy.png) · fuente: [`docs/propuesta/deploy.py`](../propuesta/deploy.py) *(ídem: se rehace para Azure + Cloudflare en #7)*
 - [Estrategia de ramas](../propuesta/img/branches.png) · fuente: [`docs/propuesta/branches.mmd`](../propuesta/branches.mmd)
 
 ## Flujo de datos (ingest → venue)
@@ -138,15 +140,61 @@ Streams, con formato definido en `tm_agents.signals` y en `tm_agents.orchestrato
 
 Los cursores (`tm:reference:last_signal_id`, checkpoints del `RedisSignalSource`) permiten retomar desde el último id tras un reinicio del worker.
 
+## Despliegue (Azure App Service + Cloudflare Pages)
+
+Arquitectura de nube desde el 17 de noviembre de 2026. El despliegue ya **no** depende de un go/no-go: la rúbrica lo exige como entregable (ver [rúbrica, sección 1](../rubrica.md) y [issue #44](https://github.com/CarloSantoro21/trading_maxxing/issues/44)).
+
+```
+GitHub (monorepo)                                 GitHub (trading_maxxing-infra)
+  feature/* ─PR─▶ develop ─PR─▶ main                Terraform `azurerm`
+        │             │             │                 envs/dev, envs/prod
+        ▼             ▼             ▼                 Resource Group, App Service Plan (B1),
+     CI (lint,   deploy dev     aprobación            Web Apps (api, agents),
+     pruebas,    automático     environment           Application Insights,
+     cobertura,  + UAT          `prod`                Log Analytics, Redis
+     UAT)        (Playwright)   (required reviewer)
+        │
+        ├──▶ Docker Hub (imágenes multi-arch por SHA y por tag)
+        │       └──▶ Azure App Service (API dev / prod, agents dev / prod)
+        └──▶ Cloudflare Pages (frontend dev / prod)
+```
+
+### Backend — Azure App Service
+
+- **Dos ambientes**, `dev` y `prod`, creados por Terraform en `trading_maxxing-infra` (provider `azurerm`).
+- **Plan B1** (Basic, 1 vCPU, 1.75 GB RAM) por ambiente: un App Service Plan hospeda las Web Apps `api` y `agents` como contenedores Linux. El `engine` y `forecast` quedan como workers en el mismo plan cuando se promuevan (hoy se demuestran en local; ver [`docs/estado-del-proyecto.md`](../estado-del-proyecto.md)).
+- **Origen de las imágenes**: Docker Hub (`trading-maxxing-api`, `trading-maxxing-agents`, etc.). El App Service hace *pull* por SHA o por tag (`develop` en dev, `vX.Y.Z` en prod).
+- **Variables de entorno** se cargan como *App Settings* (vía `azurerm_linear_web_app` en el repo de infra). Los secretos se guardan en **Azure Key Vault** y la Web App los referencia con `@Microsoft.KeyVault(...)`.
+- **Autoscale**: el plan B1 permite una instancia; escalado horizontal/vertical queda documentado como mejora futura.
+
+### Frontend — Cloudflare Pages
+
+- Mismo export estático que ya se publica desde CI (ver [`decisiones.md`](decisiones.md) §8).
+- **Dos proyectos / ambientes**: `trading-maxxing-dev` y `trading-maxxing-prod`. El deploy a `dev` es automático al mergear a `develop`; el de `prod` requiere aprobación del *environment* `prod` en GitHub Actions.
+- Variables `NEXT_PUBLIC_*` cambian por ambiente y se incrustan al build.
+
+### Observabilidad
+
+- **Application Insights** (SDK de OpenTelemetry para Python en la API y los agents): recoge **requests**, **trazas**, **excepciones** y **mensajes de log**. La API expone un **endpoint de demo** que lanza un error controlado para mostrar el flujo APM en la rúbrica (ver issue [#29](https://github.com/CarloSantoro21/trading_maxxing/issues/29)).
+- **Azure Monitor**: muestra en el portal **CPU y memoria del App Service Plan** y las **requests por minuto** del backend. Dashboard por ambiente (uno para dev, otro para prod).
+- **Log Analytics Workspace**: destino único para logs de App Service y Application Insights; consultas con KQL.
+- Para el frontend, Cloudflare Pages ofrece Web Analytics; se referencia en la demo si hay tiempo.
+
+### Infraestructura como código — `trading_maxxing-infra`
+
+- Repo separado: [`trading_maxxing-infra`](https://github.com/CarloSantoro21/trading_maxxing-infra) (issues [#26](https://github.com/CarloSantoro21/trading_maxxing/issues/26) y [#39](https://github.com/CarloSantoro21/trading_maxxing/issues/39)).
+- Provider `azurerm`, backend remoto en Azure Storage, dos stacks: `envs/dev` y `envs/prod`.
+- Módulos: `resource-group`, `app-service-plan`, `web-app` (api, agents), `app-insights`, `log-analytics`, `key-vault`, `redis` (Azure Cache for Redis Basic C0).
+- El Terraform de AWS que todavía vive en `infra/` del monorepo (PR #79) está **obsoleto**: se migra a Azure y se retira cuando el repo de infra tome el relevo.
+
 ## Secretos
 
 Resumen; el detalle operativo está en [setup-local.md](setup-local.md).
 
 - **Nunca en el repo.** `.env` está en `.gitignore`. El archivo de referencia es `.env.example`.
 - **Local.** Las llaves de Supabase se obtienen con `supabase status`; son llaves de demo iguales en cualquier máquina. Las de Binance Testnet, Groq y CryptoPanic las pone cada quien en su `.env`.
-- **GitHub Actions.** Los secrets `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` habilitan el push a Docker Hub (sin ellos el workflow solo construye y lo avisa). El deploy a Cloudflare Pages se salta en verde si faltan `CLOUDFLARE_API_TOKEN` o `CLOUDFLARE_ACCOUNT_ID`.
-- **AWS.** El workflow de Terraform corre `fmt`, `validate` y `tflint` sin credenciales; el `plan` se salta si faltan `AWS_PLAN_ROLE_ARN` (OIDC) o las credenciales temporales de AWS Academy.
-- **Nube (pendiente, cuando haya cuenta).** El módulo `infra/modules/secrets` crea los secretos en AWS Secrets Manager (Binance Testnet, Supabase, Groq, CryptoPanic). ECS Fargate los inyecta como variables de entorno al arrancar las tareas.
+- **GitHub Actions.** Los secrets `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` habilitan el push a Docker Hub (sin ellos el workflow solo construye y lo avisa). El deploy a Cloudflare Pages usa `CLOUDFLARE_API_TOKEN` y `CLOUDFLARE_ACCOUNT_ID` (uno por ambiente). El deploy a Azure App Service usa `AZURE_CREDENTIALS` (service principal con permisos `Website Contributor` sobre los dos resource groups) o, preferiblemente, **OIDC federado** con `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` y `AZURE_SUBSCRIPTION_ID`.
+- **Azure.** El App Service Plan lee los secretos por referencia a **Key Vault** (`@Microsoft.KeyVault(SecretUri=...)`). Los crea el Terraform de `trading_maxxing-infra` a partir de variables marcadas `sensitive = true` y el valor se inyecta desde GitHub Actions o se sube con `az keyvault secret set`.
 - **Servicio API.** Si llega una petición con un JWT inválido o con una llave ajena, PostgREST + RLS la contesta con 404 (no filtra filas). La API solo usa `service_role` para `POST /admin/users`.
 
 ## Variables de entorno principales
