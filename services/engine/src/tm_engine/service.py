@@ -165,7 +165,7 @@ def build_node(profile: EngineProfile, credentials: Credentials, strategy: Agent
     }
     config = TradingNodeConfig(
         trader_id=TraderId(profile.trader_id),
-        # Logs a stdout (los recoge Azure App Service → Log Analytics / Application Insights, ver #29).
+        # Stdout → Azure App Service → Log Analytics / Application Insights (ver #29).
         logging=LoggingConfig(log_level=profile.log_level, log_colors=False),
         exec_engine=LiveExecEngineConfig(reconciliation=True),
         data_clients={BINANCE: BinanceDataClientConfig(**common)},
