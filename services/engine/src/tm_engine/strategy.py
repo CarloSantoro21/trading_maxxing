@@ -171,7 +171,12 @@ class AgenticStrategy(Strategy):
             )
 
     def on_bar(self, bar: Bar) -> None:
-        self._last_close[bar.bar_type.instrument_id.symbol.value] = bar.close.as_decimal()
+        symbol = bar.bar_type.instrument_id.symbol.value
+        self._last_close[symbol] = bar.close.as_decimal()
+        # Un log por vela recibida, con el símbolo y el `BarType` completo (incluye el
+        # timeframe, p. ej. BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL). Sirve de latido en
+        # CloudWatch para verificar que las barras están fluyendo desde Binance Testnet.
+        self.log.info(f"Received bar {symbol} {bar.bar_type} close={bar.close.as_decimal()}")
         self.poll_decisions()
 
     def on_stop(self) -> None:

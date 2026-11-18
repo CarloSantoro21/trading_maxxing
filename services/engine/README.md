@@ -77,7 +77,68 @@ en cada vela. Si Redis no está disponible sigue funcionando con `submit()`.
 
 El heartbeat es un JSON con el estado:
 `{"ts": ..., "mode": "testnet" | "offline", "connected": false, "error": "faltan ...", ...}`.
-Los logs de Nautilus salen por stdout (sin colores) para que los recoja Docker/CloudWatch.
+Los logs salen por stdout en **JSON estructurado** (compatible con CloudWatch), y los de
+Nautilus van sin colores por el mismo stream. Cada línea trae `ts`, `level`, `service`,
+`logger`, `message` y los campos extra que pase quien loguea (`symbols`, `timeframe`, etc.).
+
+### Correr contra el testnet real
+
+1. Crea una llave en https://testnet.binance.vision/ (API Key + Secret).
+2. Copia `.env.example` a `.env` en la raíz del repo y pon:
+
+   ```env
+   BINANCE_TESTNET_API_KEY=<tu_api_key>
+   BINANCE_TESTNET_API_SECRET=<tu_api_secret>
+   ENGINE_SYMBOLS=BTCUSDT
+   ENGINE_TIMEFRAME=1m
+   LOG_LEVEL=INFO
+   ```
+
+   `.env` está en `.gitignore`: **nunca** subas tus llaves al repo.
+
+3. Arranca el motor (contenedor o directo):
+
+   ```bash
+   # Con Docker Compose (recomendado: trae Redis para el stream de decisiones)
+   docker compose up engine
+
+   # Directo (necesita Rust para compilar nautilus-trader en algunas plataformas)
+   uv run --package tm-engine python -m tm_engine
+   ```
+
+4. Qué esperar en `stdout` (líneas JSON, una por evento):
+
+   ```json
+   {"ts": "2026-11-17T18:00:00.000+00:00", "level": "INFO", "service": "engine",
+    "logger": "tm_engine.__main__", "message": "Starting TradingNode",
+    "mode": "testnet", "symbols": ["BTCUSDT"], "timeframe": "1m"}
+   {"ts": "...", "level": "INFO", "service": "engine", "logger": "tm_engine.service",
+    "message": "Connected to Binance Testnet", "symbols": ["BTCUSDT"], "timeframe": "1m"}
+   ```
+
+   Luego, cada minuto, una línea por vela recibida:
+
+   ```json
+   {"ts": "...", "level": "INFO", "service": "engine", "logger": "AgenticStrategy",
+    "message": "Received bar BTCUSDT BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL close=63421.50"}
+   ```
+
+5. Verificar que las barras están fluyendo: filtra los logs por `"Received bar"`:
+
+   ```bash
+   docker compose logs -f engine | grep "Received bar"
+   # o con jq
+   docker compose logs engine | jq 'select(.message | startswith("Received bar"))'
+   ```
+
+6. Verificar el estado desde el heartbeat del healthcheck (por defecto `/tmp/heartbeat`):
+
+   ```bash
+   docker compose exec engine cat /tmp/heartbeat
+   # => {"ts": ..., "mode": "testnet", "connected": true, "symbols": ["BTCUSDT"], ...}
+   ```
+
+Si `mode` sigue en `offline`, revisa el log por `faltan BINANCE_TESTNET_API_KEY / BINANCE_TESTNET_API_SECRET`: casi siempre es que el `.env` no se cargó o una llave quedó en blanco.
 
 ## Backtest
 
