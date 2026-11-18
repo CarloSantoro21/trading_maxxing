@@ -7,7 +7,8 @@ leyendo las líneas que salen por el stream del handler.
 Acceptance criteria (#11):
   [x] Con credenciales, el servicio pasa a `TESTNET` y construye el nodo (vía factory mockeado).
   [x] Sin credenciales, el servicio queda en `OFFLINE` con un motivo claro en el log.
-  [x] Los logs son JSON compatibles con CloudWatch: `ts`, `level`, `service`, `message` y extras.
+  [x] Los logs son JSON para stdout (consumido por Azure App Service → Log Analytics /
+      Application Insights, ver #29): `ts`, `level`, `service`, `message` y extras.
   [x] El log canónico `Starting TradingNode` y `Connected to Binance Testnet` se emite.
 
 La conexión real contra https://testnet.binance.vision se hace a mano con las credenciales del
@@ -73,7 +74,7 @@ def _read_json_lines(buf: io.StringIO) -> list[dict]:
 
 
 def test_json_formatter_emits_cloudwatch_compatible_fields():
-    """Cada línea es un JSON con los campos obligatorios para CloudWatch."""
+    """Cada línea es un JSON con los campos obligatorios para Log Analytics / App Insights."""
     record = logging.LogRecord(
         name="tm_engine.service",
         level=logging.INFO,

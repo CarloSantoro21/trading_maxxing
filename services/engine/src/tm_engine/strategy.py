@@ -175,7 +175,8 @@ class AgenticStrategy(Strategy):
         self._last_close[symbol] = bar.close.as_decimal()
         # Un log por vela recibida, con el símbolo y el `BarType` completo (incluye el
         # timeframe, p. ej. BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL). Sirve de latido en
-        # CloudWatch para verificar que las barras están fluyendo desde Binance Testnet.
+        # Log Analytics / Application Insights (ver #29) para verificar que las barras están
+        # fluyendo desde Binance Testnet.
         self.log.info(f"Received bar {symbol} {bar.bar_type} close={bar.close.as_decimal()}")
         self.poll_decisions()
 

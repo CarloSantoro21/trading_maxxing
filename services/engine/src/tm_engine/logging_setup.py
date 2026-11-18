@@ -1,7 +1,11 @@
-"""Logging estructurado JSON para stdout (compatible con CloudWatch).
+"""Logging estructurado JSON para stdout (consumido por Azure App Service → Log Analytics /
+Application Insights, ver #29).
 
-CloudWatch Logs toma cada línea de stdout como un evento; si la línea es un JSON válido lo
-indexa como campos y permite filtrar por `level`, `service` o cualquier extra sin regex. Este
+Azure App Service toma cada línea de stdout del contenedor y la envía al workspace de Log
+Analytics asociado; si la línea es un JSON válido, Log Analytics / Application Insights la
+indexan como campos y permiten filtrar por `level`, `service` o cualquier extra sin regex. La
+wiring completa de APM (`azure-monitor-opentelemetry` con `configure_azure_monitor()`) vive
+en #29 — aquí solo nos aseguramos de que el stdout del motor sea JSON estructurado. Este
 helper es idempotente: si ya hay un handler JSON instalado no se duplica (útil cuando
 `__main__` y las pruebas vuelven a llamar).
 
@@ -58,7 +62,7 @@ _RESERVED = frozenset(
 
 
 class JsonFormatter(logging.Formatter):
-    """Formatea cada `LogRecord` como una línea JSON lista para CloudWatch."""
+    """Formatea cada `LogRecord` como una línea JSON lista para Log Analytics / App Insights."""
 
     def __init__(self, service: str) -> None:
         super().__init__()

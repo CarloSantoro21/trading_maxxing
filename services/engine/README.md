@@ -77,9 +77,11 @@ en cada vela. Si Redis no está disponible sigue funcionando con `submit()`.
 
 El heartbeat es un JSON con el estado:
 `{"ts": ..., "mode": "testnet" | "offline", "connected": false, "error": "faltan ...", ...}`.
-Los logs salen por stdout en **JSON estructurado** (compatible con CloudWatch), y los de
-Nautilus van sin colores por el mismo stream. Cada línea trae `ts`, `level`, `service`,
-`logger`, `message` y los campos extra que pase quien loguea (`symbols`, `timeframe`, etc.).
+Los logs salen por stdout en **JSON estructurado** — Azure App Service recoge cada línea del
+contenedor y la envía a Log Analytics / Application Insights (la wiring completa de APM con
+`azure-monitor-opentelemetry` / `configure_azure_monitor()` vive en #29). Los de Nautilus van
+sin colores por el mismo stream. Cada línea trae `ts`, `level`, `service`, `logger`, `message`
+y los campos extra que pase quien loguea (`symbols`, `timeframe`, etc.).
 
 ### Correr contra el testnet real
 
