@@ -1,11 +1,20 @@
 # Reporte de validación go/no-go (#44)
 
+> **Cambio de plan (2026-11-17):** este reporte ya no condiciona el deploy a
+> la nube. La rúbrica exige dev y prod sí o sí (ver `docs/rubrica.md`, #26,
+> #27, #45). El go/no-go se queda solo como validación de estrategias y
+> paper trading y **tiene menos prioridad que la ruta crítica del deploy**.
+
 > **Plantilla.** Este documento se llena después de correr al menos 5 días de
 > paper trading continuo contra Binance Spot Testnet. Hasta entonces los
 > campos marcados como `TBD` quedan tal cual. Este PR solo deja listo el
 > andamiaje (plantilla, checklist operativo y script de métricas); correr la
 > ventana de prueba y escribir la decisión final forma parte del cierre
 > definitivo de #44.
+>
+> La ventana de paper trading se puede correr **contra el entorno de Azure
+> dev** en lugar de solo en la Mac local (ver la sección "Alternativa: correr
+> contra Azure dev" en [`validacion-checklist.md`](validacion-checklist.md)).
 
 ## 1. Resumen ejecutivo
 
@@ -18,7 +27,7 @@
 
 | Campo | Valor |
 |---|---|
-| Host | Mac mini M-series, `caffeinate -dims` durante toda la ventana |
+| Host | Mac mini M-series con `caffeinate -dims` **o** entorno de Azure dev (ver checklist) |
 | Mercado | Binance **Spot Testnet** (BTC/USDT, ETH/USDT) |
 | Servicios en marcha | `api`, `agents`, `engine`, `forecast`, Supabase CLI, Redis (vía `make up`) |
 | Fuente de verdad | Tabla `public.trades` + `public.equity_snapshots` de Supabase |
@@ -137,4 +146,6 @@ Checklist de evidencias a archivar:
 - [Criterios de aprobación](estrategias/criterios-de-aprobacion.md)
 - [Estado del proyecto](estado-del-proyecto.md)
 - [Checklist operativo](validacion-checklist.md)
-- Issue #44 (bloquea salida a producción) y PR que introduce este scaffold.
+- Issue #44 (validación de estrategias y paper trading; **no bloquea deploy**
+  a la nube: la rúbrica exige dev y prod sí o sí) y PR que introduce este
+  scaffold.

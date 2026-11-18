@@ -1,8 +1,15 @@
 # Checklist operativo del go/no-go (#44)
 
+> **Cambio de plan (2026-11-17):** este checklist ya no bloquea el deploy a
+> la nube. La rúbrica exige dev y prod sí o sí (ver `docs/rubrica.md`, #26,
+> #27, #45). El go/no-go se queda como validación de estrategias y paper
+> trading, con **menos prioridad que la ruta crítica del deploy**.
+
 Pasos para correr la ventana de paper trading de al menos 5 días y llenar
 [`validacion.md`](validacion.md). Está pensado para un operador humano en
-una Mac con el stack local levantado por `make up`.
+una Mac con el stack local levantado por `make up`. En la sección
+["Alternativa: correr contra Azure dev"](#alternativa-correr-contra-azure-dev)
+se documenta la opción de hacerlo contra el entorno de dev en la nube.
 
 ## 0. Preparación (día D-1)
 
@@ -86,6 +93,33 @@ Cada 12 horas aproximadamente:
 - [ ] Escribir veredicto + justificación corta.
 - [ ] Mencionar explícitamente el sesgo de la testnet (liquidez / slippage).
 - [ ] Commit, PR aparte con el reporte final, cierre de #44.
+
+## Alternativa: correr contra Azure dev
+
+Dado que ya existe deploy a la nube (dev y prod) por la rúbrica (#26, #27,
+#45), la ventana de paper trading se puede ejecutar **contra el entorno de
+Azure dev** en vez de la Mac local. Beneficios: no depende de que la Mac
+siga encendida, el stack ya está armado idéntico al de prod (mismo
+contenedor, misma base), y los logs quedan centralizados en Azure.
+
+Diferencias respecto al flujo "desde la Mac":
+
+- No hace falta `make up` ni `caffeinate -dims`; el stack ya corre en Azure
+  dev con los mismos servicios (`api`, `agents`, `engine`, `forecast`).
+- Las llaves de Binance Spot Testnet se cargan como variables de entorno /
+  secretos del deployment en Azure dev, **no** en el `.env` local.
+- La fuente de verdad para los fills sigue siendo `public.trades` y
+  `public.equity_snapshots` en Supabase (no cambia el export).
+- `docker compose logs` se reemplaza por los logs del servicio en Azure
+  (ver `docs/arquitectura/` y el panel de la suscripción). Guardar la
+  misma evidencia en `logs/validacion-<fecha>.log`.
+- El monitoreo cada 12 h se hace contra el dashboard desplegado (URL de
+  dev), no contra `make web`.
+- El cierre y la generación de métricas con `scripts/validate_paper_run.py`
+  no cambian: siguen siendo sobre el CSV exportado de Supabase.
+
+Si se corre contra Azure dev, anotarlo explícitamente en la sección 2
+("Entorno de prueba") de `validacion.md` en lugar del host de la Mac.
 
 ## Qué NO hacer
 
