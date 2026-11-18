@@ -1,29 +1,39 @@
 import { defineConfig, devices } from "@playwright/test";
 
 /**
- * Configuración de Playwright para las pruebas E2E del frontend (#28).
+ * Configuración de Playwright para las pruebas E2E / UAT del frontend (#28).
  *
- * El flujo completo (mocked + live) vive en `tests/e2e/`. La variante *mocked* intercepta
- * las llamadas a Supabase y a la API con `page.route()` y corre sin servicios externos;
- * sirve para CI. La variante *live* asume que `make up` levantó Supabase, la API, los
- * agentes y el engine; cada paso que requiere backend hace `test.skip(...)` si no responde.
+ * Hay dos modos:
+ *   - *mocked* (`pnpm e2e:mocked`): intercepta Supabase y la API con `page.route()`, corre
+ *     sin servicios externos. Es la variante que corre CI en el push/PR.
+ *   - *UAT*    (`pnpm e2e:uat`): apunta a `APP_URL` (el deploy de dev) y corre en el pipeline
+ *     después del deploy. Si falla, bloquea la promoción a prod.
  *
- * Para correr solo chromium:  `pnpm e2e --project=chromium`
- * Para correr solo la *mocked*: `pnpm e2e:mocked`
+ * Resolución del `baseURL`:
+ *   1. `APP_URL` (UAT contra dev).
+ *   2. `E2E_BASE_URL` (override manual).
+ *   3. `http://${E2E_HOST}:${E2E_PORT}` (local, Next dev server).
  *
- * Si Playwright se queja de que faltan binarios, instala solo chromium:
- *   `pnpm exec playwright install chromium`
+ * Artefactos para CI:
+ *   - `playwright-report/`         — HTML report (subido como artifact).
+ *   - `playwright-report/junit.xml` — resultados en JUnit, útiles para dashboards de CI.
+ *   - `test-results/`              — trazas, screenshots y videos; ambos en `.gitignore`.
  */
 
 const PORT = Number(process.env.E2E_PORT ?? 3000);
 const HOST = process.env.E2E_HOST ?? "127.0.0.1";
-const BASE_URL = process.env.E2E_BASE_URL ?? `http://${HOST}:${PORT}`;
+const BASE_URL =
+  process.env.APP_URL ?? process.env.E2E_BASE_URL ?? `http://${HOST}:${PORT}`;
+
+// Cuando corre la UAT contra un deploy ya publicado (APP_URL definido) no levantamos
+// `pnpm dev`: el servidor ya está arriba en la nube.
+const SKIP_WEBSERVER = !!process.env.APP_URL || !!process.env.E2E_SKIP_WEBSERVER;
 
 export default defineConfig({
   testDir: "./tests/e2e",
   // El output cae en test-results/ y playwright-report/, ambos en .gitignore.
   outputDir: "./test-results",
-  // Dejamos un margen amplio: el flujo *live* polea al backend (Realtime + señales).
+  // Dejamos un margen amplio: la UAT contra dev puede tener latencias de red.
   timeout: 90_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,
@@ -33,6 +43,7 @@ export default defineConfig({
   reporter: [
     ["list"],
     ["html", { open: "never", outputFolder: "playwright-report" }],
+    ["junit", { outputFile: "playwright-report/junit.xml" }],
   ],
   use: {
     baseURL: BASE_URL,
@@ -46,11 +57,11 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"] },
     },
   ],
-  // Arranca `pnpm dev` si no hay nada escuchando ya. Inyectamos variables públicas con
-  // valores "mocked" para que el cliente de Supabase y el de la API apunten a los hosts
-  // que el test intercepta con `page.route()`; si ya hay valores en `.env.local`, estos
-  // los pisan solo para el proceso del servidor que levanta Playwright.
-  webServer: process.env.E2E_SKIP_WEBSERVER
+  // Arranca `pnpm dev` si no hay nada escuchando ya. Para la UAT contra dev (`APP_URL`
+  // definido) NO arrancamos nada: el frontend ya está desplegado. En local sin APP_URL,
+  // inyectamos valores "mocked" para que el cliente de Supabase y el de la API apunten a
+  // los hosts que la variante `mocked` intercepta con `page.route()`.
+  webServer: SKIP_WEBSERVER
     ? undefined
     : {
         command: "pnpm dev",

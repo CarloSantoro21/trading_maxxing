@@ -14,8 +14,9 @@ pnpm check:export   # verifica que out/ tenga todas las rutas de src/app
 
 # E2E con Playwright (#28)
 pnpm exec playwright install chromium   # solo la primera vez
-pnpm e2e:mocked     # flujo completo sin backend (lo que corre CI)
-pnpm e2e            # flujo completo contra `make up` (perfiles, bots, señales reales)
+pnpm e2e:mocked     # flujo completo sin backend (lo que corre CI en cada PR)
+APP_URL=https://dev.<...> DEMO_EMAIL=... DEMO_PASSWORD=... \
+  pnpm e2e:uat      # UAT contra dev (misma corrida que el pipeline post-deploy)
 ```
 
 Requiere Node 24 LTS (ver `.nvmrc` en la raíz).
@@ -94,22 +95,39 @@ Las pruebas unitarias no usan red: `src/test/fakeSupabase.ts` simula el cliente 
 
 ### E2E con Playwright (#28)
 
-El flujo completo (login → onboarding → crear bot → arrancarlo → trade visible en el
-dashboard) vive en `tests/e2e/`:
+Hay dos modos, ambos en `tests/e2e/`:
 
-- `tests/e2e/full-flow.mocked.spec.ts` intercepta las llamadas de Supabase y de la API con
-  `page.route()`, así que corre sin `make up`. Es la variante que corre localmente y la
-  que puede correr CI; `pnpm e2e:mocked` arranca `pnpm dev` con variables de entorno
-  "mocked" y lanza solo este spec.
-- `tests/e2e/full-flow.spec.ts` apunta al stack real. Cada paso hace `test.skip(...)` si
-  Supabase (`/auth/v1/health`) o la API (`/healthz`) no responden, para no romper el
-  verde cuando el entorno no está arriba. Un run completo necesita `make up`
-  (o `docker compose up`) y el usuario demo del seed.
+- **Mocked** (`pnpm e2e:mocked`): `tests/e2e/full-flow.mocked.spec.ts` intercepta Supabase
+  y la API con `page.route()`. Corre sin `make up`, así que es la variante que arranca
+  en cada PR (CI) y la útil para desarrollar localmente. `pnpm e2e:mocked` levanta
+  `pnpm dev` con variables "mocked" y lanza solo este spec.
+- **UAT contra dev** (`pnpm e2e:uat`): `tests/e2e/uat.spec.ts` apunta a `APP_URL` (el
+  deploy de dev) y recorre login → onboarding → dashboard → `/strategies`, además de un
+  `GET $API_URL/health`. Corre en el pipeline **después** del deploy a dev
+  (`.github/workflows/uat.yml`) y es gate obligatorio: si falla, bloquea la promoción
+  a prod.
+
+Variables de la UAT (secrets en GitHub / env vars en local):
+
+| Variable        | Para qué                                              |
+| --------------- | ----------------------------------------------------- |
+| `APP_URL`       | URL del frontend desplegado en dev.                   |
+| `API_URL`       | URL de la API desplegada (opcional; habilita health). |
+| `DEMO_EMAIL`    | Correo del usuario demo con perfil ya creado en dev.  |
+| `DEMO_PASSWORD` | Contraseña del usuario demo.                          |
+
+Las credenciales nunca se commitean. Sin `APP_URL` en local, `pnpm e2e:uat` hace
+`test.skip` y termina en verde; en CI, si falta algún secret el workflow avisa en el
+*Step Summary* y sale en verde sin verificar nada (el gate real es el fallo del job
+`uat` cuando sí hay secrets).
 
 Antes de la primera corrida: `pnpm exec playwright install chromium`. Los artefactos
-(`playwright-report/`, `test-results/`) están en `.gitignore`.
+(`playwright-report/`, `test-results/`) están en `.gitignore`. El reporte HTML y el
+JUnit se suben como artifact `playwright-report` del workflow `UAT (Playwright contra
+dev)`.
 
-El checklist manual (con hueco para la liga del video de demostración) está en
+El checklist manual del flujo completo contra Binance Testnet (señal → orden →
+trade visible) y el hueco para la liga del video de demostración están en
 `docs/e2e-checklist.md`.
 
 ## Cloudflare Pages (entrega final, #45)

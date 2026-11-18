@@ -11,7 +11,8 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "e2e": "playwright test",
-    "e2e:mocked": "playwright test full-flow.mocked.spec.ts"
+    "e2e:mocked": "playwright test full-flow.mocked.spec.ts",
+    "e2e:uat": "playwright test uat.spec.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",
