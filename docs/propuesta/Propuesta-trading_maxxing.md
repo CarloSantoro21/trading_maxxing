@@ -178,14 +178,14 @@ investigación → laboratorio → shadow → activa → en observación → ret
 - Pronóstico: Kronos-small con PyTorch en CPU, servido con FastAPI.
 - Motor de trading: NautilusTrader.
 - Base de datos y autenticación: Supabase (Postgres, Auth, Realtime y Row Level Security), local con su CLI durante el desarrollo y en el plan gratuito para la entrega.
-- Mensajería y cache: Redis (ElastiCache en la nube, contenedor en local).
+- Mensajería y cache: Redis (Azure Cache for Redis Basic C0 en la nube, contenedor en local).
 - Contenedores: Docker y Docker Compose, con las imágenes publicadas en Docker Hub.
-- Infraestructura como código: Terraform, con el estado en S3 y bloqueo con DynamoDB.
-- CI/CD: GitHub Actions, con autenticación a AWS por OIDC (sin llaves de larga duración).
-- Nube: AWS (ECS Fargate, Application Load Balancer, ElastiCache, Secrets Manager, CloudWatch y S3).
+- Infraestructura como código: Terraform con el provider `azurerm` y módulos por recurso (repo separado `trading_maxxing-infra`, ver #26).
+- CI/CD: GitHub Actions, con autenticación a Azure por OIDC (sin llaves de larga duración) y a Cloudflare por API Token.
+- Nube: Azure App Service Plan Linux B1 con dos Web Apps de contenedor (`tm-api-<env>` y `tm-agents-<env>`), Application Insights + Log Analytics Workspace y Azure Cache for Redis (Basic C0). El frontend se publica en Cloudflare Pages.
 - Calidad: pytest y pytest-cov, Vitest y React Testing Library, ruff, ESLint y Prettier.
 
-Por qué ECS Fargate y no Kubernetes. Son 5 servicios sin requisitos de orquestación avanzada. EKS cobra el plano de control (~73 USD al mes) y agrega mucha complejidad operativa; Fargate cubre lo que necesitamos con menos costo y menos piezas.
+Por qué Azure App Service y no Kubernetes. Son dos Web Apps de contenedor (api y agents) sin requisitos de orquestación avanzada. AKS cobra la administración del plano de control y agrega complejidad operativa; App Service en plan Linux B1 cubre lo que necesitamos con menos costo y menos piezas, y permite ver CPU y memoria del plan directamente desde el portal de Azure (lo que evalúa la rúbrica).
 
 Por qué Terraform. Toda la infraestructura queda versionada y revisada por pull request. El CI corre `terraform plan` en cada PR que toca `infra/`, y staging se puede destruir y recrear para ahorrar costos.
 
@@ -197,27 +197,27 @@ Hasta demostrar que el sistema es funcional y rentable, **todo corre en localhos
 
 La nube solo se usa para la entrega final o si la validación go/no-go da **go** (criterios: ≥ 5 días de paper trading sin caídas, estrategias aprobadas por walk-forward y Monte Carlo, y P&L neto positivo con drawdown dentro del límite). Los issues de despliegue llevan la etiqueta `deploy-diferido`.
 
-Costo estimado del despliegue en AWS (us-east-1, ECS Fargate ARM, solo producción 24/7 y staging bajo demanda): ~100–120 USD al mes. Como solo se necesita alrededor de la entrega, se cubre con los créditos de AWS Academy o de una cuenta nueva, con una alerta de presupuesto y `terraform destroy` después de la demo. El frontend (Cloudflare Pages) y Supabase (plan gratuito) cuestan 0.
+Costo estimado del despliegue en Azure (region cercana, dos App Service Plan B1 ~13 USD/mes cada uno + Azure Cache for Redis Basic C0): del orden de 30-45 USD al mes con los dos ambientes encendidos. La cuenta es **Azure for Students** (correo del ITESO, 100 USD de crédito, sin tarjeta); el ambiente de dev se puede destruir fuera de ventanas de demo. El frontend (Cloudflare Pages) y Supabase (plan gratuito) cuestan 0.
 
 
 ![Diagrama de infraestructura](https://raw.githubusercontent.com/CarloSantoro21/trading_maxxing/main/docs/propuesta/img/infra.png)
 
 | Recurso | Tipo | Propósito |
 |---|---|---|
-| trading-maxxing-vpc | VPC con 2 subredes públicas y 2 privadas | Aislamiento de red |
-| trading-maxxing-alb | Application Load Balancer | Enruta / a web y /api a api |
-| trading-maxxing-cluster | ECS Cluster (Fargate) | Ejecuta los contenedores |
-| web, api, agents, forecast, engine | 5 servicios de ECS | Un servicio por contenedor |
-| trading-maxxing-redis | ElastiCache Redis | Canal de decisiones y cola de jobs |
-| trading-maxxing/* | Secrets Manager | Claves de Binance Testnet, Supabase, Groq y la API de noticias |
-| /ecs/trading-maxxing | CloudWatch Logs y alarmas | Logs, métricas y alerta de drawdown |
-| trading-maxxing-artifacts | S3 | Pesos del modelo, reportes de backtest y datos históricos |
-| trading-maxxing-tfstate | S3 y DynamoDB | Estado y bloqueo de Terraform |
-| github-actions-deploy | Rol IAM con OIDC | Deploy desde GitHub Actions sin llaves |
-| Proyecto de Supabase | SaaS | Postgres, Auth y Realtime |
+| `rg-tm-<env>` | Azure Resource Group | Aísla los recursos de dev y prod |
+| `asp-tm-<env>` | App Service Plan Linux B1 | Soporta las dos Web Apps del ambiente |
+| `tm-api-<env>` | Web App (Linux Container) | FastAPI; URL `https://tm-api-<env>.azurewebsites.net` |
+| `tm-agents-<env>` | Web App (Linux Container) | Orquestador, engine y forecast en el mismo contenedor |
+| `appi-tm-<env>` | Application Insights | APM: traces, errores y requests para la demo |
+| `log-tm-<env>` | Log Analytics Workspace | Backend de App Insights y logs de App Service |
+| `redis-tm-<env>` | Azure Cache for Redis Basic C0 | Canal de decisiones y cola de jobs |
+| App settings / Key Vault | Variables marcadas `sensitive` | Claves de Binance Testnet, Supabase, Groq y la API de noticias |
+| GitHub Environment `dev` y `prod` | Secrets + OIDC federation | Deploy desde GitHub Actions sin llaves (ver #39) |
+| Proyecto de Supabase (dev y prod) | SaaS | Postgres, Auth, Realtime y RLS |
+| `tm-web-dev` y `tm-web` | Cloudflare Pages | Frontend Next.js estático |
 | trading-maxxing-web, -api, -agents, -forecast, -engine | Repositorios en Docker Hub | Imágenes versionadas |
 
-Todo lo de AWS se define en `infra/` con Terraform, con un módulo por recurso y un entorno por carpeta (`infra/envs/staging` e `infra/envs/prod`). En local, docker-compose.yml levanta los 5 servicios y Redis, conectados a un proyecto de Supabase de desarrollo.
+Todo lo de Azure se define en el repo separado `trading_maxxing-infra` con Terraform (provider `azurerm`), un módulo por recurso y un entorno por carpeta (`envs/dev` y `envs/prod`). En local, `docker-compose.yml` levanta los 5 servicios y Redis, conectados a un proyecto de Supabase de desarrollo.
 
 ### 5.1 Diagrama de deployment
 
@@ -227,7 +227,7 @@ El pipeline corre en GitHub Actions:
 
 - En cada pull request a develop o main: lint (ruff y ESLint), pruebas de Python con pytest (cobertura mínima de 70 %) y pruebas del frontend con Vitest en paralelo, y build de las 5 imágenes sin publicarlas. Si el PR toca `infra/`, también corre `terraform fmt`, `validate` y `plan`.
 - Al hacer merge a develop: lo anterior, más el push de las imágenes a Docker Hub con los tags develop y `sha-<commit>`. No hay deploy automático mientras el proyecto esté en modo local.
-- Al crear un tag vX.Y.Z en main: push a Docker Hub con los tags X.Y.Z y latest. El deploy a AWS y a Cloudflare Pages es un workflow manual con aprobación (GitHub Environments), reservado para la entrega final.
+- Al crear un tag vX.Y.Z en main: push a Docker Hub con los tags X.Y.Z y latest, y deploy a Azure App Service y Cloudflare Pages en el environment `prod`, con aprobación manual (GitHub Environments → *required reviewers*).
 
 #### Pruebas unitarias
 
@@ -273,7 +273,7 @@ El plan está en el GitHub Project Board del repositorio (https://github.com/use
 - M2, Motor, pronóstico y estrategias (hasta el 18 de noviembre): datos de mercado, servicio de Kronos, integración con Nautilus, TrendAgent, IntradayMomentumAgent y laboratorio de backtest con Monte Carlo.
 - M3, Agentes, simulación y API (hasta el 24 de noviembre): KronosAgent, NewsAgent, SimulationGate, RiskAgent, orquestador con sleeves, PortfolioAllocator, ciclo de vida de estrategias (registro, shadow y monitor) y API REST.
 - M4, Frontend y validación local (hasta el 1 de diciembre): dashboard, onboarding, backtests en la interfaz, pruebas end-to-end en local y validación go/no-go con paper trading continuo.
-- M5, Entrega: deploy y demo (hasta el 6 de diciembre): Terraform, CD a AWS, frontend en Cloudflare Pages, monitoreo, documentación y demo final.
+- M5, Entrega: deploy y demo (hasta el 6 de diciembre): Terraform de Azure, CD del backend a Azure App Service (dev y prod con aprobación), frontend en Cloudflare Pages (dev y prod), Application Insights conectado, documentación y demo final.
 
 Issues: https://github.com/CarloSantoro21/trading_maxxing/issues
 
@@ -285,7 +285,7 @@ Issues: https://github.com/CarloSantoro21/trading_maxxing/issues
 - Contaminación de Kronos: sus datos de preentrenamiento llegan a junio de 2024, así que solo se evalúa de julio de 2024 en adelante.
 - Comisiones: en Binance Spot cada operación cuesta ~0.1 % por lado. Una estrategia que opera a diario puede perder buena parte de su ventaja en comisiones; el laboratorio las incluye siempre y compara cada estrategia contra comprar y mantener.
 - Señales malas pueden generar pérdidas: operamos solo en testnet, la SimulationGate bloquea operaciones con valor esperado negativo y el RiskAgent aplica el drawdown máximo y un botón de paro.
-- Costos de AWS: desarrollo y validación 100 % en local; en la nube, tareas Fargate ARM mínimas, sin NAT Gateway, alerta de presupuesto y `terraform destroy` después de la demo.
+- Costos en la nube: la cuenta es Azure for Students (100 USD de crédito, sin tarjeta). Dos planes App Service B1 (~13 USD/mes cada uno) y Azure Cache for Redis Basic C0; `terraform destroy` del ambiente de dev fuera de ventanas de demo.
 - Límites de las APIs de noticias y del LLM: cache en Redis, llamadas solo al cierre de vela y una interfaz LLMClient para cambiar de proveedor.
 - Calendario ajustado: las estrategias deterministas se implementan antes que las dependientes de modelos, y el ExplainerAgent y la proyección de metas son opcionales si falta tiempo.
 

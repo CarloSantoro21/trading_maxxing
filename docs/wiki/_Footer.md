@@ -1,0 +1,1 @@
+Proyecto académico · ITESO · Otoño 2026 · [Repositorio](https://github.com/CarloSantoro21/trading_maxxing) · [Cómo contribuir](https://github.com/CarloSantoro21/trading_maxxing/blob/main/CONTRIBUTING.md) · Las páginas de esta Wiki se sincronizan desde `docs/wiki/` con `scripts/publish_wiki.sh`.

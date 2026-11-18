@@ -7,7 +7,7 @@ Plataforma multiestrategia de trading de criptomonedas: un comité de agentes co
 - **Estado del proyecto y traspaso:** [docs/estado-del-proyecto.md](docs/estado-del-proyecto.md)
 - Propuesta: [docs/propuesta/Propuesta-trading_maxxing.md](docs/propuesta/Propuesta-trading_maxxing.md) ([PDF](docs/propuesta/Propuesta-trading_maxxing.pdf))
 - Plan de trabajo: [Project Board](https://github.com/users/CarloSantoro21/projects/2) e [Issues](https://github.com/CarloSantoro21/trading_maxxing/issues)
-- Stack: Next.js, FastAPI, Supabase, Redis, Docker y Docker Hub, GitHub Actions, Terraform, AWS ECS Fargate
+- Stack: Next.js, FastAPI, Supabase, Redis, Docker y Docker Hub, GitHub Actions, Terraform, Azure App Service + Application Insights, Cloudflare Pages
 
 ## Estructura
 
@@ -80,5 +80,16 @@ docker compose -f docker-compose.yml -f docker-compose.hub.yml up -d
 ```
 
 Cómo contribuir: [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Wiki
+
+- **Wiki en GitHub:** https://github.com/CarloSantoro21/trading_maxxing/wiki
+- **Fuente de verdad:** [`docs/wiki/`](docs/wiki/) en este repo (`Home.md`, `Arquitectura.md`, `Diagrama-de-clases.md`, `Stack-tecnologico.md`, `Infraestructura.md`, `Deployment.md`, `Estrategia-de-ramas.md`, `Project-Board.md`, `_Sidebar.md`, `_Footer.md` e imágenes en `docs/wiki/img/`).
+- **Sincronización:** `scripts/publish_wiki.sh` clona el repo `.wiki.git`, copia el contenido de `docs/wiki/` y hace push. La primera vez hay que inicializar la Wiki creando una página vacía desde la interfaz de GitHub.
+
+```bash
+scripts/publish_wiki.sh                           # usa CarloSantoro21/trading_maxxing
+scripts/publish_wiki.sh otro-owner/otro-repo      # para un fork
+```
 
 Proyecto académico. Opera solo en entornos de prueba y no es asesoría financiera.
