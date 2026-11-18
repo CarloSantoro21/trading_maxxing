@@ -274,7 +274,7 @@ class Kronos(nn.Module, PyTorchModelHubMixin):
         s2_logits = self.head.cond_forward(x2)
         return s1_logits, s2_logits
 
-    def decode_s1(self, s1_ids, s2_ids, stamp=None, padding_mask=None):
+    def decode_s1(self, s1_ids, s2_ids, stamp=None, padding_mask=None, cache=None):
         """
         Decodes only the s1 tokens.
 
@@ -286,6 +286,9 @@ class Kronos(nn.Module, PyTorchModelHubMixin):
             s2_ids (torch.Tensor): Input tensor of s2 token IDs. Shape: [batch_size, seq_len]
             stamp (torch.Tensor, optional): Temporal stamp tensor. Shape: [batch_size, seq_len]. Defaults to None.
             padding_mask (torch.Tensor, optional): Mask for padding tokens. Shape: [batch_size, seq_len]. Defaults to None.
+            cache (list[KVCacheLayer], optional): Patch trading_maxxing (#62). Si se pasa,
+                `s1_ids`/`s2_ids` pueden ser solo los tokens nuevos (sufijo) y se reutilizan
+                los K/V cacheados por capa. Con `cache=None` el comportamiento no cambia.
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor]:
@@ -298,8 +301,14 @@ class Kronos(nn.Module, PyTorchModelHubMixin):
             x = x + time_embedding
         x = self.token_drop(x)
 
-        for layer in self.transformer:
-            x = layer(x, key_padding_mask=padding_mask)
+        # BEGIN trading_maxxing patch (#62) KV cache: pasamos el slot por capa.
+        if cache is None:
+            for layer in self.transformer:
+                x = layer(x, key_padding_mask=padding_mask)
+        else:
+            for layer, layer_cache in zip(self.transformer, cache):
+                x = layer(x, key_padding_mask=padding_mask, cache=layer_cache)
+        # END trading_maxxing patch (#62)
 
         x = self.norm(x)
 
@@ -385,7 +394,21 @@ def sample_from_logits(logits, temperature=1.0, top_k=None, top_p=None, sample_l
     return x
 
 
-def auto_regressive_inference(tokenizer, model, x, x_stamp, y_stamp, max_context, pred_len, clip=5, T=1.0, top_k=0, top_p=0.99, sample_count=5, verbose=False):
+def auto_regressive_inference(tokenizer, model, x, x_stamp, y_stamp, max_context, pred_len, clip=5, T=1.0, top_k=0, top_p=0.99, sample_count=5, verbose=False, use_cache=True):
+    """Inferencia autorregresiva de Kronos.
+
+    Patch trading_maxxing (#62): `use_cache=True` (default) reutiliza los K/V
+    de cada bloque del transformer entre pasos para evitar recomputar las
+    ~400 velas de contexto. `use_cache=False` conserva el camino original
+    (la prueba de equivalencia lo usa como referencia).
+
+    La ventana de contexto es de tamaño `max_context`. Mientras la secuencia
+    crezca por debajo de ese tope el cache se extiende con el nuevo token.
+    Al tocar el tope la ventana rota: al dropear el token más viejo cambian
+    las posiciones de RoPE, así que el cache se descarta y se re-prefill con
+    la ventana actual (en la práctica el forecast de 400+24 nunca rota con
+    `max_context=512`).
+    """
     with torch.no_grad():
         x = torch.clip(x, -clip, clip)
 
@@ -395,7 +418,7 @@ def auto_regressive_inference(tokenizer, model, x, x_stamp, y_stamp, max_context
         y_stamp = y_stamp.unsqueeze(1).repeat(1, sample_count, 1, 1).reshape(-1, y_stamp.size(1), y_stamp.size(2)).to(device)
 
         x_token = tokenizer.encode(x, half=True)
-        
+
         initial_seq_len = x.size(1)
         batch_size = x_token[0].size(0)
         total_seq_len = initial_seq_len + pred_len
@@ -411,6 +434,11 @@ def auto_regressive_inference(tokenizer, model, x, x_stamp, y_stamp, max_context
             start_idx = max(0, initial_seq_len - max_context)
             pre_buffer[:, :buffer_len] = x_token[0][:, start_idx:start_idx + buffer_len]
             post_buffer[:, :buffer_len] = x_token[1][:, start_idx:start_idx + buffer_len]
+
+        # BEGIN trading_maxxing patch (#62) KV cache: estado por capa y hidden states.
+        kv_cache = make_kv_cache(len(model.transformer)) if use_cache else None
+        hidden_cache: "torch.Tensor | None" = None
+        # END trading_maxxing patch (#62)
 
         if verbose:
             ran = trange
@@ -432,7 +460,34 @@ def auto_regressive_inference(tokenizer, model, x, x_stamp, y_stamp, max_context
             context_start = max(0, context_end - max_context)
             current_stamp = full_stamp[:, context_start:context_end, :].contiguous()
 
-            s1_logits, context = model.decode_s1(input_tokens[0], input_tokens[1], current_stamp)
+            # BEGIN trading_maxxing patch (#62) KV cache: decidir prefill o paso incremental.
+            if kv_cache is None:
+                s1_logits, context = model.decode_s1(input_tokens[0], input_tokens[1], current_stamp)
+            else:
+                rolling = current_seq_len > max_context
+                need_prefill = hidden_cache is None or rolling
+                if rolling:
+                    # La ventana rota: cada posición de RoPE se desplaza, el cache no sirve.
+                    for slot in kv_cache:
+                        slot.reset()
+                    hidden_cache = None
+
+                if need_prefill:
+                    s1_logits, context = model.decode_s1(
+                        input_tokens[0], input_tokens[1], current_stamp, cache=kv_cache
+                    )
+                    hidden_cache = context
+                else:
+                    new_pre = input_tokens[0][:, -1:]
+                    new_post = input_tokens[1][:, -1:]
+                    new_stamp = current_stamp[:, -1:, :]
+                    s1_logits_new, new_hidden = model.decode_s1(
+                        new_pre, new_post, new_stamp, cache=kv_cache
+                    )
+                    hidden_cache = torch.cat([hidden_cache, new_hidden], dim=1)
+                    context = hidden_cache
+                    s1_logits = s1_logits_new
+            # END trading_maxxing patch (#62)
             s1_logits = s1_logits[:, -1, :]
             sample_pre = sample_from_logits(s1_logits, temperature=T, top_k=top_k, top_p=top_p, sample_logits=True)
 
@@ -504,14 +559,15 @@ class KronosPredictor:
         self.tokenizer = self.tokenizer.to(self.device)
         self.model = self.model.to(self.device)
 
-    def generate(self, x, x_stamp, y_stamp, pred_len, T, top_k, top_p, sample_count, verbose):
+    def generate(self, x, x_stamp, y_stamp, pred_len, T, top_k, top_p, sample_count, verbose, use_cache=True):
+        """Patch trading_maxxing (#62): `use_cache` activa el KV cache del transformer."""
 
         x_tensor = torch.from_numpy(np.array(x).astype(np.float32)).to(self.device)
         x_stamp_tensor = torch.from_numpy(np.array(x_stamp).astype(np.float32)).to(self.device)
         y_stamp_tensor = torch.from_numpy(np.array(y_stamp).astype(np.float32)).to(self.device)
 
         preds = auto_regressive_inference(self.tokenizer, self.model, x_tensor, x_stamp_tensor, y_stamp_tensor, self.max_context, pred_len,
-                                          self.clip, T, top_k, top_p, sample_count, verbose)
+                                          self.clip, T, top_k, top_p, sample_count, verbose, use_cache=use_cache)
         preds = preds[:, -pred_len:, :]
         return preds
 
