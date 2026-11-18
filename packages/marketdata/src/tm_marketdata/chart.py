@@ -22,10 +22,10 @@ import matplotlib
 # Backend sin pantalla antes de importar pyplot; obligatorio para headless/CI.
 matplotlib.use("Agg")
 
-import matplotlib.pyplot as plt  # noqa: E402
-import mplfinance as mpf  # noqa: E402
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
+import matplotlib.pyplot as plt
+import mplfinance as mpf
+import numpy as np
+import pandas as pd
 
 # Ajustes globales para que el render sea determinista:
 #   - `svg.hashsalt` fija cualquier hash interno de matplotlib.
