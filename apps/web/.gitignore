@@ -40,3 +40,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# playwright (#28): reporte HTML, trazas, screenshots y auth guardada
+/playwright-report/
+/test-results/
+/playwright/.auth/
+/playwright/.cache/

@@ -43,8 +43,10 @@ por drawdown del RiskAgent hace lo mismo que ``kill``.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import ROUND_DOWN, Decimal
@@ -62,6 +64,7 @@ from tm_shared.contracts import (
 )
 
 from tm_agents.allocator import AllocationResult, PortfolioAllocator
+from tm_agents.explainer import ExplainerAgent
 from tm_agents.orchestrator.exposure import exposure_for_level, sensitivity_for
 from tm_agents.orchestrator.policy import policy_for, sell_levels
 from tm_agents.orchestrator.state import BotState
@@ -69,6 +72,10 @@ from tm_agents.orchestrator.streams import DecisionSink
 from tm_agents.risk import Portfolio, RiskAgent, RiskLimits, TradeProposal
 from tm_agents.signals import SignalEvent, StrategySnapshot
 from tm_agents.strategy_stats import StrategyState
+
+#: Callback que recibe ``(envelope_id, texto)`` tras el ExplainerAgent. Debe ser barato y no
+#: lanzar: la explicación es informativa, no afecta la ejecución de la decisión.
+ExplanationSink = Callable[[str, str], None]
 
 log = logging.getLogger(__name__)
 
@@ -304,6 +311,13 @@ class BotRunner:
         allocator: PortfolioAllocator (pesos globales por estrategia).
         limits: límites del RiskAgent; por omisión, los del nivel del perfil.
         fee: comisión por lado que usa el libro virtual.
+        explainer: ExplainerAgent opcional (#37). Si viene, por cada decisión publicada se
+            lanza ``asyncio.create_task(explainer.explain(...))`` como *fire-and-forget*: la
+            explicación llega a ``explanation_sink`` cuando el LLM responde (o con la
+            plantilla determinista si falla), sin bloquear al orquestador. Si no hay un event
+            loop en marcha (p. ej. en backtest ``run_offline``) no se programa nada.
+        explanation_sink: callback ``(envelope_id, texto)`` que persiste la explicación. No
+            debe lanzar: cualquier excepción se registra como warning y se descarta.
     """
 
     def __init__(
@@ -315,6 +329,8 @@ class BotRunner:
         allocator: PortfolioAllocator | None = None,
         limits: RiskLimits | None = None,
         fee: Decimal = SPOT_FEE,
+        explainer: ExplainerAgent | None = None,
+        explanation_sink: ExplanationSink | None = None,
     ) -> None:
         self.config = config
         self.bot_id = config.bot_id
@@ -331,6 +347,10 @@ class BotRunner:
         self.shadow_decisions: list[DecisionEnvelope] = []
         self.blocked: list[Blocked] = []
         self.kill_reason: str | None = None
+        self.explainer = explainer
+        self.explanation_sink = explanation_sink
+        #: Tareas del ExplainerAgent en vuelo (para que las pruebas puedan esperarlas).
+        self.explain_tasks: list[asyncio.Task[Any]] = []
 
     # --- control ---------------------------------------------------------------------------
     def restore(self, state: BotState) -> int:
@@ -653,10 +673,44 @@ class BotRunner:
             self.shadow_decisions.append(envelope)
             if self.shadow_sink is not None:
                 self.shadow_sink.publish(envelope)
-            return envelope
-        self.decisions.append(envelope)
-        self.sink.publish(envelope)
+        else:
+            self.decisions.append(envelope)
+            self.sink.publish(envelope)
+        self._schedule_explanation(envelope)
         return envelope
+
+    def _schedule_explanation(self, envelope: DecisionEnvelope) -> None:
+        """Lanza el ExplainerAgent en segundo plano. Nunca bloquea ni propaga errores."""
+        if self.explainer is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Sin event loop (p. ej. en backtest): el explainer queda fuera, por diseño.
+            return
+        rationale = envelope.decision.rationale.model_dump(mode="json")
+        envelope_id = envelope.id or f"{self.bot_id}:{envelope.decision.decided_at.isoformat()}"
+        task = loop.create_task(self._run_explainer(envelope_id, rationale))
+        self.explain_tasks.append(task)
+        task.add_done_callback(self._cleanup_explain_task)
+
+    async def _run_explainer(self, envelope_id: str, rationale: Mapping[str, Any]) -> None:
+        try:
+            text = await self.explainer.explain(rationale)
+        except Exception as exc:  # defensa redundante: ``explain`` ya hace fail-open
+            log.warning("ExplainerAgent falló para %s: %s", envelope_id, exc)
+            return
+        if self.explanation_sink is None:
+            log.debug("ExplainerAgent (%s) sin sink: %s", envelope_id, text)
+            return
+        try:
+            self.explanation_sink(envelope_id, text)
+        except Exception as exc:  # el sink nunca puede detener la ejecución
+            log.warning("no se pudo guardar la explicación de %s: %s", envelope_id, exc)
+
+    def _cleanup_explain_task(self, task: asyncio.Task[Any]) -> None:
+        with contextlib.suppress(ValueError):
+            self.explain_tasks.remove(task)
 
     # --- consultas -------------------------------------------------------------------------
     def snapshot(self) -> dict[str, Any]:
@@ -681,6 +735,7 @@ __all__ = [
     "BotRunner",
     "BotStatus",
     "CommandType",
+    "ExplanationSink",
     "SleevePosition",
     "VirtualBook",
 ]

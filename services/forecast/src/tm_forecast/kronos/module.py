@@ -300,6 +300,26 @@ class RotaryPositionalEmbedding(nn.Module):
             self.sin_cached = emb.sin()[None, None, :, :]
         return self.cos_cached, self.sin_cached
 
+    # BEGIN trading_maxxing patch (#62) KV cache: RoPE con desplazamiento de posición.
+    def apply_at(self, q, k, start_pos: int = 0):
+        """Aplica RoPE usando posiciones [start_pos, start_pos + q.shape[-2]).
+
+        Permite reutilizar el bloque de atención con un KV cache: los nuevos
+        tokens se rotan en su posición absoluta dentro de la secuencia aunque
+        el forward reciba solo el sufijo.
+        """
+        seq_len = q.shape[-2]
+        end = start_pos + seq_len
+        # Cache hasta `end`; se corrige cuando la ventana cambia de tamaño.
+        self._update_cos_sin_cache(q, end)
+        cos = self.cos_cached[:, :, start_pos:end, :]
+        sin = self.sin_cached[:, :, start_pos:end, :]
+        return (
+            (q * cos) + (self._rotate_half(q) * sin),
+            (k * cos) + (self._rotate_half(k) * sin),
+        )
+    # END trading_maxxing patch (#62)
+
     def forward(self, q, k):
         cos, sin = self._update_cos_sin_cache(q, q.shape[-2])
         return (
@@ -310,6 +330,44 @@ class RotaryPositionalEmbedding(nn.Module):
     def _rotate_half(self, x):
         x1, x2 = x.chunk(2, dim=-1)
         return torch.cat((-x2, x1), dim=-1)
+
+
+# BEGIN trading_maxxing patch (#62) KV cache: estructura por capa.
+class KVCacheLayer:
+    """KV cache por capa del transformer.
+
+    Guarda tensores `k` y `v` con shape `[batch, n_heads, seq_len, head_dim]`.
+    Empieza vacío (seq_len = 0) y crece al llamar `append(k_new, v_new)`.
+    `start_pos` devuelve la posición absoluta del próximo token a agregar.
+    """
+
+    __slots__ = ("k", "v")
+
+    def __init__(self) -> None:
+        self.k: torch.Tensor | None = None
+        self.v: torch.Tensor | None = None
+
+    @property
+    def seq_len(self) -> int:
+        return 0 if self.k is None else self.k.shape[-2]
+
+    def append(self, k_new: torch.Tensor, v_new: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.k is None:
+            self.k, self.v = k_new, v_new
+        else:
+            self.k = torch.cat([self.k, k_new], dim=-2)
+            self.v = torch.cat([self.v, v_new], dim=-2)
+        return self.k, self.v
+
+    def reset(self) -> None:
+        self.k = None
+        self.v = None
+
+
+def make_kv_cache(n_layers: int) -> list["KVCacheLayer"]:
+    """Devuelve una lista de `KVCacheLayer` vacíos, uno por bloque."""
+    return [KVCacheLayer() for _ in range(n_layers)]
+# END trading_maxxing patch (#62)
 
 
 class MultiHeadAttentionWithRoPE(nn.Module):
@@ -327,18 +385,40 @@ class MultiHeadAttentionWithRoPE(nn.Module):
         self.attn_dropout_p = attn_dropout_p
         self.resid_dropout = nn.Dropout(resid_dropout_p)
 
-    def forward(self, x, key_padding_mask=None):
+    # BEGIN trading_maxxing patch (#62) KV cache: parámetro `cache` opcional.
+    def forward(self, x, key_padding_mask=None, cache: "KVCacheLayer | None" = None):
+        """Self-attention causal con RoPE.
+
+        Si `cache` se pasa, se proyecta solo los tokens recibidos (prefix o
+        sufijo), se concatenan sus K/V al cache y la atención corre contra
+        toda la secuencia acumulada. Con cache y `q_len == 1` evitamos la
+        máscara causal porque la única query atiende a todo el pasado.
+        Sin cache el comportamiento es idéntico al original.
+        """
         batch_size, seq_len, _ = x.shape
 
         q = self.q_proj(x).view(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
         k = self.k_proj(x).view(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
 
-        q, k = self.rotary(q, k)
+        if cache is not None:
+            start_pos = cache.seq_len
+            q, k = self.rotary.apply_at(q, k, start_pos=start_pos)
+            k, v = cache.append(k, v)
+            is_causal = seq_len > 1  # Con solo una query no hace falta máscara.
+        else:
+            q, k = self.rotary(q, k)
+            is_causal = True
 
         if key_padding_mask is not None:
-            attn_mask = key_padding_mask.unsqueeze(1).unsqueeze(2)  # [batch, 1, 1, seq_len]
-            attn_mask = attn_mask.expand(-1, self.n_heads, seq_len, -1)  # [batch, n_heads, q_len, k_len]
+            # Cuando hay cache, el padding_mask debería cubrir toda la ventana
+            # acumulada (k.shape[-2]); el llamador no lo usa en esa ruta.
+            kv_len = k.shape[-2]
+            attn_mask = key_padding_mask.unsqueeze(1).unsqueeze(2)  # [batch, 1, 1, kv_len]
+            attn_mask = attn_mask.expand(-1, self.n_heads, seq_len, -1)
+            # is_causal y attn_mask no se pueden combinar en SDPA.
+            is_causal = False
+            _ = kv_len  # silencia linters
         else:
             attn_mask = None
 
@@ -346,11 +426,12 @@ class MultiHeadAttentionWithRoPE(nn.Module):
             q, k, v,
             attn_mask=attn_mask,
             dropout_p=self.attn_dropout_p if self.training else 0.0,
-            is_causal=True
+            is_causal=is_causal,
         )
 
         attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.d_model)
         return self.resid_dropout(self.out_proj(attn_output))
+    # END trading_maxxing patch (#62)
 
 
 class MultiHeadCrossAttentionWithRoPE(nn.Module):
@@ -470,10 +551,11 @@ class TransformerBlock(nn.Module):
         self.norm2 = RMSNorm(d_model)
         self.ffn = FeedForward(d_model, ff_dim, ffn_dropout_p)
 
-    def forward(self, x, key_padding_mask=None):
+    # BEGIN trading_maxxing patch (#62) KV cache: parámetro `cache` opcional.
+    def forward(self, x, key_padding_mask=None, cache: "KVCacheLayer | None" = None):
         residual = x
         x = self.norm1(x)
-        attn_out = self.self_attn(x, key_padding_mask=key_padding_mask)
+        attn_out = self.self_attn(x, key_padding_mask=key_padding_mask, cache=cache)
         x = residual + attn_out
 
         residual = x
@@ -481,6 +563,7 @@ class TransformerBlock(nn.Module):
         ffn_out = self.ffn(x)
         x = residual + ffn_out
         return x
+    # END trading_maxxing patch (#62)
 
 
 class DualHead(nn.Module):
