@@ -46,5 +46,6 @@ infra/**/backend.hcl
 # Sistema
 .DS_Store
 
-# Claude Code (worktrees de agentes, configuración local)
-.claude/
+# Claude Code (worktrees de agentes, configuración local): ignorar todo salvo las skills.
+.claude/*
+!.claude/skills/

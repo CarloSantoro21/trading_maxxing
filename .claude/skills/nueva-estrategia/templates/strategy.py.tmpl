@@ -1,0 +1,97 @@
+"""<NombreAgent>: <una línea sobre qué hace la estrategia>.
+
+Evidencia: <Autores (Año). *Título*. Revista, Volumen(Número), pp–pp. DOI.>
+- <Por qué el paper aplica a cripto en particular (BTC/ETH, no solo acciones).>
+- <Si hay evidencia out-of-sample, cítala también. Si no, deja claro que la revisión por pares sostiene la regla.>
+
+Regla (sin look-ahead, Binance Spot, solo largo o USDT):
+- <Describe la señal usando solo velas cerradas en `ctx.now`.>
+- <Cuándo entra en largo, cuándo sale, cómo se calcula la confianza.>
+
+Con las comisiones de 0.1 % por lado, esta regla hace ~<N> operaciones al año, que
+cuesta ~<comisión anual> %. Si ese costo se come la ventaja esperada, vuelve al paso 1
+del flujo: hay que elegir otra regla o cambiar los parámetros.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+
+import numpy as np
+import pandas as pd
+from tm_shared.contracts import Direction, Horizon, Signal, Timeframe
+
+from tm_agents.base import AgentContext, BaseAgent, register_strategy
+from tm_agents.strategies.trend import closed_bars
+
+# TODO: ajusta los defaults a tu estrategia.
+DEFAULT_LOOKBACK = 50
+DEFAULT_PERIOD = pd.Timedelta(days=1)
+
+
+@register_strategy("<nombre_corto>")  # TODO: nombre en snake_case; es la clave del registro.
+class <NombreAgent>(BaseAgent):  # TODO: nombra la clase.
+    timeframe = Timeframe.D1  # TODO: elige la temporalidad que casa con el paper.
+
+    def __init__(
+        self,
+        lookback: int = DEFAULT_LOOKBACK,
+        # TODO: agrega aquí los parámetros del paper (umbrales, ventanas, modos...).
+        **params: object,
+    ) -> None:
+        super().__init__(lookback=lookback, **params)
+        if lookback < 2:
+            raise ValueError("lookback debe ser >= 2 velas")
+        self.lookback = int(lookback)
+
+    def analyze(self, ctx: AgentContext) -> Signal:
+        now = pd.Timestamp(ctx.now).tz_convert("UTC")
+        bars = closed_bars(ctx.bars_for(self.timeframe), now, DEFAULT_PERIOD)
+
+        if len(bars) < self.lookback + 1:
+            # Historia insuficiente: la señal es flat con confianza 0.
+            return Signal(
+                symbol=ctx.symbol,
+                direction=Direction.FLAT,
+                confidence=0.0,
+                horizon=Horizon.MEDIUM,
+                timeframe=self.timeframe,
+                source=self.name,
+                generated_at=now.to_pydatetime(),
+                metadata={
+                    "bars_used": len(bars),
+                    "reason": "historia insuficiente",
+                    "last_close": float(bars["close"].iloc[-1]) if len(bars) else None,
+                },
+            )
+
+        close = bars["close"].to_numpy(dtype=float)
+
+        # TODO: calcula la señal (regla del paper). `signal_value` debe ser determinista.
+        signal_value = _rule(close, self.lookback)
+        direction = Direction.LONG if signal_value > 0 else Direction.FLAT
+        confidence = float(min(1.0, abs(signal_value)))
+
+        return Signal(
+            symbol=ctx.symbol,
+            direction=direction,
+            confidence=confidence,
+            horizon=Horizon.MEDIUM,
+            timeframe=self.timeframe,
+            source=self.name,
+            generated_at=now.to_pydatetime(),
+            metadata={
+                "bars_used": len(bars),
+                "last_close": float(close[-1]),
+                # TODO: agrega aquí las llaves que el laboratorio y el orquestador necesitan.
+            },
+        )
+
+
+def _rule(close: np.ndarray, lookback: int) -> float:
+    """Núcleo de la regla: función pura, fácil de probar en aislamiento.
+
+    TODO: implementa la regla del paper. Devuelve un valor en [-1, 1] donde el signo indica
+    la dirección (en spot, solo el positivo se opera) y el valor absoluto la confianza.
+    """
+    raise NotImplementedError("TODO: implementa la regla de <NombreAgent>")
