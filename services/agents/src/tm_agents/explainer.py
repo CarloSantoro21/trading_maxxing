@@ -12,13 +12,18 @@ Uso típico (fire-and-forget desde el BotRunner):
     asyncio.create_task(explainer.explain(envelope.decision.rationale.model_dump()))
 
 Para contextos que no pueden ``await`` hay un shim bloqueante :meth:`explain_sync`.
+
+**Apagado por defecto** (``EXPLAINER_ENABLED=false``): sin LLM ni costo, siempre se usa la
+plantilla. ``enabled`` permite prenderlo en caliente (interruptor ``explainer_enabled`` de
+:mod:`tm_agents.orchestrator.settings`); ver :func:`explainer_from_env`.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
+import os
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -53,16 +58,37 @@ class ExplainerAgent:
     Args:
         llm: cliente de LLM (``LLMClient``, reutiliza el mismo que usa el NewsAgent).
         max_text_length: tope para el texto que devuelve el LLM; si lo rebasa, se recorta.
+        enabled: interruptor consultado en cada llamada; si devuelve ``False`` se usa la
+            plantilla sin tocar el LLM. ``None`` = siempre prendido (si hay ``llm``).
     """
 
-    def __init__(self, llm: LLMClient | None = None, *, max_text_length: int = 600) -> None:
+    def __init__(
+        self,
+        llm: LLMClient | None = None,
+        *,
+        max_text_length: int = 600,
+        enabled: Callable[[], bool] | None = None,
+    ) -> None:
         self._llm = llm
         self._max_text_length = max_text_length
+        self._enabled = enabled
+
+    def uses_llm(self) -> bool:
+        """True si la próxima explicación irá al LLM (hay cliente y el interruptor está on)."""
+        if self._llm is None:
+            return False
+        if self._enabled is None:
+            return True
+        try:
+            return bool(self._enabled())
+        except Exception as exc:  # interruptor roto: plantilla, que no cuesta nada
+            log.warning("no se pudo leer explainer_enabled; se usa la plantilla (%s)", exc)
+            return False
 
     async def explain(self, rationale: Mapping[str, Any]) -> str:
         """Devuelve la justificación. Nunca lanza: ante cualquier error cae a la plantilla."""
         rationale = dict(rationale or {})
-        if self._llm is None:
+        if not self.uses_llm():
             return _template_fallback(rationale)
         try:
             prompt = _build_prompt(rationale)
@@ -89,6 +115,28 @@ class ExplainerAgent:
         except RuntimeError:
             pass
         return asyncio.run(self.explain(rationale))
+
+
+def explainer_from_env(
+    env: Mapping[str, str] | None = None,
+    *,
+    llm: LLMClient | None = None,
+    enabled: Callable[[], bool] | None = None,
+) -> ExplainerAgent:
+    """ExplainerAgent del worker.
+
+    ``enabled`` por defecto lee ``EXPLAINER_ENABLED`` (``false`` si no está). ``llm`` es el
+    cliente compartido con el NewsAgent; ``None`` (``LLM_PROVIDER=none``) = solo plantilla
+    aunque el interruptor esté prendido.
+    """
+    if enabled is None:
+        from tm_agents.orchestrator.settings import EnvSettingsProvider
+
+        settings = EnvSettingsProvider(os.environ if env is None else env)
+        enabled = lambda: settings.get_bool("explainer_enabled")  # noqa: E731
+    if llm is None:
+        log.info("ExplainerAgent sin LLM: se usa la plantilla determinista")
+    return ExplainerAgent(llm, enabled=enabled)
 
 
 # --- plantilla determinista -------------------------------------------------------------
@@ -239,4 +287,4 @@ def _get(obj: Any, key: str) -> Any:
     return getattr(obj, key, None)
 
 
-__all__ = ["ExplainerAgent", "ExplainerResponse"]
+__all__ = ["ExplainerAgent", "ExplainerResponse", "explainer_from_env"]

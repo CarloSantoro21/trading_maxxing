@@ -1,4 +1,8 @@
-"""NewsAgent: clasifica titulares con un LLM y veta nuevas entradas.
+"""NewsAgent: clasifica titulares (con un LLM o por palabras clave) y veta nuevas entradas.
+
+El clasificador es intercambiable (:class:`HeadlineClassifier`): con un ``LLMClient`` se usa
+:class:`LLMHeadlineClassifier`; sin LLM (``LLM_PROVIDER=none``), el
+:class:`~tm_agents.news.keywords.KeywordClassifier`, que no cuesta nada.
 
 Solo puede **vetar nuevas entradas**; nunca abre ni cierra operaciones y las posiciones
 abiertas conservan su SL y TP. Política por defecto (issue #17, configurable):
@@ -26,11 +30,12 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from tm_agents.base import AgentContext
 from tm_agents.llm.base import LLMClient, LLMError
 from tm_agents.news.cryptopanic import NewsAPIError
+from tm_agents.news.keywords import KeywordClassifier
 from tm_agents.news.models import (
     GLOBAL_SCOPE,
     HeadlineClassification,
@@ -58,6 +63,28 @@ SYSTEM_PROMPT = (
 
 class NewsSource(Protocol):
     def fetch_posts(self, currencies: Iterable[str] = ()) -> list[NewsArticle]: ...
+
+
+@runtime_checkable
+class HeadlineClassifier(Protocol):
+    """Clasifica un lote de titulares. Puede lanzar ``LLMError`` (el agente hace fail-open)."""
+
+    def classify(self, articles: Sequence[NewsArticle]) -> list[HeadlineClassification]: ...
+
+
+class LLMHeadlineClassifier:
+    """Clasificador con LLM: un prompt por lote y respuesta JSON validada con Pydantic."""
+
+    name = "llm"
+
+    def __init__(self, llm: LLMClient) -> None:
+        self.llm = llm
+
+    def classify(self, articles: Sequence[NewsArticle]) -> list[HeadlineClassification]:
+        result = self.llm.complete_json(
+            _build_prompt(articles), NewsClassificationBatch, system=SYSTEM_PROMPT
+        )
+        return list(result.items)
 
 
 @dataclass(frozen=True)
@@ -100,9 +127,17 @@ def _utcnow() -> datetime:
 
 
 class NewsAgent:
+    """Noticias -> clasificación -> vetos.
+
+    Args:
+        llm: ``LLMClient`` (se envuelve en :class:`LLMHeadlineClassifier`), cualquier
+            :class:`HeadlineClassifier`, o ``None`` para clasificar por palabras clave.
+        source: de dónde salen los titulares (RSS o CryptoPanic).
+    """
+
     def __init__(
         self,
-        llm: LLMClient,
+        llm: LLMClient | HeadlineClassifier | None,
         source: NewsSource,
         store: VetoStore | None = None,
         *,
@@ -114,7 +149,15 @@ class NewsAgent:
     ) -> None:
         if batch_size < 1:
             raise ValueError("batch_size debe ser al menos 1")
-        self.llm = llm
+        if llm is None:
+            self.llm: LLMClient | None = None
+            self.classifier: HeadlineClassifier = KeywordClassifier()
+        elif isinstance(llm, LLMClient):
+            self.llm = llm
+            self.classifier = LLMHeadlineClassifier(llm)
+        else:
+            self.llm = None
+            self.classifier = llm
         self.source = source
         self.store = store if store is not None else InMemoryVetoStore(clock)
         self.policy = policy or VetoPolicy()
@@ -141,13 +184,10 @@ class NewsAgent:
         for i in range(0, len(articles), self.batch_size):
             batch = articles[i : i + self.batch_size]
             by_id = {a.id: a for a in batch}
-            result = self.llm.complete_json(
-                _build_prompt(batch), NewsClassificationBatch, system=SYSTEM_PROMPT
-            )
-            for item in result.items:
+            for item in self.classifier.classify(batch):
                 article = by_id.get(item.id)
                 if article is None:
-                    logger.warning("el LLM clasificó un id desconocido: %s", item.id)
+                    logger.warning("el clasificador devolvió un id desconocido: %s", item.id)
                     continue
                 out.append((article, item))
             for article_id in by_id:
