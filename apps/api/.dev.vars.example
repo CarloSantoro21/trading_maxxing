@@ -1,0 +1,3 @@
+# Copia este archivo a .dev.vars para `wrangler dev --env dev --local`.
+# Secreto que el motor de la Mac manda en X-Service-Token a /internal/*.
+SERVICE_TOKEN=dev-service-token-cambiame

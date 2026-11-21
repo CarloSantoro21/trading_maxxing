@@ -67,6 +67,43 @@ jobs:
       - name: Rutas del export
         run: pnpm check:export
 
+  api:
+    # API en Cloudflare Workers (Hono + D1), issue #115.
+    name: API Worker (tsc + vitest + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    env:
+      CI: "true"
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: apps/api/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: apps/api/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Tipos (genera también los reportes del laboratorio)
+        run: pnpm typecheck
+      - name: Pruebas con cobertura (mínimo 70 %) en el runtime de Workers con D1 local
+        run: pnpm test:coverage
+      - name: Build del Worker (wrangler deploy --dry-run, sin publicar)
+        run: pnpm build
+      - name: Publicar cobertura y resultados de pruebas
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-coverage-y-junit
+          path: |
+            apps/api/coverage
+            apps/api/reports/junit.xml
+          if-no-files-found: ignore
+
   docker:
     name: Docker build (${{ matrix.service }})
     runs-on: ubuntu-latest

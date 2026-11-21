@@ -1,0 +1,99 @@
+# Worker de la API de trading_maxxing (issue #115).
+#
+# Hay dos ambientes: `dev` y `production`. Cada uno tiene su propia base D1 (binding "DB").
+# Siempre se usa con --env: `wrangler dev --env dev --local`, `wrangler deploy --env production`.
+#
+# Los `database_id` son placeholders: se sustituyen por los ids reales que devuelve
+# `wrangler d1 create trading-maxxing-dev` (y `-prod`) o el Terraform de la infraestructura.
+# En local (`--local`) el id no importa: wrangler guarda la base en .wrangler/state.
+#
+# Secretos (no van en este archivo; se cargan con `wrangler secret put <NOMBRE> --env <env>`):
+#   SERVICE_TOKEN   token que manda el motor de la Mac en X-Service-Token (/internal/*)
+# En local se ponen en .dev.vars (ver .dev.vars.example).
+
+name = "trading-maxxing-api"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Antes de `wrangler dev` y `wrangler deploy` se genera el JSON de los reportes del
+# laboratorio (docs/estrategias/reportes -> src/generated/lab-reports.json).
+[build]
+command = "pnpm build:reports"
+watch_dir = "scripts"
+
+# APM: logs y trazas de Workers Observability (rúbrica: APM y métricas).
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+invocation_logs = true
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 1
+
+# ---------------------------------------------------------------------------------------
+# Ambiente dev (local con --local y el Worker de desarrollo en la nube)
+# ---------------------------------------------------------------------------------------
+[env.dev]
+name = "trading-maxxing-api-dev"
+
+[env.dev.vars]
+ENVIRONMENT = "dev"
+# dev: usuario fijo (DEV_USER_EMAIL o header X-Dev-User). access: JWT de Cloudflare Access.
+# El Worker dev en la nube debe usar "access"; "dev" es solo para wrangler dev --local.
+AUTH_MODE = "dev"
+DEV_USER_EMAIL = "demo@trading-maxxing.local"
+ACCESS_TEAM_DOMAIN = "trading-maxxing.cloudflareaccess.com"
+ACCESS_AUD = "PLACEHOLDER_ACCESS_AUD_DEV"
+CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
+ENGINE_STALE_SECONDS = "120"
+
+[[env.dev.d1_databases]]
+binding = "DB"
+database_name = "trading-maxxing-dev"
+database_id = "00000000-0000-0000-0000-000000000001"
+migrations_dir = "migrations"
+
+[env.dev.observability]
+enabled = true
+
+[env.dev.observability.logs]
+enabled = true
+invocation_logs = true
+
+[env.dev.observability.traces]
+enabled = true
+
+# ---------------------------------------------------------------------------------------
+# Ambiente production
+# ---------------------------------------------------------------------------------------
+[env.production]
+name = "trading-maxxing-api"
+
+[env.production.vars]
+ENVIRONMENT = "production"
+AUTH_MODE = "access"
+ACCESS_TEAM_DOMAIN = "trading-maxxing.cloudflareaccess.com"
+ACCESS_AUD = "PLACEHOLDER_ACCESS_AUD_PROD"
+CORS_ORIGINS = "https://trading-maxxing.pages.dev"
+ENGINE_STALE_SECONDS = "120"
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "trading-maxxing-prod"
+database_id = "00000000-0000-0000-0000-000000000002"
+migrations_dir = "migrations"
+
+[env.production.observability]
+enabled = true
+
+[env.production.observability.logs]
+enabled = true
+invocation_logs = true
+
+[env.production.observability.traces]
+enabled = true
