@@ -15,13 +15,13 @@ import json
 import logging
 import os
 import signal
-import sys
 import time
 from pathlib import Path
 from typing import Any
 
 from tm_shared.health import health
 
+from tm_engine.logging_setup import setup_json_logging
 from tm_engine.service import Credentials, EngineProfile, TradingEngineService
 
 HEARTBEAT = Path(os.environ.get("HEARTBEAT_FILE", "/tmp/heartbeat"))
@@ -73,20 +73,23 @@ def sleeve_guard_from_env() -> Any | None:
 
 def main(argv: list[str] | None = None) -> None:
     args = argparse.ArgumentParser(prog="tm_engine").parse_known_args(argv)[1]
-    logging.basicConfig(
-        stream=sys.stdout, level=os.environ.get("LOG_LEVEL", "INFO").upper(), force=False
-    )
+    setup_json_logging(service="engine", level=os.environ.get("LOG_LEVEL", "INFO"))
     mode = "testnet" if Credentials.from_env() else "offline"
     print(json.dumps({**health("engine").model_dump(), "mode": mode}), flush=True)
     if "--once" in args:
         return
 
+    profile = EngineProfile.from_env()
+    log.info(
+        "Starting TradingNode",
+        extra={"mode": mode, "symbols": list(profile.symbols), "timeframe": profile.timeframe},
+    )
     service = TradingEngineService(
         redis_client=redis_from_env(),
         recorder=recorder_from_env(),
         sleeve_guard=sleeve_guard_from_env(),
     )
-    service.start(EngineProfile.from_env())
+    service.start(profile)
     running = True
 
     def stop(*_: object) -> None:
