@@ -1,0 +1,35 @@
+{
+  "name": "trading-maxxing-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.12.0",
+  "scripts": {
+    "build:reports": "tsx scripts/build-lab-reports.ts",
+    "predev": "pnpm build:reports",
+    "dev": "wrangler dev --env dev --local",
+    "db:migrate:local": "wrangler d1 migrations apply DB --env dev --local",
+    "db:seed:local": "wrangler d1 execute DB --env dev --local --file seed/seed.sql",
+    "build": "wrangler deploy --dry-run --outdir dist --env production",
+    "typecheck": "pnpm build:reports && tsc --noEmit",
+    "test": "pnpm build:reports && vitest run",
+    "test:coverage": "pnpm build:reports && vitest run --coverage",
+    "deploy:dev": "pnpm build:reports && wrangler deploy --env dev",
+    "deploy:prod": "pnpm build:reports && wrangler deploy --env production"
+  },
+  "dependencies": {
+    "hono": "^4.13.19",
+    "jose": "^6.2.18",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.9.0",
+    "@cloudflare/workers-types": "^5.20261121.1",
+    "@types/node": "24",
+    "@vitest/coverage-istanbul": "4.1.12",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "4.1.12",
+    "wrangler": "^4.166.0"
+  }
+}
