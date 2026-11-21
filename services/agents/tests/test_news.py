@@ -418,7 +418,12 @@ def test_agent_with_cryptopanic_fail_open():
 
 def test_news_agent_from_env():
     agent = news_agent_from_env(
-        {"LLM_PROVIDER": "fake", "CRYPTOPANIC_TOKEN": "t", "NEWS_VETO_HIGH_HOURS": "2"}
+        {
+            "LLM_PROVIDER": "fake",
+            "NEWS_SOURCE": "cryptopanic",
+            "CRYPTOPANIC_TOKEN": "t",
+            "NEWS_VETO_HIGH_HOURS": "2",
+        }
     )
     assert isinstance(agent.llm, FakeLLM)
     assert isinstance(agent.store, InMemoryVetoStore)

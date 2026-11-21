@@ -44,7 +44,9 @@ sirva la vela), para cada estrategia viva cuyo timeframe cerró y para cada sím
    depende de cuántos bots haya.
 3. Consulta el veto vigente del símbolo (global, luego el activo base y luego la moneda de
    cotización), leído de Redis igual que el `NewsAgent`. Si la consulta falla, no veta
-   (fail-open).
+   (fail-open). Las noticias son opcionales y están **apagadas por defecto**
+   (`NEWS_ENABLED=false`): en ese caso la capa recibe `news=None` y no hay veto; el
+   `NewsService` la conecta o desconecta en caliente (ver `services/agents/README.md`, #118).
 4. Si la señal es `long`, corre la SimulationGate (bootstrap histórico con comisión de 0.1 %,
    combinado con las trayectorias de Kronos cuando aplica).
 5. Publica un `SignalEvent` en `tm:signals`.

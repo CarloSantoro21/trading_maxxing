@@ -160,7 +160,12 @@ def test_fake_llm_responder_and_other_model():
 
 def test_build_llm_client():
     c = build_llm_client(
-        {"GROQ_API_KEY": "k", "GROQ_MODEL": "openai/gpt-oss-120b", "LLM_MAX_RETRIES": "1"}
+        {
+            "LLM_PROVIDER": "groq",
+            "GROQ_API_KEY": "k",
+            "GROQ_MODEL": "openai/gpt-oss-120b",
+            "LLM_MAX_RETRIES": "1",
+        }
     )
     assert isinstance(c, GroqClient) and isinstance(c, LLMClient)
     assert c.model == "openai/gpt-oss-120b" and c.max_retries == 1

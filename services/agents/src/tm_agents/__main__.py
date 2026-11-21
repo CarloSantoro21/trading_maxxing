@@ -19,6 +19,12 @@ Con ``REDIS_URL``, ``SUPABASE_URL`` y ``SUPABASE_SERVICE_ROLE_KEY`` corre ademá
 shadow, active y probation, y aplica las degradaciones del LifecycleMonitor. Se apaga con
 ``REFERENCE_SERVICE=0``. Corre cada ``HEARTBEAT_INTERVAL`` segundos.
 
+Noticias y ExplainerAgent (#118) son **opcionales y están apagados por defecto**:
+``NEWS_ENABLED=false`` (no se arma el NewsAgent y la capa compartida recibe ``news=None``) y
+``EXPLAINER_ENABLED=false`` (plantilla determinista). ``LLM_PROVIDER=none`` por defecto. Se
+pueden prender en caliente con ``SETTINGS_SOURCE=worker-api`` (interruptor del admin en D1,
+ver :mod:`tm_agents.orchestrator.settings`).
+
 Sin ``REDIS_URL`` solo escribe el heartbeat (desarrollo y pruebas).
 """
 
@@ -65,13 +71,8 @@ def build_worker(env: Mapping[str, str] | None = None) -> Any | None:
     import redis
     from tm_marketdata.service import MarketDataService
 
-    from tm_agents.news.veto import RedisVetoStore
     from tm_agents.orchestrator.runtime import OrchestratorWorker
-    from tm_agents.orchestrator.shared import (
-        MarketDataBarsProvider,
-        SharedSignalLayer,
-        StoreVetoProvider,
-    )
+    from tm_agents.orchestrator.shared import MarketDataBarsProvider, SharedSignalLayer
     from tm_agents.orchestrator.state import PostgRESTTradeStateRepository
     from tm_agents.orchestrator.streams import (
         DECISIONS_STREAM,
@@ -92,7 +93,10 @@ def build_worker(env: Mapping[str, str] | None = None) -> Any | None:
     symbols = [s.strip().upper() for s in env.get("ORCHESTRATOR_SYMBOLS", "").split(",")]
     symbols = [s for s in symbols if s] or ["BTCUSDT", "ETHUSDT"]
 
+    settings, llm, explainer = build_optional_ai(env)
+
     shared = None
+    news = None
     if _flag(env, "ORCHESTRATOR_SHARED"):
         backend = PostgRESTBackend.from_env(env) if has_supabase else InMemoryBackend()
         shared = SharedSignalLayer(
@@ -100,8 +104,9 @@ def build_worker(env: Mapping[str, str] | None = None) -> Any | None:
             MarketDataBarsProvider(MarketDataService(data_dir=env.get("TM_DATA_DIR") or None)),
             RedisSignalSink(client),
             symbols=symbols,
-            news=StoreVetoProvider(RedisVetoStore(client)),
+            news=None,  # lo conecta NewsService solo si news_enabled está prendido
         )
+        news = news_service_from_env(env, settings, llm, symbols, layer=shared)
     repository = PostgRESTBotRepository.from_env(env) if has_supabase else InMemoryBotRepository()
     # Cada bot reconstruye su libro desde la tabla trades al arrancar (#89).
     trades = PostgRESTTradeStateRepository.from_env(env) if has_supabase else None
@@ -110,6 +115,7 @@ def build_worker(env: Mapping[str, str] | None = None) -> Any | None:
         RedisStreamSink(client, DECISIONS_STREAM),
         shadow_sink=RedisStreamSink(client, SHADOW_STREAM),
         trades=trades,
+        explainer=explainer,
     )
     bots = _flag(env, "ORCHESTRATOR_BOTS")
     return OrchestratorWorker(
@@ -117,6 +123,56 @@ def build_worker(env: Mapping[str, str] | None = None) -> Any | None:
         supervisor if bots else BotSupervisor(InMemoryBotRepository(), _NullSink()),
         RedisSignalSource(client) if bots else _NoSignals(),
         CommandListener(client) if bots else None,
+        news=news,
+    )
+
+
+def build_optional_ai(env: Mapping[str, str]) -> tuple[Any, Any | None, Any]:
+    """Interruptores, cliente de LLM (``None`` con ``LLM_PROVIDER=none``) y ExplainerAgent.
+
+    Si el proveedor elegido no tiene sus llaves, se registra y se sigue **sin LLM**: las
+    noticias caen al clasificador por palabras clave y el explainer a la plantilla.
+    """
+    from tm_agents.explainer import explainer_from_env
+    from tm_agents.llm import build_llm_client, llm_provider
+    from tm_agents.orchestrator.settings import settings_from_env
+
+    settings = settings_from_env(env)
+    try:
+        llm = build_llm_client(env)
+    except Exception as exc:
+        log.warning("LLM_PROVIDER=%s sin configurar; se sigue sin LLM (%s)", llm_provider(env), exc)
+        llm = None
+    explainer = explainer_from_env(
+        env, llm=llm, enabled=lambda: settings.get_bool("explainer_enabled")
+    )
+    log.info(
+        "IA opcional: LLM_PROVIDER=%s, noticias=%s, explainer=%s",
+        llm_provider(env) if llm is not None else "none",
+        "on" if settings.get_bool("news_enabled") else "off",
+        "on" if explainer.uses_llm() else "plantilla",
+    )
+    return settings, llm, explainer
+
+
+def news_service_from_env(
+    env: Mapping[str, str],
+    settings: Any,
+    llm: Any | None,
+    symbols: list[str],
+    *,
+    layer: Any | None = None,
+) -> Any:
+    """``NewsService`` que arma el NewsAgent solo cuando ``news_enabled`` está prendido."""
+    from tm_agents.news import news_agent_from_env
+    from tm_agents.news.service import NewsService
+
+    return NewsService(
+        lambda: settings.get_bool("news_enabled"),
+        lambda: news_agent_from_env(env, llm=llm),
+        symbols,
+        layer=layer,
+        interval=float(env.get("NEWS_REFRESH_SECONDS") or 300),
     )
 
 

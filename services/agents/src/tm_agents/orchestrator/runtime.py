@@ -6,7 +6,9 @@ En vivo, el worker ``agents`` corre las dos capas en el mismo proceso, comunicad
    publica en ``tm:signals``;
 2. el supervisor lee ``tm:signals`` (como cualquier otro consumidor) y ``tm:commands`` y
    publica en ``tm:decisions`` y ``tm:shadow``;
-3. cada ``sync_every`` segundos concilia los bots con la tabla ``bots``.
+3. cada ``sync_every`` segundos concilia los bots con la tabla ``bots``;
+4. si hay ``news`` (:class:`~tm_agents.news.service.NewsService`), le da un ciclo antes de la
+   capa compartida: con las noticias apagadas no hace nada y la capa queda con ``news=None``.
 
 En backtest, :func:`run_offline` usa los mismos componentes con velas de DataFrames, una lista
 como stream de señales y otra como stream de decisiones; las decisiones se pueden pasar al
@@ -82,6 +84,7 @@ class OrchestratorWorker:
         signals: SignalSource,
         commands: CommandListener | None = None,
         *,
+        news: Any | None = None,
         sync_every: float = 60.0,
         settle_seconds: float = 5.0,
         max_catch_up: int = 60,
@@ -91,6 +94,7 @@ class OrchestratorWorker:
         self.supervisor = supervisor
         self.signals = signals
         self.commands = commands
+        self.news = news
         self.sync_every = sync_every
         self.settle = pd.Timedelta(seconds=settle_seconds)
         self.max_catch_up = max_catch_up
@@ -104,6 +108,11 @@ class OrchestratorWorker:
         if time.monotonic() - self._last_sync >= self.sync_every:
             self.supervisor.sync()
             self._last_sync = time.monotonic()
+        if self.news is not None:
+            try:
+                self.news.tick()
+            except Exception:  # fail-open: sin noticias se sigue operando
+                log.exception("falló el ciclo de noticias; se sigue sin filtro")
         # Se espera `settle` después del cierre para que Binance ya sirva la última vela.
         minute = (now - self.settle).floor("1min")
         if self.shared is not None:

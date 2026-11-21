@@ -26,6 +26,7 @@ from typing import Any, Protocol
 import httpx
 from tm_shared.contracts import DecisionEnvelope, Horizon
 
+from tm_agents.explainer import ExplainerAgent
 from tm_agents.orchestrator.bot import (
     BotCommand,
     BotConfig,
@@ -140,13 +141,19 @@ class BotSupervisor:
         shadow_sink: DecisionSink | None = None,
         runner_factory: RunnerFactory | None = None,
         trades: TradeStateRepository | None = None,
+        explainer: ExplainerAgent | None = None,
     ) -> None:
         self.repository = repository
         self.sink = sink
         self.shadow_sink = shadow_sink
         self.trades = trades
+        #: ExplainerAgent que reciben los runners del factory por omisión (#118: apagado =
+        #: plantilla, sin LLM).
+        self.explainer = explainer
         self._factory = runner_factory or (
-            lambda cfg: BotRunner(cfg, self.sink, shadow_sink=self.shadow_sink)
+            lambda cfg: BotRunner(
+                cfg, self.sink, shadow_sink=self.shadow_sink, explainer=self.explainer
+            )
         )
         self.runners: dict[str, BotRunner] = {}
 
