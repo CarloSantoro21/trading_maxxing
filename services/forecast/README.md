@@ -82,6 +82,30 @@ amortiza nada.
 - CPU: el máximo viable bajo 10 s es **9 trayectorias** (9.0 s medido; 10 ya pasa, 10.2 s). 100 tardan ~2 min.
 - MPS: ~15 trayectorias en 10 s (extrapolado de ~0.65 s por trayectoria); 100 tardan ~65 s, la mitad que en CPU.
 
+### KV cache (issue #62)
+
+Se agregó un **KV cache** en la atención del transformer de Kronos (ver
+[`kronos/README.md`](src/tm_forecast/kronos/README.md)): el primer paso hace el
+prefill de las 400 velas y los 23 pasos siguientes solo proyectan Q/K/V del token
+nuevo. Está activo por default (`use_cache=True` en `KronosPredictor.generate`
+y `auto_regressive_inference`); la bandera `use_cache=False` conserva el camino
+anterior para la prueba de equivalencia (`tests/test_kronos_kv_cache.py`).
+
+Medición en el mismo equipo (M5, 16 GB, PyTorch 2.15.0, Kronos-small, 400 velas → 24,
+`uv run python services/forecast/scripts/bench_kronos_cache.py --repeats 2 --warmup 1`,
+mediana de 2 corridas sin contar el warmup):
+
+| Trayectorias | `mps` sin cache | `mps` con cache | `cpu` sin cache | `cpu` con cache |
+|---|---|---|---|---|
+| 10 | 1.70 s | **0.30 s** (5.7×) | 6.43 s | **1.22 s** (5.3×) |
+| 25 | 4.22 s | **0.60 s** (7.0×) | 11.9 s | **2.03 s** (5.9×) |
+| 50 | 8.57 s | **1.15 s** (7.5×) | 23.1 s | **3.78 s** (6.1×) |
+| 100 | 20.4 s | **2.44 s** (8.3×) | 48.0 s | **9.54 s** (5.0×) |
+
+Con el cache **100 trayectorias en CPU caben bajo 10 s** (9.5 s medido), que era el
+criterio del issue original, y en MPS 100 trayectorias cuestan ~2.4 s en lugar de ~65 s.
+El precálculo del backtest (`scripts/precompute.py`) hereda la misma mejora.
+
 Implicaciones para el resto del sistema:
 
 - En producción (velas de 15 min) 100 trayectorias en ~65 s con `mps` caben de sobra en el
