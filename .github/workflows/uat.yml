@@ -1,0 +1,130 @@
+name: UAT (Playwright contra dev)
+
+# UAT del flujo completo contra el deploy de dev (#28).
+#
+# Esta corrida se dispara DESPUÉS de que el pipeline de deploy a dev termina en verde
+# (ver #27 y #45) y es un gate obligatorio: si falla, el job de promoción a prod no
+# corre. El reporte HTML y el JUnit se suben como artifacts para revisar fallos.
+#
+# Estado actual: el pipeline de deploy a dev todavía no existe (se trabaja en #27/#45).
+# Mientras tanto este workflow está como `workflow_dispatch` y como `workflow_run` del
+# único workflow que hoy publica el frontend (`Deploy web (Cloudflare Pages)`).
+#
+# TODO (#27, #45): cuando aterricen los workflows que despliegan API/agents/engine a
+# dev, cambiar el disparador de `workflow_run` para que escuche el que termina el
+# deploy completo a dev y agregar aquí el job `promote-to-prod` con `needs: uat`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_url:
+        description: "URL del frontend ya desplegado en dev (si se omite, usa el secret APP_URL)"
+        required: false
+        default: ""
+      api_url:
+        description: "URL de la API ya desplegada en dev (si se omite, usa el secret API_URL)"
+        required: false
+        default: ""
+  workflow_run:
+    # Cuando el pipeline de deploy a dev exista, cambiar esto por su nombre.
+    # Mientras tanto escuchamos el único workflow que hoy publica a Pages.
+    workflows: ["Deploy web (Cloudflare Pages)"]
+    types: [completed]
+
+concurrency:
+  group: uat-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  uat:
+    name: UAT (Playwright)
+    # workflow_run solo ejecuta si el deploy terminó en success. workflow_dispatch siempre.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    env:
+      APP_URL: ${{ github.event.inputs.app_url || secrets.APP_URL }}
+      API_URL: ${{ github.event.inputs.api_url || secrets.API_URL }}
+      DEMO_EMAIL: ${{ secrets.DEMO_EMAIL }}
+      DEMO_PASSWORD: ${{ secrets.DEMO_PASSWORD }}
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - name: Revisar secrets de la UAT
+        id: creds
+        working-directory: .
+        run: |
+          missing=()
+          [ -z "$APP_URL" ]      && missing+=("APP_URL")
+          [ -z "$DEMO_EMAIL" ]   && missing+=("DEMO_EMAIL")
+          [ -z "$DEMO_PASSWORD" ]&& missing+=("DEMO_PASSWORD")
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            msg="Faltan secrets para la UAT: ${missing[*]}. Ver docs/e2e-checklist.md."
+            echo "::warning title=UAT omitida::$msg"
+            {
+              echo "### UAT omitida"
+              echo "$msg"
+              echo ""
+              echo "Esta corrida salió en verde sin verificar nada. Configura los secrets"
+              echo "del repo (Settings → Secrets and variables → Actions) y vuelve a lanzarla."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.creds.outputs.ok == 'true'
+
+      - uses: pnpm/action-setup@v4
+        if: steps.creds.outputs.ok == 'true'
+        with:
+          package_json_file: apps/web/package.json
+
+      - uses: actions/setup-node@v4
+        if: steps.creds.outputs.ok == 'true'
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+
+      - name: Instalar dependencias
+        if: steps.creds.outputs.ok == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Instalar navegador (chromium)
+        if: steps.creds.outputs.ok == 'true'
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Correr UAT
+        if: steps.creds.outputs.ok == 'true'
+        run: pnpm e2e:uat
+
+      - name: Subir reporte de Playwright
+        if: always() && steps.creds.outputs.ok == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Placeholder del gate a prod. Hoy no corre porque el pipeline de prod todavía no
+  # existe (#27/#45). Cuando exista, moveremos este job al workflow de deploy-prod y
+  # le pondremos `needs: uat` (de este workflow, vía `workflow_run`) para que el fallo
+  # de la UAT corte la promoción.
+  promote-to-prod:
+    name: Promover a prod (placeholder)
+    needs: uat
+    if: ${{ false }}  # TODO(#27, #45): habilitar cuando el deploy-prod exista.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pendiente
+        run: |
+          echo "El job de promoción a prod aterrizará junto con el pipeline de deploy" \
+               "a prod (#27, #45). Mientras tanto este stub documenta la dependencia:" \
+               "`needs: uat` bloquea la promoción si la UAT falla."

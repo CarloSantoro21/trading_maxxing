@@ -165,7 +165,7 @@ def build_node(profile: EngineProfile, credentials: Credentials, strategy: Agent
     }
     config = TradingNodeConfig(
         trader_id=TraderId(profile.trader_id),
-        # Logs a stdout (los recoge Docker / CloudWatch).
+        # Stdout → Azure App Service → Log Analytics / Application Insights (ver #29).
         logging=LoggingConfig(log_level=profile.log_level, log_colors=False),
         exec_engine=LiveExecEngineConfig(reconciliation=True),
         data_clients={BINANCE: BinanceDataClientConfig(**common)},
@@ -235,11 +235,25 @@ class TradingEngineService:
             log.warning("motor en modo sin conexión: %s", self.error)
             return self.mode
         assert isinstance(self._credentials, Credentials)
+        log.info(
+            "Starting TradingNode",
+            extra={
+                "venue": "BINANCE",
+                "environment": "testnet",
+                "symbols": list(self.profile.symbols),
+                "timeframe": self.profile.timeframe,
+            },
+        )
         self._node = self._node_factory(self.profile, self._credentials, self.strategy)
         self._thread = threading.Thread(target=self._run_node, name="tm-engine-node", daemon=True)
         self._thread.start()
         self.mode = EngineMode.TESTNET
+        # Mensaje histórico (en español) + mensaje canónico para el issue #11 (en inglés).
         log.info("motor conectado a Binance Spot Testnet (%s)", ",".join(self.profile.symbols))
+        log.info(
+            "Connected to Binance Testnet",
+            extra={"symbols": list(self.profile.symbols), "timeframe": self.profile.timeframe},
+        )
         return self.mode
 
     def _restore_positions(self, strategy: AgenticStrategy) -> int:

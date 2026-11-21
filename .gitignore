@@ -19,6 +19,10 @@ coverage/
 *.tsbuildinfo
 next-env.d.ts
 
+# Playwright (reportes y resultados de las pruebas E2E/UAT)
+playwright-report/
+test-results/
+
 # Entorno y secretos
 .env
 .env.*
@@ -42,5 +46,6 @@ infra/**/backend.hcl
 # Sistema
 .DS_Store
 
-# Claude Code (worktrees de agentes, configuración local)
-.claude/
+# Claude Code (worktrees de agentes, configuración local): ignorar todo salvo las skills.
+.claude/*
+!.claude/skills/
