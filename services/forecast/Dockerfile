@@ -13,7 +13,6 @@ WORKDIR /app
 # 1) Solo manifiestos: esta capa se cachea mientras no cambien las dependencias
 COPY pyproject.toml uv.lock ./
 COPY packages/shared/pyproject.toml packages/shared/
-COPY services/api/pyproject.toml services/api/
 COPY services/agents/pyproject.toml services/agents/
 COPY services/forecast/pyproject.toml services/forecast/
 COPY services/engine/pyproject.toml services/engine/

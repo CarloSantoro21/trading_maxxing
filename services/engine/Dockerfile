@@ -14,7 +14,6 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 COPY packages/shared/pyproject.toml packages/shared/
 COPY packages/marketdata/pyproject.toml packages/marketdata/
-COPY services/api/pyproject.toml services/api/
 COPY services/agents/pyproject.toml services/agents/
 COPY services/forecast/pyproject.toml services/forecast/
 COPY services/engine/pyproject.toml services/engine/
