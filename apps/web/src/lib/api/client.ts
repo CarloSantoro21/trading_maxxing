@@ -1,37 +1,38 @@
 /**
- * Cliente de services/api (FastAPI) para el navegador.
+ * Cliente de la API (Cloudflare Worker `apps/api`) para el navegador.
  *
- * Las lecturas van directo a Supabase con supabase-js (RLS), pero las acciones con efectos
- * fuera de la base pasan por la API: arrancar, detener y el paro de emergencia publican en
- * el stream `tm:commands` de Redis (#21), y promover o retirar estrategias exige el rol de
- * admin (#67). Cada llamada lleva el `access_token` de la sesión de Supabase en
- * `Authorization: Bearer`, así que la API (y RLS detrás de ella) sabe quién es.
+ * Todo pasa por el mismo origen: en Cloudflare Pages la Pages Function
+ * `functions/api/[[path]].ts` reenvía `/api/*` al Worker por service binding, y en local
+ * `next dev` lo reenvía a `wrangler dev` (http://localhost:8787, ver next.config.ts). Así no
+ * hay CORS y la cookie de Cloudflare Access (`CF_Authorization`) viaja sola: el frontend no
+ * maneja tokens. El contrato está en docs/arquitectura/api.md.
+ *
+ * `NEXT_PUBLIC_API_BASE` (opcional) apunta las llamadas a otro origen, p. ej.
+ * `http://localhost:8787` para hablarle directo al Worker local sin el proxy de `next dev`.
  */
+
+export const API_PREFIX = "/api";
+
+export function apiBase(): string {
+  // Next.js reemplaza la referencia en tiempo de build; debe escribirse literal.
+  const origin = (process.env.NEXT_PUBLIC_API_BASE ?? "").trim().replace(/\/+$/, "");
+  return `${origin}${API_PREFIX}`;
+}
 
 export class ApiError extends Error {
   readonly status: number;
+  /** Cuerpo de la respuesta de error (p. ej. `{detail, request_id}` en un 500). */
+  readonly body: unknown;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, body?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.body = body;
   }
 }
 
-export class MissingApiConfigError extends Error {
-  constructor() {
-    super("Falta NEXT_PUBLIC_API_URL (p. ej. http://127.0.0.1:8000) en apps/web/.env.local.");
-    this.name = "MissingApiConfigError";
-  }
-}
-
-export function getApiUrl(): string | null {
-  // Next.js reemplaza esta referencia en tiempo de build; debe escribirse literal.
-  const url = process.env.NEXT_PUBLIC_API_URL;
-  return url ? url.replace(/\/+$/, "") : null;
-}
-
-/** Mensaje legible a partir del cuerpo de error de FastAPI (`detail` texto o lista). */
+/** Mensaje legible del cuerpo de error de la API (`detail` texto o lista de validación). */
 export function errorDetail(body: unknown, status: number): string {
   if (body && typeof body === "object" && "detail" in body) {
     const detail = (body as { detail: unknown }).detail;
@@ -43,39 +44,49 @@ export function errorDetail(body: unknown, status: number): string {
       if (msgs.length) return msgs.join("; ");
     }
   }
-  if (status === 401) return "Tu sesión expiró; vuelve a iniciar sesión.";
+  if (status === 401) return "Tu sesión de Cloudflare Access expiró; recarga la página para volver a entrar.";
   if (status === 403) return "No tienes permiso para hacer esto.";
   return `La API respondió con un error (${status}).`;
 }
 
+export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
 export interface ApiRequestOptions {
-  token: string;
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  method?: HttpMethod;
   body?: unknown;
-  /** Inyectable para pruebas. */
-  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
 }
 
-export async function apiRequest<T>(path: string, options: ApiRequestOptions): Promise<T> {
-  const base = getApiUrl();
-  if (!base) throw new MissingApiConfigError();
-  const { token, method = "GET", body, fetchImpl = fetch } = options;
-  const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+/**
+ * Llama a `/api{path}` y devuelve el JSON (o `undefined` con 204). Lanza `ApiError` con el
+ * `detail` de la API si la respuesta no es 2xx, y con status 0 si no hubo conexión.
+ */
+export async function apiFetch<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
+  const { method = "GET", body, signal } = options;
+  const headers: Record<string, string> = { Accept: "application/json" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
 
   let response: Response;
   try {
-    response = await fetchImpl(`${base}${path}`, {
+    response = await fetch(`${apiBase()}${path}`, {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
+      credentials: "include",
+      // Si la sesión de Access expiró, Access responde con una redirección a su login;
+      // no la seguimos (fallaría por CORS) y la tratamos como 401.
+      redirect: "manual",
+      signal,
     });
-  } catch {
-    throw new ApiError(0, `No se pudo conectar con la API en ${base}. ¿Está corriendo \`make up\`?`);
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") throw err;
+    throw new ApiError(0, "No se pudo conectar con la API. Revisa tu conexión y vuelve a intentar.");
   }
 
+  if (response.type === "opaqueredirect") throw new ApiError(401, errorDetail(null, 401));
+
   const text = await response.text();
-  let parsed: unknown = null;
+  let parsed: unknown = undefined;
   if (text) {
     try {
       parsed = JSON.parse(text);
@@ -83,11 +94,46 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions): P
       parsed = text;
     }
   }
-  if (!response.ok) throw new ApiError(response.status, errorDetail(parsed, response.status));
+  if (!response.ok) throw new ApiError(response.status, errorDetail(parsed, response.status), parsed);
   return parsed as T;
 }
 
-// --- bots (#21) ------------------------------------------------------------------------
+/** Fetcher para SWR: la llave es la ruta (sin `/api`). */
+export function swrFetcher<T>(path: string): Promise<T> {
+  return apiFetch<T>(path);
+}
+
+/** Mensaje para mostrar al usuario a partir de cualquier error de una llamada. */
+export function apiErrorMessage(err: unknown): string {
+  if (err instanceof ApiError) return err.message;
+  return "Ocurrió un error inesperado. Intenta de nuevo.";
+}
+
+// --- usuario y sesión ------------------------------------------------------------------
+
+export type Role = "admin" | "member";
+
+export interface Profile {
+  id: string;
+  user_id: string;
+  horizon: string | null;
+  risk_level: number;
+  capital: number;
+  max_drawdown: number | null;
+  instruments: string[] | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** GET /api/me */
+export interface Me {
+  id: string;
+  email: string;
+  role: Role;
+  profile: Profile | null;
+}
+
+// --- bots ------------------------------------------------------------------------------
 
 export type BotStatus = "stopped" | "running" | "paused" | "killed";
 
@@ -106,29 +152,23 @@ export interface BotCommandResult {
   command_id: string;
 }
 
-type Opts = Omit<ApiRequestOptions, "method" | "body">;
-
-export function createBot(name: string, opts: Opts): Promise<ApiBot> {
-  return apiRequest<ApiBot>("/bots", { ...opts, method: "POST", body: { name } });
+export function createBot(name: string): Promise<ApiBot> {
+  return apiFetch<ApiBot>("/bots", { method: "POST", body: { name } });
 }
 
-export function startBot(botId: string, opts: Opts): Promise<BotCommandResult> {
-  return apiRequest(`/bots/${encodeURIComponent(botId)}/start`, { ...opts, method: "POST" });
+export function startBot(botId: string): Promise<BotCommandResult> {
+  return apiFetch(`/bots/${encodeURIComponent(botId)}/start`, { method: "POST" });
 }
 
-export function stopBot(botId: string, opts: Opts): Promise<BotCommandResult> {
-  return apiRequest(`/bots/${encodeURIComponent(botId)}/stop`, { ...opts, method: "POST" });
+export function stopBot(botId: string): Promise<BotCommandResult> {
+  return apiFetch(`/bots/${encodeURIComponent(botId)}/stop`, { method: "POST" });
 }
 
-export function killBot(botId: string, reason: string, opts: Opts): Promise<BotCommandResult> {
-  return apiRequest(`/bots/${encodeURIComponent(botId)}/kill`, {
-    ...opts,
-    method: "POST",
-    body: { reason },
-  });
+export function killBot(botId: string, reason: string): Promise<BotCommandResult> {
+  return apiFetch(`/bots/${encodeURIComponent(botId)}/kill`, { method: "POST", body: { reason } });
 }
 
-// --- estrategias (#58, #67) -------------------------------------------------------------
+// --- estrategias -----------------------------------------------------------------------
 
 export type StrategyAction = "promote" | "retire";
 
@@ -139,21 +179,73 @@ export interface StrategyTransitionResult {
   reason: string;
 }
 
-export function transitionStrategy(
-  name: string,
-  action: StrategyAction,
-  reason: string,
-  opts: Opts,
-): Promise<StrategyTransitionResult> {
-  return apiRequest(`/strategies/${encodeURIComponent(name)}/${action}`, {
-    ...opts,
-    method: "POST",
-    body: { reason },
-  });
+export function transitionStrategy(name: string, action: StrategyAction, reason: string): Promise<StrategyTransitionResult> {
+  return apiFetch(`/strategies/${encodeURIComponent(name)}/${action}`, { method: "POST", body: { reason } });
 }
 
-/** Mensaje para mostrar al usuario a partir de cualquier error de una llamada. */
-export function apiErrorMessage(err: unknown): string {
-  if (err instanceof ApiError || err instanceof MissingApiConfigError) return err.message;
-  return "Ocurrió un error inesperado. Intenta de nuevo.";
+// --- motor -----------------------------------------------------------------------------
+
+export interface EngineComponent {
+  component: string;
+  status: string;
+  version: string | null;
+  host: string | null;
+  started_at: string | null;
+  last_seen_at: string;
+  age_seconds: number;
+  online: boolean;
+  details?: unknown;
+}
+
+/** GET /api/engine/status */
+export interface EngineStatus {
+  online: boolean;
+  last_heartbeat_at: string | null;
+  stale_after_seconds: number;
+  components: EngineComponent[];
+}
+
+// --- ajustes y administración ----------------------------------------------------------
+
+export interface Settings {
+  news_enabled: boolean;
+  explainer_enabled: boolean;
+}
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  role: Role;
+  created_at: string;
+  updated_at: string;
+}
+
+export function createUser(email: string, role: Role): Promise<AdminUser> {
+  return apiFetch("/admin/users", { method: "POST", body: { email, role } });
+}
+
+export function updateUserRole(id: string, role: Role): Promise<AdminUser> {
+  return apiFetch(`/admin/users/${encodeURIComponent(id)}`, { method: "PATCH", body: { role } });
+}
+
+export function deleteUser(id: string): Promise<void> {
+  return apiFetch(`/admin/users/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export function updateSettings(patch: Partial<Settings>): Promise<Settings> {
+  return apiFetch("/admin/settings", { method: "PUT", body: patch });
+}
+
+/** Error 500 a propósito para la demo de APM; devuelve el request_id que dio la API. */
+export async function triggerDemoError(): Promise<string | null> {
+  try {
+    await apiFetch("/admin/debug/error", { method: "POST" });
+    return null;
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 500) {
+      const body = err.body as { request_id?: unknown } | undefined;
+      return typeof body?.request_id === "string" ? body.request_id : null;
+    }
+    throw err;
+  }
 }

@@ -1,39 +1,78 @@
-import type { Session } from "@supabase/supabase-js";
-import { render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
-import { AuthProvider } from "@/components/auth/AuthProvider";
-import { createFakeSupabase } from "@/test/fakeSupabase";
-import { AppShell, NAV_LINKS } from "./AppShell";
+import { screen, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { RequireAuth } from "@/components/auth/RequireAuth";
+import { DEMO_ME, ENGINE_ONLINE, mockApi, type Routes } from "@/test/api";
+import { renderWithApi } from "@/test/render";
+import { ADMIN_LINK, AppShell, NAV_LINKS } from "./AppShell";
 
-const replace = vi.fn();
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ replace, push: vi.fn() }),
+  useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
   usePathname: () => "/strategies",
 }));
 
+afterEach(() => vi.unstubAllEnvs());
+
+function renderShell(routes: Routes = {}) {
+  mockApi(routes);
+  renderWithApi(
+    <RequireAuth>
+      <AppShell>
+        <p>contenido</p>
+      </AppShell>
+    </RequireAuth>,
+  );
+}
+
+function navHrefs() {
+  const nav = screen.getByRole("navigation", { name: "Principal" });
+  return within(nav)
+    .getAllByRole("link")
+    .map((a) => a.getAttribute("href"));
+}
+
 describe("AppShell", () => {
-  it("navega entre dashboard, estrategias y perfil, y cierra sesión", async () => {
-    const fake = createFakeSupabase();
-    fake.auth.getSession.mockResolvedValue({
-      data: { session: { user: { id: "u1", email: "ana@iteso.mx" } } as unknown as Session },
-      error: null,
-    });
-    render(
-      <AuthProvider client={fake.client}>
-        <AppShell>
-          <p>contenido</p>
-        </AppShell>
-      </AuthProvider>,
-    );
-    const nav = screen.getByRole("navigation", { name: "Principal" });
-    const links = Array.from(nav.querySelectorAll("a")).map((a) => a.getAttribute("href"));
-    expect(links).toEqual(NAV_LINKS.map((l) => l.href));
+  it("navega entre las páginas y cierra sesión con el logout de Access", async () => {
+    renderShell({ "GET /me": { ...DEMO_ME, email: "ana@iteso.mx" } });
+    expect(await screen.findByText("ana@iteso.mx")).toBeInTheDocument();
+    expect(navHrefs()).toEqual(NAV_LINKS.map((l) => l.href));
     expect(screen.getByRole("link", { name: "Estrategias" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("link", { name: "Dashboard" })).not.toHaveAttribute("aria-current");
-    expect(await screen.findByText("ana@iteso.mx")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Cerrar sesión" }));
-    await waitFor(() => expect(replace).toHaveBeenCalledWith("/login"));
-    expect(fake.auth.signOut).toHaveBeenCalled();
+    expect(screen.getByRole("link", { name: "Cerrar sesión" })).toHaveAttribute("href", "/cdn-cgi/access/logout");
+    expect(screen.getByText("contenido")).toBeInTheDocument();
+  });
+
+  it("al admin le muestra la liga al panel de admin", async () => {
+    renderShell({ "GET /me": { ...DEMO_ME, role: "admin" } });
+    await screen.findByText("contenido");
+    expect(navHrefs()).toEqual([...NAV_LINKS, ADMIN_LINK].map((l) => l.href));
+  });
+
+  it("indica si el motor está en línea", async () => {
+    renderShell();
+    expect(await screen.findByText("Motor en línea")).toBeInTheDocument();
+  });
+
+  it("indica si el motor está desconectado", async () => {
+    renderShell({ "GET /engine/status": { ...ENGINE_ONLINE, online: false } });
+    expect(await screen.findByText("Motor desconectado")).toBeInTheDocument();
+  });
+
+  it("si la API del motor falla lo marca como desconectado", async () => {
+    renderShell({ "GET /engine/status": { status: 500, body: { detail: "caída" } } });
+    expect(await screen.findByText("Motor desconectado")).toBeInTheDocument();
+  });
+
+  it("muestra el ambiente y el commit del build", async () => {
+    vi.stubEnv("NEXT_PUBLIC_ENV", "dev");
+    vi.stubEnv("NEXT_PUBLIC_COMMIT_SHA", "abc1234def5678");
+    renderShell();
+    expect(await screen.findByTestId("env-badge")).toHaveTextContent("dev·abc1234");
+  });
+
+  it("sin variables el badge dice local", async () => {
+    vi.stubEnv("NEXT_PUBLIC_ENV", "");
+    vi.stubEnv("NEXT_PUBLIC_COMMIT_SHA", "");
+    renderShell();
+    expect(await screen.findByTestId("env-badge")).toHaveTextContent("local·sin versión");
   });
 });

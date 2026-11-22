@@ -1,6 +1,4 @@
-import { apiFetch, type Fetcher } from "@/lib/tmApi";
-
-/** GET /goals y GET /goals/{id}/probability (Monte Carlo #3, #38). */
+/** GET /api/goals y GET /api/goals/{id}/probability (Monte Carlo #3, #38). */
 
 export interface GoalRow {
   id: string;
@@ -51,12 +49,11 @@ export interface GoalProbability {
   notes: string[];
 }
 
-export function listGoals(token: string, fetcher?: Fetcher) {
-  return apiFetch<GoalRow[]>("/goals", token, {}, fetcher);
-}
+/** Llaves de SWR (rutas de la API). */
+export const GOALS_KEY = "/goals";
 
-export function getGoalProbability(token: string, goalId: string, fetcher?: Fetcher) {
-  return apiFetch<GoalProbability>(`/goals/${encodeURIComponent(goalId)}/probability`, token, {}, fetcher);
+export function goalProbabilityKey(goalId: string) {
+  return `/goals/${encodeURIComponent(goalId)}/probability`;
 }
 
 /** Datos del abanico para Recharts: banda p10–p90 como rango y la mediana como línea. */

@@ -1,9 +1,9 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { AuthProvider } from "@/components/auth/AuthProvider";
-import { fakeFetcher, sessionClient } from "@/test/fakeApi";
+import { mockApi, type ApiCall, type Routes } from "@/test/api";
 import { DETAIL, SUMMARY } from "@/test/fixtures";
+import { renderWithApi } from "@/test/render";
 import { BacktestsView } from "./BacktestsView";
 
 vi.mock("next/navigation", () => ({
@@ -13,12 +13,10 @@ vi.mock("next/navigation", () => ({
 
 beforeEach(() => window.history.replaceState(null, "", "/backtests"));
 
-function renderView(fetcher: ReturnType<typeof fakeFetcher>) {
-  render(
-    <AuthProvider client={sessionClient()}>
-      <BacktestsView fetcher={fetcher} />
-    </AuthProvider>,
-  );
+function renderView(routes: Routes) {
+  const api = mockApi(routes);
+  renderWithApi(<BacktestsView />);
+  return api;
 }
 
 const JOB = {
@@ -35,12 +33,11 @@ const JOB = {
 
 describe("BacktestsView", () => {
   it("lista los reportes y abre el detalle con veredicto, ventanas y Monte Carlo", async () => {
-    const fetcher = fakeFetcher({
+    renderView({
       "GET /lab/reports": [SUMMARY],
       "GET /lab/reports/trend": DETAIL,
       "GET /backtests": [JOB],
     });
-    renderView(fetcher);
     const table = await screen.findByRole("table", { name: "Reportes del laboratorio de walk-forward" });
     expect(within(table).getByText("42.0 %")).toBeInTheDocument();
     expect(await screen.findByText(/Falló: sin datos/)).toBeInTheDocument();
@@ -61,19 +58,17 @@ describe("BacktestsView", () => {
 
   it("abre el reporte indicado en ?report= y muestra el error si no existe", async () => {
     window.history.replaceState(null, "", "/backtests?report=nope");
-    renderView(fakeFetcher({ "GET /lab/reports": [], "GET /backtests": [] }));
+    renderView({ "GET /lab/reports": [], "GET /backtests": [] });
     expect(await screen.findByRole("alert")).toHaveTextContent("sin ruta GET /lab/reports/nope");
   });
 
   it("muestra el p95 en texto cuando el reporte no trae histograma", async () => {
     window.history.replaceState(null, "", "/backtests?report=trend");
-    renderView(
-      fakeFetcher({
-        "GET /lab/reports": [],
-        "GET /lab/reports/trend": { ...DETAIL, drawdown_histogram: null, checks: [], reasons: ["r1"], windows: [], equity: [] },
-        "GET /backtests": [],
-      }),
-    );
+    renderView({
+      "GET /lab/reports": [],
+      "GET /lab/reports/trend": { ...DETAIL, drawdown_histogram: null, checks: [], reasons: ["r1"], windows: [], equity: [] },
+      "GET /backtests": [],
+    });
     expect(await screen.findByText(/no trae la curva diaria/)).toBeInTheDocument();
     expect(screen.getByText("r1")).toBeInTheDocument();
     expect(screen.getByText("El reporte no trae ventanas.")).toBeInTheDocument();
@@ -81,28 +76,25 @@ describe("BacktestsView", () => {
   });
 
   it("muestra los estados vacíos y el error de la lista", async () => {
-    renderView(
-      fakeFetcher({
-        "GET /lab/reports": { status: 500, body: { detail: "caída" } },
-        "GET /backtests": [],
-      }),
-    );
+    renderView({
+      "GET /lab/reports": { status: 500, body: { detail: "caída" } },
+      "GET /backtests": [],
+    });
     expect(await screen.findByRole("alert")).toHaveTextContent("caída");
     expect(screen.getByText("No has encolado backtests.")).toBeInTheDocument();
   });
 
   it("encola un backtest y recarga la lista", async () => {
     let jobs: unknown[] = [];
-    const fetcher = fakeFetcher({
+    const api = renderView({
       "GET /lab/reports": [],
       "GET /backtests": () => ({ body: jobs }),
-      "POST /backtests": (init: RequestInit | undefined) => {
-        const body = JSON.parse(String(init?.body));
+      "POST /backtests": (call: ApiCall) => {
+        const body = call.body as { config: Record<string, unknown> };
         jobs = [{ ...JOB, status: "queued", error: null, config: body.config }];
-        return { status: 201, body: jobs[0] };
+        return { status: 202, body: jobs[0] };
       },
     });
-    renderView(fetcher);
     expect(await screen.findByText("Todavía no hay reportes del laboratorio.")).toBeInTheDocument();
     await userEvent.click(screen.getByLabelText("ETHUSDT"));
     await userEvent.click(screen.getByLabelText("Kronos"));
@@ -112,8 +104,8 @@ describe("BacktestsView", () => {
     await userEvent.click(screen.getByRole("button", { name: "Encolar backtest" }));
     expect(await screen.findByRole("status")).toHaveTextContent("Backtest encolado (12345678)");
     expect(await screen.findByText("En cola")).toBeInTheDocument();
-    const post = fetcher.mock.calls.find(([, i]) => (i as RequestInit | undefined)?.method === "POST");
-    expect(JSON.parse(String((post![1] as RequestInit).body)).config).toMatchObject({
+    const post = api.calls.find((c) => c.method === "POST");
+    expect((post?.body as { config: unknown }).config).toMatchObject({
       symbols: ["BTCUSDT"],
       strategies: ["trend", "kronos"],
       timeframe: "4h",
@@ -123,13 +115,11 @@ describe("BacktestsView", () => {
   });
 
   it("valida el formulario y muestra el error de la API", async () => {
-    renderView(
-      fakeFetcher({
-        "GET /lab/reports": [],
-        "GET /backtests": [],
-        "POST /backtests": { status: 403, body: { detail: "sin permiso" } },
-      }),
-    );
+    renderView({
+      "GET /lab/reports": [],
+      "GET /backtests": [],
+      "POST /backtests": { status: 403, body: { detail: "sin permiso" } },
+    });
     await screen.findByText("Todavía no hay reportes del laboratorio.");
     await userEvent.click(screen.getByLabelText("BTCUSDT"));
     await userEvent.click(screen.getByLabelText("ETHUSDT"));

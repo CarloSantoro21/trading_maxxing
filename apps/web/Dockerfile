@@ -21,14 +21,19 @@ WORKDIR /app
 RUN corepack enable
 ENV NEXT_TELEMETRY_DISABLED=1
 # Variables públicas: Next.js las incrusta en el bundle durante el build, así que cambiar
-# de entorno implica reconstruir la imagen. Sin ellas la imagen se construye igual y la app
-# muestra un aviso de configuración.
-ARG NEXT_PUBLIC_SUPABASE_URL=""
-ARG NEXT_PUBLIC_SUPABASE_ANON_KEY=""
-ARG NEXT_PUBLIC_API_URL=""
-ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
-    NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY \
-    NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+# de entorno implica reconstruir la imagen.
+#   NEXT_PUBLIC_ENV         ambiente del badge del encabezado (local | dev | prod)
+#   NEXT_PUBLIC_COMMIT_SHA  commit del build (se muestra corto en el badge)
+#   NEXT_PUBLIC_API_BASE    origen de la API. En Pages va vacío (mismo origen, la Pages
+#                           Function reenvía /api/*). En la imagen, nginx no tiene proxy,
+#                           así que apúntalo al Worker local: http://localhost:8787
+#                           (wrangler dev --env dev, AUTH_MODE=dev y CORS para :3000).
+ARG NEXT_PUBLIC_ENV="local"
+ARG NEXT_PUBLIC_COMMIT_SHA=""
+ARG NEXT_PUBLIC_API_BASE="http://localhost:8787"
+ENV NEXT_PUBLIC_ENV=$NEXT_PUBLIC_ENV \
+    NEXT_PUBLIC_COMMIT_SHA=$NEXT_PUBLIC_COMMIT_SHA \
+    NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN pnpm build && pnpm check:export

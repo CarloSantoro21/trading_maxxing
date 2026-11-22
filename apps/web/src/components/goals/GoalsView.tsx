@@ -1,19 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useAuth } from "@/components/auth/AuthProvider";
-import { SectionNav } from "@/components/nav/SectionNav";
+import Link from "next/link";
+import { useState } from "react";
+import useSWR from "swr";
 import { cardClass, inputClass, labelClass } from "@/components/ui/styles";
+import { apiErrorMessage } from "@/lib/api/client";
 import { pct, usd } from "@/lib/backtests/format";
 import {
+  GOALS_KEY,
   SOURCE_LABEL,
-  getGoalProbability,
-  listGoals,
+  goalProbabilityKey,
   probabilityLabel,
   type GoalProbability,
   type GoalRow,
 } from "@/lib/goals/probability";
-import type { Fetcher } from "@/lib/tmApi";
 import { GoalFanChart } from "./GoalFanChart";
 
 function ProbabilityCard({ projection }: { projection: GoalProbability }) {
@@ -73,48 +73,20 @@ function ProbabilityCard({ projection }: { projection: GoalProbability }) {
 }
 
 /** Página /goals: elige una meta y muestra su probabilidad (Monte Carlo #3). */
-export function GoalsView({ fetcher }: { fetcher?: Fetcher }) {
-  const { session } = useAuth();
-  const token = session?.access_token ?? "";
-  const [goals, setGoals] = useState<GoalRow[] | null>(null);
-  const [goalId, setGoalId] = useState<string>("");
-  const [projection, setProjection] = useState<GoalProbability | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (!token) return;
-    let active = true;
-    listGoals(token, fetcher)
-      .then((g) => {
-        if (!active) return;
-        setGoals(g);
-        if (g.length > 0) setGoalId(g[0].id);
-      })
-      .catch((err) => active && setError(err instanceof Error ? err.message : String(err)));
-    return () => {
-      active = false;
-    };
-  }, [token, fetcher]);
-
-  useEffect(() => {
-    if (!token || !goalId) return;
-    let active = true;
-    setLoading(true);
-    setError(null);
-    setProjection(null);
-    getGoalProbability(token, goalId, fetcher)
-      .then((p) => active && setProjection(p))
-      .catch((err) => active && setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => active && setLoading(false));
-    return () => {
-      active = false;
-    };
-  }, [token, goalId, fetcher]);
+export function GoalsView() {
+  const [chosen, setChosen] = useState<string>("");
+  const { data: goals, error: goalsError } = useSWR<GoalRow[]>(GOALS_KEY);
+  const goalId = chosen || goals?.[0]?.id || "";
+  const {
+    data: projection,
+    error: projectionError,
+    isLoading: loading,
+  } = useSWR<GoalProbability>(goalId ? goalProbabilityKey(goalId) : null, { revalidateOnFocus: false });
+  const failure = goalsError ?? projectionError;
+  const error = failure ? apiErrorMessage(failure) : null;
 
   return (
-    <main className="mx-auto w-full max-w-4xl space-y-6 px-4 py-10">
-      <SectionNav current="/goals" />
+    <div className="mx-auto w-full max-w-4xl space-y-6">
       <header>
         <h1 className="text-2xl font-semibold">Probabilidad de alcanzar tu meta</h1>
         <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-300">
@@ -126,14 +98,18 @@ export function GoalsView({ fetcher }: { fetcher?: Fetcher }) {
         <h2 id="goal-title" className="sr-only">
           Proyección de la meta
         </h2>
-        {goals === null && !error && (
+        {goals === undefined && !error && (
           <p role="status" className="text-neutral-500">
             Cargando tus metas…
           </p>
         )}
         {goals && goals.length === 0 && (
           <p className="text-sm text-neutral-500">
-            No tienes metas. Agrega una en el onboarding (/onboarding).
+            No tienes metas. Agrégalas en{" "}
+            <Link href="/onboarding" className="text-emerald-700 underline underline-offset-4 dark:text-emerald-400">
+              Mi perfil
+            </Link>
+            .
           </p>
         )}
         {goals && goals.length > 1 && (
@@ -141,7 +117,7 @@ export function GoalsView({ fetcher }: { fetcher?: Fetcher }) {
             <label htmlFor="goal-select" className={labelClass}>
               Meta
             </label>
-            <select id="goal-select" className={inputClass} value={goalId} onChange={(e) => setGoalId(e.target.value)}>
+            <select id="goal-select" className={inputClass} value={goalId} onChange={(e) => setChosen(e.target.value)}>
               {goals.map((g) => (
                 <option key={g.id} value={g.id}>
                   {pct(g.target_return)} al {g.deadline}
@@ -162,6 +138,6 @@ export function GoalsView({ fetcher }: { fetcher?: Fetcher }) {
         )}
         {projection && <ProbabilityCard projection={projection} />}
       </section>
-    </main>
+    </div>
   );
 }

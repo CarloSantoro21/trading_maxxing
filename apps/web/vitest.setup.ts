@@ -2,8 +2,12 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
 
-// Sin `globals: true`, RTL no desmonta solo entre pruebas; lo hacemos aquí.
-afterEach(() => cleanup());
+// Sin `globals: true`, RTL no desmonta solo entre pruebas; lo hacemos aquí. También quitamos
+// el `fetch` simulado de `mockApi` (src/test/api.ts) para que no se filtre a otra prueba.
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 // jsdom no trae ResizeObserver; ResponsiveContainer de Recharts lo necesita para medir.
 if (typeof globalThis.ResizeObserver === "undefined") {

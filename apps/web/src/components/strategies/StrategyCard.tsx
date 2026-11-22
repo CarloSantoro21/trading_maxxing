@@ -59,7 +59,6 @@ export function StrategyCard({
   equity,
   transitions,
   isAdmin,
-  token,
   currentUserId,
   onTransition,
 }: {
@@ -67,7 +66,6 @@ export function StrategyCard({
   equity: ReferenceEquityRow[];
   transitions: TransitionRow[];
   isAdmin: boolean;
-  token: string;
   currentUserId?: string;
   onTransition: () => void;
 }) {
@@ -93,7 +91,7 @@ export function StrategyCard({
     setBusy(true);
     setError(null);
     try {
-      const result = await transitionStrategy(strategy.name, confirm, reason, { token });
+      const result = await transitionStrategy(strategy.name, confirm, reason);
       setNotice(`${label} pasó de ${stateLabel(result.from_state)} a ${stateLabel(result.to_state)}.`);
       setConfirm(null);
       onTransition();

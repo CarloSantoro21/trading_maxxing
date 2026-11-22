@@ -1,152 +1,103 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createFakeSupabase } from "@/test/fakeSupabase";
-import { AuthProvider, useAuth } from "./AuthProvider";
-import { LoginContent } from "./LoginContent";
-import { RequireAuth, safeNextPath } from "./RequireAuth";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DEMO_ME, mockApi } from "@/test/api";
+import { renderWithApi } from "@/test/render";
+import Home from "@/app/page";
+import { LOGOUT_URL, RequireAuth, useMe } from "./RequireAuth";
 
 const replace = vi.fn();
-let searchParams = new URLSearchParams();
-
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace, push: vi.fn() }),
-  usePathname: () => "/onboarding",
-  useSearchParams: () => searchParams,
+  usePathname: () => "/",
 }));
 
-const session = { user: { id: "user-1" } };
+beforeEach(() => replace.mockReset());
+afterEach(() => vi.unstubAllGlobals());
 
-beforeEach(() => {
-  replace.mockReset();
-  searchParams = new URLSearchParams();
-});
+function Private() {
+  const { me, isAdmin } = useMe();
+  return (
+    <p>
+      contenido de {me.email} {isAdmin ? "(admin)" : "(member)"}
+    </p>
+  );
+}
 
 describe("RequireAuth", () => {
-  it("redirige a /login con next si no hay sesión", async () => {
-    const fake = createFakeSupabase();
-    render(
-      <AuthProvider client={fake.client}>
-        <RequireAuth>
-          <p>contenido privado</p>
-        </RequireAuth>
-      </AuthProvider>,
+  it("pide /api/me y muestra el contenido con el usuario", async () => {
+    const { calls } = mockApi();
+    renderWithApi(
+      <RequireAuth>
+        <Private />
+      </RequireAuth>,
     );
     expect(screen.getByRole("status")).toHaveTextContent("Verificando sesión…");
-    await waitFor(() => expect(replace).toHaveBeenCalledWith("/login?next=%2Fonboarding"));
-    expect(screen.queryByText("contenido privado")).not.toBeInTheDocument();
+    expect(await screen.findByText(/contenido de demo@trading-maxxing.local \(member\)/)).toBeInTheDocument();
+    expect(calls[0]).toMatchObject({ method: "GET", path: "/me" });
   });
 
-  it("muestra el contenido si hay sesión", async () => {
-    const fake = createFakeSupabase();
-    fake.auth.getSession.mockResolvedValueOnce({ data: { session }, error: null });
-    render(
-      <AuthProvider client={fake.client}>
-        <RequireAuth>
-          <p>contenido privado</p>
-        </RequireAuth>
-      </AuthProvider>,
+  it("detecta al admin", async () => {
+    mockApi({ "GET /me": { ...DEMO_ME, role: "admin" } });
+    renderWithApi(
+      <RequireAuth>
+        <Private />
+      </RequireAuth>,
     );
-    expect(await screen.findByText("contenido privado")).toBeInTheDocument();
-    expect(replace).not.toHaveBeenCalled();
+    expect(await screen.findByText(/\(admin\)/)).toBeInTheDocument();
   });
 
-  it("reacciona a los cambios de sesión y se desuscribe al desmontar", async () => {
-    const fake = createFakeSupabase();
-    const { unmount } = render(
-      <AuthProvider client={fake.client}>
-        <RequireAuth>
-          <p>contenido privado</p>
-        </RequireAuth>
-      </AuthProvider>,
+  it.each([401, 403])("con %i muestra que no tiene acceso y ofrece entrar con otro correo", async (status) => {
+    mockApi({ "GET /me": { status, body: { detail: "El correo ana@iteso.mx no está dado de alta" } } });
+    renderWithApi(
+      <RequireAuth>
+        <Private />
+      </RequireAuth>,
     );
-    await waitFor(() => expect(replace).toHaveBeenCalled());
-    act(() => fake.emitAuth("SIGNED_IN", session));
-    expect(await screen.findByText("contenido privado")).toBeInTheDocument();
-    unmount();
-    expect(fake.unsubscribe).toHaveBeenCalled();
+    expect(await screen.findByRole("heading", { name: "No tienes acceso" })).toBeInTheDocument();
+    expect(screen.getByText(/Pide al admin que te dé de alta/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Entrar con otro correo" })).toHaveAttribute("href", LOGOUT_URL);
+    expect(screen.queryByText(/contenido de/)).not.toBeInTheDocument();
+    if (status === 403) expect(screen.getByText(/Detalle: El correo ana@iteso.mx/)).toBeInTheDocument();
   });
 
-  it("muestra el error de configuración si faltan las variables de entorno", async () => {
-    vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "");
-    vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "");
-    render(
-      <AuthProvider>
-        <RequireAuth>
-          <p>contenido privado</p>
-        </RequireAuth>
-      </AuthProvider>,
+  it("si la API no responde muestra el error y reintenta", async () => {
+    let fail = true;
+    mockApi({ "GET /me": () => (fail ? { status: 500, body: { detail: "caída" } } : { body: DEMO_ME }) });
+    renderWithApi(
+      <RequireAuth>
+        <Private />
+      </RequireAuth>,
     );
-    expect(await screen.findByRole("alert")).toHaveTextContent("NEXT_PUBLIC_SUPABASE_URL");
-    expect(replace).not.toHaveBeenCalled();
-    vi.unstubAllEnvs();
+    expect(await screen.findByRole("alert")).toHaveTextContent("caída");
+    fail = false;
+    await userEvent.click(screen.getByRole("button", { name: "Reintentar" }));
+    expect(await screen.findByText(/contenido de/)).toBeInTheDocument();
   });
 });
 
-describe("useAuth", () => {
-  it("falla fuera de AuthProvider", () => {
+describe("useMe", () => {
+  it("falla fuera de RequireAuth", () => {
     function Orphan() {
-      useAuth();
+      useMe();
       return null;
     }
     vi.spyOn(console, "error").mockImplementation(() => {});
-    expect(() => render(<Orphan />)).toThrow(/AuthProvider/);
+    expect(() => render(<Orphan />)).toThrow(/RequireAuth/);
   });
 });
 
-describe("safeNextPath", () => {
-  it.each([
-    [null, "/onboarding"],
-    ["/dashboard", "/dashboard"],
-    ["https://malo.com", "/onboarding"],
-    ["//malo.com", "/onboarding"],
-    ["/\\malo.com", "/onboarding"],
-  ])("safeNextPath(%j) = %j", (next, expected) => {
-    expect(safeNextPath(next)).toBe(expected);
-  });
-});
-
-describe("LoginContent", () => {
-  async function login(fake: ReturnType<typeof createFakeSupabase>) {
-    const user = userEvent.setup();
-    render(
-      <AuthProvider client={fake.client}>
-        <LoginContent />
-      </AuthProvider>,
-    );
-    await user.type(await screen.findByLabelText("Correo electrónico"), "demo@trading-maxxing.local");
-    await user.type(screen.getByLabelText("Contraseña"), "demo1234");
-    await user.click(screen.getByRole("button", { name: "Iniciar sesión" }));
-  }
-
+describe("Home", () => {
   it("manda al onboarding si el usuario aún no tiene perfil", async () => {
-    const fake = createFakeSupabase(() => ({ data: null }));
-    await login(fake);
+    mockApi();
+    renderWithApi(<Home />);
     await waitFor(() => expect(replace).toHaveBeenCalledWith("/onboarding"));
+    expect(screen.getByRole("heading", { name: "trading_maxxing" })).toBeInTheDocument();
   });
 
   it("manda al dashboard si el usuario ya tiene perfil", async () => {
-    const fake = createFakeSupabase(() => ({ data: { id: "p1" } }));
-    await login(fake);
+    mockApi({ "GET /me": { ...DEMO_ME, profile: { id: "p1" } } });
+    renderWithApi(<Home />);
     await waitFor(() => expect(replace).toHaveBeenCalledWith("/dashboard"));
-  });
-
-  it("respeta el parámetro next", async () => {
-    searchParams = new URLSearchParams("next=/dashboard");
-    const fake = createFakeSupabase();
-    await login(fake);
-    await waitFor(() => expect(replace).toHaveBeenCalledWith("/dashboard"));
-    expect(fake.queries).toHaveLength(0);
-  });
-
-  it("si ya hay sesión redirige sin mostrar el formulario de nuevo", async () => {
-    const fake = createFakeSupabase();
-    fake.auth.getSession.mockResolvedValueOnce({ data: { session }, error: null });
-    render(
-      <AuthProvider client={fake.client}>
-        <LoginContent />
-      </AuthProvider>,
-    );
-    await waitFor(() => expect(replace).toHaveBeenCalledWith("/onboarding"));
   });
 });

@@ -1,13 +1,15 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
+import { apiFetch } from "@/lib/api/client";
 import { type StrategyState, toNumber } from "@/lib/format";
 
 /**
- * Datos de la página /strategies (#58), leídos con supabase-js.
- *
- * strategies, strategy_transitions y reference_equity los lee cualquier usuario autenticado
- * (son de la capa compartida, propuesta 3.4); app_roles solo deja leer el rol propio.
- * `shadow_days_clean` es una columna calculada de PostgREST (migración reference_ledger).
+ * Datos de la página /strategies (#58): `GET /api/strategies/overview` devuelve las
+ * estrategias (capa compartida, propuesta 3.4), las 500 transiciones más recientes, el
+ * equity de referencia e `isAdmin` (rol del usuario de la sesión). `shadow_days_clean` lo
+ * calcula la API.
  */
+
+/** Llave de SWR (ruta de la API) de la página de estrategias. */
+export const STRATEGIES_KEY = "/strategies/overview";
 
 /** Días mínimos en shadow sin fallas para promover (igual que la API y tm_agents). */
 export const MIN_SHADOW_DAYS = 7;
@@ -49,52 +51,23 @@ export interface StrategiesData {
   isAdmin: boolean;
 }
 
-export class StrategiesLoadError extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
-    super(message, options);
-    this.name = "StrategiesLoadError";
-  }
-}
-
-function check<T>(res: { data: T | null; error: unknown }, what: string): T {
-  if (res.error) throw new StrategiesLoadError(`No se pudo leer ${what}.`, { cause: res.error });
-  return (res.data ?? ([] as unknown as T)) as T;
-}
-
-export async function fetchStrategies(supabase: SupabaseClient, userId: string): Promise<StrategiesData> {
-  const [strategiesRes, transitionsRes, equityRes, roleRes] = await Promise.all([
-    supabase
-      .from("strategies")
-      .select("id, name, state, params, lab_report, live_metrics, state_changed_at, shadow_days_clean")
-      .order("name", { ascending: true }),
-    supabase
-      .from("strategy_transitions")
-      .select("id, strategy_id, from_state, to_state, actor, reason, created_at")
-      .order("created_at", { ascending: false })
-      .limit(500),
-    supabase
-      .from("reference_equity")
-      .select("strategy_id, started_at, day, equity, drawdown, state")
-      .order("day", { ascending: true })
-      .limit(10000),
-    supabase.from("app_roles").select("role").eq("user_id", userId).maybeSingle(),
-  ]);
-  const strategies = check<StrategyRow[]>(strategiesRes, "las estrategias");
-  const transitions = check<TransitionRow[]>(transitionsRes, "el historial de transiciones");
-  const equity = check<ReferenceEquityRow[]>(equityRes, "el portafolio de referencia");
-  // Si no se puede leer el rol, la página sigue en modo lectura (la API vuelve a exigirlo).
-  const role = roleRes.error ? null : (roleRes.data as { role?: string } | null)?.role;
+/** Aplica defaults a lo que devuelve la API (objetos vacíos en lugar de null, días como número). */
+export function normalizeOverview(raw: StrategiesData): StrategiesData {
   return {
-    strategies: strategies.map((s) => ({
+    strategies: (raw.strategies ?? []).map((s) => ({
       ...s,
       params: s.params ?? {},
       live_metrics: s.live_metrics ?? {},
       shadow_days_clean: toNumber(s.shadow_days_clean),
     })),
-    transitions,
-    equity,
-    isAdmin: role === "admin",
+    transitions: raw.transitions ?? [],
+    equity: raw.equity ?? [],
+    isAdmin: raw.isAdmin === true,
   };
+}
+
+export async function fetchStrategies(): Promise<StrategiesData> {
+  return normalizeOverview(await apiFetch<StrategiesData>(STRATEGIES_KEY));
 }
 
 // --- reglas de los botones -------------------------------------------------------------

@@ -1,9 +1,9 @@
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { AuthProvider } from "@/components/auth/AuthProvider";
-import { fakeFetcher, sessionClient } from "@/test/fakeApi";
+import { mockApi, type Routes } from "@/test/api";
 import { PROJECTION } from "@/test/fixtures";
+import { renderWithApi } from "@/test/render";
 import { GoalsView } from "./GoalsView";
 
 vi.mock("next/navigation", () => ({
@@ -16,22 +16,18 @@ const GOALS = [
   { id: "g2", profile_id: "p1", target_return: 0.5, deadline: "2028-01-01" },
 ];
 
-function renderView(fetcher: ReturnType<typeof fakeFetcher>) {
-  render(
-    <AuthProvider client={sessionClient()}>
-      <GoalsView fetcher={fetcher} />
-    </AuthProvider>,
-  );
+function renderView(routes: Routes) {
+  mockApi(routes);
+  renderWithApi(<GoalsView />);
 }
 
 describe("GoalsView", () => {
   it("muestra la probabilidad, el abanico y las estrategias de la primera meta", async () => {
-    const fetcher = fakeFetcher({
+    renderView({
       "GET /goals": GOALS,
       "GET /goals/g1/probability": PROJECTION,
       "GET /goals/g2/probability": { ...PROJECTION, goal_id: "g2", probability: 0.85 },
     });
-    renderView(fetcher);
     expect(await screen.findByText("35 %")).toBeInTheDocument();
     expect(screen.getByText("Poco probable")).toBeInTheDocument();
     expect(screen.getByText(/2,000 trayectorias/)).toBeInTheDocument();
@@ -44,23 +40,21 @@ describe("GoalsView", () => {
   });
 
   it("avisa si no hay metas", async () => {
-    renderView(fakeFetcher({ "GET /goals": [] }));
+    renderView({ "GET /goals": [] });
     expect(await screen.findByText(/No tienes metas/)).toBeInTheDocument();
   });
 
   it("muestra el error de la proyección", async () => {
-    renderView(
-      fakeFetcher({
-        "GET /goals": [GOALS[0]],
-        "GET /goals/g1/probability": { status: 409, body: { detail: "Sin capital" } },
-      }),
-    );
+    renderView({
+      "GET /goals": [GOALS[0]],
+      "GET /goals/g1/probability": { status: 409, body: { detail: "Sin capital" } },
+    });
     expect(await screen.findByRole("alert")).toHaveTextContent("Sin capital");
     expect(screen.queryByLabelText("Meta")).not.toBeInTheDocument();
   });
 
   it("muestra el error de la lista de metas", async () => {
-    renderView(fakeFetcher({ "GET /goals": { status: 500, body: { detail: "caída" } } }));
+    renderView({ "GET /goals": { status: 500, body: { detail: "caída" } } });
     expect(await screen.findByRole("alert")).toHaveTextContent("caída");
   });
 });
