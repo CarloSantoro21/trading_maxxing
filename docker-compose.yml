@@ -1,11 +1,17 @@
-# Entorno local de trading_maxxing. Todo corre en localhost (ver docs/propuesta, sección 5.0).
+# Motor de trading_maxxing para DESARROLLO local (build local de las imágenes).
 #
-#   make up        # Supabase (CLI) + Redis + api + agents + engine + forecast en contenedor
-#   make up-mps    # igual, pero forecast corre nativo en la Mac con aceleración Metal (MPS)
-#   make web       # frontend con hot reload (pnpm dev) en http://localhost:3000
+#   make dev        # API (wrangler dev) + web (next dev) + este compose con la demo y ejecución sim
+#   make dev-down   # apaga todo
 #
-# Supabase NO está aquí: lo levanta su CLI (`supabase start`) con su propio stack de Docker.
-# Los contenedores lo alcanzan en host.docker.internal:54321.
+# Guía paso a paso: docs/correr-local.md. Todo lo persistente vive en D1 detrás del Worker
+# (apps/api): el motor lo alcanza en host.docker.internal:8787 con el SERVICE_TOKEN de
+# apps/api/.dev.vars. Para el motor "de verdad" en la Mac con las imágenes de Docker Hub usa
+# docker-compose.runner.yml (make runner-up).
+#
+# Perfiles:
+#   (ninguno)  redis + agents + engine. Es lo que levanta `make dev`.
+#   forecast   Kronos-small en CPU (PyTorch, imagen pesada). Opcional: ninguna estrategia del
+#              seed local lo necesita. `make dev FORECAST=1` o COMPOSE_PROFILES=forecast.
 
 name: trading-maxxing
 
@@ -13,17 +19,24 @@ x-python-service: &python-service
   env_file:
     - path: .env
       required: false
-  environment:
-    REDIS_URL: redis://redis:6379/0
-    SUPABASE_URL: ${SUPABASE_URL:-http://host.docker.internal:54321}
-    FORECAST_URL: ${FORECAST_URL:-http://forecast:8001}
-    LOG_LEVEL: ${LOG_LEVEL:-INFO}
   extra_hosts:
     - "host.docker.internal:host-gateway"
   depends_on:
     redis:
       condition: service_healthy
   restart: unless-stopped
+
+# Variables comunes de agents y engine (cada servicio las repite: `environment` no se mezcla).
+x-motor-env: &motor-env
+  REDIS_URL: redis://redis:6379/0
+  FORECAST_URL: ${FORECAST_URL:-http://forecast:8001}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  # API en wrangler dev (apps/api). Mismo token que SERVICE_TOKEN de apps/api/.dev.vars.
+  TM_API_URL: ${TM_API_URL:-http://host.docker.internal:8787}
+  TM_SERVICE_TOKEN: ${TM_SERVICE_TOKEN:-dev-service-token-cambiame}
+  # Velas históricas en parquet (data/bars, ver docs/final/setup-local.md §7); lo que falte se
+  # pide a la REST pública de Binance.
+  TM_DATA_DIR: /app/data/bars
 
 services:
   redis:
@@ -33,72 +46,60 @@ services:
     volumes: [redis-data:/data]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
+      interval: 5s
       timeout: 3s
-      retries: 5
+      retries: 10
     restart: unless-stopped
-
-  api:
-    <<: *python-service
-    image: trading-maxxing-api:local
-    build: { context: ., dockerfile: services/api/Dockerfile }
-    ports: ["127.0.0.1:8000:8000"]
-    environment:
-      REDIS_URL: redis://redis:6379/0
-      SUPABASE_URL: ${SUPABASE_URL:-http://host.docker.internal:54321}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      # Reportes del laboratorio para /lab/reports y la proyección de metas (#24, #38).
-      LAB_REPORTS_DIR: /app/lab-reports
-      # Orígenes del frontend (make web o el contenedor web) que pueden llamar a la api.
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
-    volumes: ["./docs/estrategias/reportes:/app/lab-reports:ro"]
 
   # Orquestador (#19) y ledger de referencia (#57) en un solo worker. La capa compartida
   # (señales, vetos y SimulationGate, una vez para todos) publica en tm:signals; la capa por
-  # usuario (un BotRunner por bot en running) lee tm:signals y tm:commands y publica en
-  # tm:decisions; el ReferenceService lee el mismo tm:signals con su propio cursor. Se pueden
-  # separar con ORCHESTRATOR_SHARED=0 / ORCHESTRATOR_BOTS=0 / REFERENCE_SERVICE=0.
+  # usuario (un BotRunner por bot en running) lee tm:signals y los comandos de la API
+  # (GET /internal/commands) y publica en tm:decisions; el ReferenceService lee el mismo
+  # tm:signals con su propio cursor.
   agents:
     <<: *python-service
     image: trading-maxxing-agents:local
     build: { context: ., dockerfile: services/agents/Dockerfile }
     environment:
-      REDIS_URL: redis://redis:6379/0
-      SUPABASE_URL: ${SUPABASE_URL:-http://host.docker.internal:54321}
-      FORECAST_URL: ${FORECAST_URL:-http://forecast:8001}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      TM_DATA_DIR: /app/data/bars
+      <<: *motor-env
       ORCHESTRATOR_SYMBOLS: ${ORCHESTRATOR_SYMBOLS:-BTCUSDT,ETHUSDT}
       ORCHESTRATOR_SHARED: ${ORCHESTRATOR_SHARED:-1}
       ORCHESTRATOR_BOTS: ${ORCHESTRATOR_BOTS:-1}
       REFERENCE_SERVICE: ${REFERENCE_SERVICE:-1}
+      # Solo demo local: estrategia demo_pulse (long/flat cada N minutos en velas de 1 min).
+      # `make dev` la prende; en dev y prod (docker-compose.runner.yml) no existe.
+      TM_DEMO_STRATEGY: ${TM_DEMO_STRATEGY:-0}
+      TM_DEMO_PULSE_MINUTES: ${TM_DEMO_PULSE_MINUTES:-2}
+      # Foto de equity de cada bot (la curva del dashboard); 300 s en la nube.
+      EQUITY_SNAPSHOT_SECONDS: ${EQUITY_SNAPSHOT_SECONDS:-60}
+      COMMANDS_POLL_SECONDS: ${COMMANDS_POLL_SECONDS:-3}
     volumes: ["./data:/app/data:ro"]
 
+  # Ejecución: Binance Spot Testnet con BINANCE_TESTNET_API_KEY/SECRET en .env; sin ellas,
+  # ENGINE_EXECUTION=auto usa la ejecución simulada (fills al precio público de Binance).
   engine:
     <<: *python-service
     image: trading-maxxing-engine:local
     build: { context: ., dockerfile: services/engine/Dockerfile }
+    environment:
+      <<: *motor-env
+      ENGINE_EXECUTION: ${ENGINE_EXECUTION:-auto}
+      ENGINE_SYMBOLS: ${ENGINE_SYMBOLS:-BTCUSDT,ETHUSDT}
     volumes: ["./data:/app/data:ro"]
 
-  # Perfil "forecast-docker": se apaga con `make up-mps` para correr Kronos nativo con MPS.
+  # Perfil "forecast": Kronos en CPU. Para correrlo nativo con Metal: make forecast-mps.
   forecast:
     <<: *python-service
-    profiles: ["forecast-docker"]
+    profiles: ["forecast"]
     image: trading-maxxing-forecast:local
     build: { context: ., dockerfile: services/forecast/Dockerfile }
     ports: ["127.0.0.1:8001:8001"]
+    depends_on: {}
     environment:
       FORECAST_DEVICE: cpu
       HF_HOME: /app/.cache/huggingface
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes: [hf-cache:/app/.cache/huggingface]
-
-  # Perfil "web": frontend en contenedor (build de producción). Para desarrollar usa `make web`.
-  web:
-    profiles: ["web"]
-    image: trading-maxxing-web:local
-    build: { context: apps/web }
-    ports: ["127.0.0.1:3000:3000"]
-    restart: unless-stopped
 
 volumes:
   redis-data:

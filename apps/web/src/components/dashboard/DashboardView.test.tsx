@@ -1,21 +1,19 @@
-import type { Session } from "@supabase/supabase-js";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AuthProvider } from "@/components/auth/AuthProvider";
+import { describe, expect, it, vi } from "vitest";
+import { RequireAuth } from "@/components/auth/RequireAuth";
 import { AppShell } from "@/components/nav/AppShell";
-import { mockApi, type ApiHandler } from "@/test/api";
-import { called, createFakeSupabase, type Responder } from "@/test/fakeSupabase";
+import { mockApi, type RouteHandler, type Routes } from "@/test/api";
+import { renderWithApi } from "@/test/render";
 import { DashboardView } from "./DashboardView";
 
-const replace = vi.fn();
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ replace, push: vi.fn() }),
+  useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
   usePathname: () => "/dashboard",
   useSearchParams: () => new URLSearchParams(),
 }));
 
-const profile = { id: "p1", capital: "1000", risk_level: 3, max_drawdown: "0.15" };
+const profile = { id: "p1", capital: 1000, risk_level: 3, max_drawdown: 0.15 };
 const bot = { id: "b1", profile_id: "p1", name: "Mi bot", status: "stopped", started_at: null, stopped_at: null };
 const trade = {
   id: "t1",
@@ -42,41 +40,37 @@ const snapshots = [
   { bot_id: "b1", ts: "2026-11-01T00:00:00Z", equity: "1000" },
 ];
 
-const fullData: Responder = (q) => {
-  if (q.table === "profiles") return { data: profile };
-  if (q.table === "bots") return { data: [bot] };
-  if (q.table === "equity_snapshots") return { data: snapshots };
-  if (called(q, "not")) return { data: [] };
-  return { data: [trade] };
-};
 
-function renderDashboard(respond: Responder, api?: ApiHandler) {
-  const fake = createFakeSupabase(respond);
-  fake.auth.getSession.mockResolvedValue({
-    data: { session: { user: { id: "user-1", email: "a@b.mx" }, access_token: "jwt" } as unknown as Session },
-    error: null,
-  });
-  const apiMock = mockApi(api);
-  const utils = render(
-    <AuthProvider client={fake.client}>
-      <AppShell>
-        <DashboardView />
-      </AppShell>
-    </AuthProvider>,
-  );
-  return { fake, api: apiMock, ...utils };
+function dashboard(over: Record<string, unknown> = {}) {
+  return {
+    profile,
+    bots: [bot],
+    snapshots,
+    recentTrades: [trade],
+    openTrades: [trade],
+    closed: {},
+    ...over,
+  };
 }
 
-beforeEach(() => replace.mockReset());
-afterEach(() => {
-  vi.unstubAllEnvs();
-  vi.unstubAllGlobals();
-});
+const DASHBOARD = "GET /dashboard";
+const EMPTY = dashboard({ bots: [], snapshots: [], recentTrades: [], openTrades: [] });
+
+function renderDashboard(routes: Routes, refreshMs = 60_000) {
+  const api = mockApi(routes);
+  const utils = renderWithApi(
+    <RequireAuth>
+      <AppShell>
+        <DashboardView refreshMs={refreshMs} />
+      </AppShell>
+    </RequireAuth>,
+  );
+  return { api, ...utils };
+}
 
 describe("DashboardView", () => {
-  it("muestra la carga y luego equity, P&L, posiciones y operaciones con su rationale", async () => {
-    renderDashboard(fullData);
-    expect(screen.getByRole("status")).toBeInTheDocument();
+  it("muestra equity, P&L, posiciones y operaciones con su rationale", async () => {
+    const { api } = renderDashboard({ [DASHBOARD]: dashboard() });
     expect(await screen.findByText("1,050.00 USDT")).toBeInTheDocument();
     expect(screen.getByText("+50.00 USDT")).toBeInTheDocument();
     expect(screen.getByText("+5.00 %")).toBeInTheDocument();
@@ -87,132 +81,115 @@ describe("DashboardView", () => {
     expect(screen.getByText("Abierta")).toBeInTheDocument();
     expect(screen.getByText(/recomienda comprar BTC\/USDT con 80 % de confianza/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Dashboard" })).toHaveAttribute("aria-current", "page");
+    expect(api.calls.some((c) => c.method === "GET" && c.path === "/dashboard")).toBe(true);
   });
 
   it("muestra el error y reintenta", async () => {
     let fail = true;
-    renderDashboard((q) => {
-      if (fail) return { error: { message: "x" } };
-      return fullData(q);
+    renderDashboard({
+      [DASHBOARD]: () => (fail ? { status: 500, body: { detail: "x" } } : { body: dashboard() }),
     });
-    expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo leer tu perfil.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo cargar el dashboard.");
     fail = false;
     await userEvent.click(screen.getByRole("button", { name: "Reintentar" }));
     expect(await screen.findByText("1,050.00 USDT")).toBeInTheDocument();
   });
 
   it("sin perfil manda al onboarding", async () => {
-    renderDashboard(() => ({ data: null }));
+    renderDashboard({ [DASHBOARD]: { ...EMPTY, profile: null } });
     expect(await screen.findByText("Todavía no configuras tu perfil")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Configurar mi perfil" })).toHaveAttribute("href", "/onboarding");
   });
 
   it("sin bot ofrece crearlo con la API y muestra los estados vacíos", async () => {
-    const { api } = renderDashboard(
-      (q) => (q.table === "profiles" ? { data: profile } : { data: [] }),
-      () => ({ status: 201, body: bot }),
-    );
+    const { api } = renderDashboard({ [DASHBOARD]: EMPTY, "POST /bots": { status: 201, body: bot } });
     expect(await screen.findByText("Aún no tienes bot")).toBeInTheDocument();
     expect(screen.getByText("Aún no hay curva de equity")).toBeInTheDocument();
     expect(screen.getByText("Sin posiciones todavía")).toBeInTheDocument();
     expect(screen.getByText("Aún no hay operaciones")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Crear mi bot" }));
     expect(await screen.findByRole("button", { name: "Arrancar" })).toBeEnabled();
-    expect(api.calls[0]).toMatchObject({ method: "POST", path: "/bots", body: { name: "Mi bot" } });
-    expect(api.calls[0].headers.Authorization).toBe("Bearer jwt");
+    const post = api.actions().find((c) => c.method === "POST");
+    expect(post).toMatchObject({ method: "POST", path: "/bots", body: { name: "Mi bot" } });
+    // Sin tokens: la cookie de Access viaja sola (mismo origen).
+    expect(post?.headers.Authorization).toBeUndefined();
   });
 
   it("muestra el error de la API al crear el bot", async () => {
-    renderDashboard(
-      (q) => (q.table === "profiles" ? { data: profile } : { data: [] }),
-      () => ({ status: 409, body: { detail: "Ya tienes un bot" } }),
-    );
+    renderDashboard({ [DASHBOARD]: EMPTY, "POST /bots": { status: 409, body: { detail: "Ya tienes un bot" } } });
     await userEvent.click(await screen.findByRole("button", { name: "Crear mi bot" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Ya tienes un bot");
   });
 
-  it("aplica en vivo los trades, la equity y el estado del bot que llegan por Realtime", async () => {
-    const { fake } = renderDashboard(fullData);
+  it("vuelve a pedir el dashboard cada cierto tiempo (polling)", async () => {
+    let data = dashboard();
+    renderDashboard({ [DASHBOARD]: () => ({ body: data }) }, 50);
     await screen.findByText("1,050.00 USDT");
-    expect(fake.listenerCount("trades")).toBe(1);
-    act(() => {
-      fake.emitRealtime("equity_snapshots", "INSERT", { bot_id: "b1", ts: "2026-11-03T00:00:00Z", equity: "1100" });
-      fake.emitRealtime("trades", "UPDATE", { ...trade, closed_at: "2026-11-03T00:00:00Z", exit_price: "52000", pnl: "20" });
-      fake.emitRealtime("bots", "UPDATE", { ...bot, status: "running", started_at: "2026-11-03T00:00:00Z" });
+    data = dashboard({
+      snapshots: [...snapshots, { bot_id: "b1", ts: "2026-11-03T00:00:00Z", equity: "1100" }],
+      bots: [{ ...bot, status: "running", started_at: "2026-11-03T00:00:00Z" }],
+      openTrades: [],
+      recentTrades: [{ ...trade, closed_at: "2026-11-03T00:00:00Z", exit_price: "52000", pnl: "20" }],
+      closed: { t1: { sleeve: "trend", pnl: 20 } },
     });
-    expect(screen.getByText("1,100.00 USDT")).toBeInTheDocument();
+    expect(await screen.findByText("1,100.00 USDT", {}, { timeout: 2000 })).toBeInTheDocument();
     expect(screen.getAllByText("+20.00 USDT").length).toBeGreaterThan(0);
     expect(screen.getByText("Operando")).toBeInTheDocument();
-    act(() => fake.emitRealtime("bots", "DELETE", {}, { id: "b1" }));
-    expect(screen.getByText("Aún no tienes bot")).toBeInTheDocument();
-  });
-
-  it("marca la conexión en vivo caída y se desuscribe al desmontar", async () => {
-    const fake = createFakeSupabase(fullData);
-    fake.setSubscribeStatus("CHANNEL_ERROR");
-    fake.auth.getSession.mockResolvedValue({
-      data: { session: { user: { id: "user-1" }, access_token: "jwt" } as unknown as Session },
-      error: null,
-    });
-    const { unmount } = render(
-      <AuthProvider client={fake.client}>
-        <DashboardView />
-      </AuthProvider>,
-    );
-    expect(await screen.findByText("1,050.00 USDT")).toBeInTheDocument();
-    expect(screen.getByText("Sin conexión en vivo")).toBeInTheDocument();
-    unmount();
-    expect(fake.removeChannel).toHaveBeenCalled();
-    expect(fake.listenerCount("trades")).toBe(0);
   });
 });
 
 describe("BotControls", () => {
+  const command: RouteHandler = (call) => {
+    const name = call.path.split("/").pop();
+    const status = name === "start" ? "running" : "stopped";
+    return { body: { bot: { ...bot, status, started_at: "2026-11-03T00:00:00Z" }, command: name, command_id: "c1" } };
+  };
+  const running = dashboard({ bots: [{ ...bot, status: "running" }] });
+
   it("arranca y detiene el bot con la API", async () => {
-    const { api } = renderDashboard(fullData, (call) => {
-      const command = call.path.split("/").pop();
-      const status = command === "start" ? "running" : "stopped";
-      return { body: { bot: { ...bot, status, started_at: "2026-11-03T00:00:00Z" }, command, command_id: "c1" } };
-    });
+    const { api } = renderDashboard({ [DASHBOARD]: dashboard(), "POST /bots/b1/start": command, "POST /bots/b1/stop": command });
     await userEvent.click(await screen.findByRole("button", { name: "Arrancar" }));
     expect(await screen.findByText("Operando")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Arrancar" })).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: "Detener" }));
     await waitFor(() => expect(screen.getByText("Detenido")).toBeInTheDocument());
-    expect(api.calls.map((c) => c.path)).toEqual(["/bots/b1/start", "/bots/b1/stop"]);
+    expect(api.actions().filter((c) => c.method === "POST").map((c) => c.path)).toEqual(["/bots/b1/start", "/bots/b1/stop"]);
   });
 
   it("el paro de emergencia pide confirmación en la página y se puede cancelar", async () => {
-    const { api } = renderDashboard(
-      (q) => (q.table === "bots" ? { data: [{ ...bot, status: "running" }] } : fullData(q)),
-      () => ({ body: { bot: { ...bot, status: "killed", stopped_at: "2026-11-03T00:00:00Z" }, command: "kill", command_id: "c" } }),
-    );
+    const { api } = renderDashboard({
+      [DASHBOARD]: running,
+      "POST /bots/b1/kill": {
+        body: { bot: { ...bot, status: "killed", stopped_at: "2026-11-03T00:00:00Z" }, command: "kill", command_id: "c" },
+      },
+    });
+    const posts = () => api.actions().filter((c) => c.method === "POST");
     await userEvent.click(await screen.findByRole("button", { name: "Paro de emergencia" }));
     const dialog = screen.getByRole("dialog", { name: "¿Activar el paro de emergencia?" });
     await userEvent.click(within(dialog).getByRole("button", { name: "Cancelar" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(api.calls).toHaveLength(0);
+    expect(posts()).toHaveLength(0);
 
     await userEvent.click(screen.getByRole("button", { name: "Paro de emergencia" }));
     await userEvent.click(screen.getByRole("button", { name: "Sí, vender todo y detener" }));
     expect(await screen.findByText(/Sus posiciones se vendieron a USDT/)).toBeInTheDocument();
-    expect(api.calls[0]).toMatchObject({ path: "/bots/b1/kill", body: { reason: "paro de emergencia manual" } });
+    expect(posts()[0]).toMatchObject({ path: "/bots/b1/kill", body: { reason: "paro de emergencia manual" } });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("muestra el error de la API dentro de la confirmación", async () => {
-    renderDashboard(
-      (q) => (q.table === "bots" ? { data: [{ ...bot, status: "running" }] } : fullData(q)),
-      () => ({ status: 503, body: { detail: "Redis no responde" } }),
-    );
+    renderDashboard({
+      [DASHBOARD]: running,
+      "POST /bots/b1/kill": { status: 500, body: { detail: "D1 no responde" } },
+    });
     await userEvent.click(await screen.findByRole("button", { name: "Paro de emergencia" }));
     await userEvent.click(screen.getByRole("button", { name: "Sí, vender todo y detener" }));
     const dialog = screen.getByRole("dialog");
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Redis no responde");
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("D1 no responde");
   });
 
   it("explica un error al arrancar", async () => {
-    renderDashboard(fullData, () => ({ status: 409, body: { detail: "Sin perfil" } }));
+    renderDashboard({ [DASHBOARD]: dashboard(), "POST /bots/b1/start": { status: 409, body: { detail: "Sin perfil" } } });
     await userEvent.click(await screen.findByRole("button", { name: "Arrancar" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Sin perfil");
   });

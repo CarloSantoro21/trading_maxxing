@@ -1,7 +1,8 @@
 """Estado de cada bot tras un reinicio: el libro virtual se reconstruye desde ``trades`` (#89).
 
-**Fuente de verdad: la tabla ``trades``.** La escribe el motor (``SupabaseTradeRecorder`` de
-``tm_engine``) con los fills reales, una fila por operación de cada bot y sleeve:
+**Fuente de verdad: la tabla ``trades``.** La escribe el motor (``WorkerApiTradeRecorder`` de
+``tm_engine``, vía ``/internal/trades``) con los fills reales, una fila por operación de cada
+bot y sleeve:
 
 - abierta (``closed_at`` nulo): ``quantity`` es lo comprado, ``entry_price`` su costo promedio y
   ``rationale.position`` lo que sigue abierto (``open_quantity``), el P&L de las ventas
@@ -25,22 +26,17 @@ lleva el de cada estrategia) ni el contador de operaciones del día.
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
-import httpx
+from tm_shared.api_client import WorkerApiClient
 from tm_shared.contracts import DEFAULT_SLEEVE
 
 log = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
-TRADE_SELECT = (
-    "id,symbol,side,quantity,entry_price,stop_loss,take_profit,fees,pnl,rationale,"
-    "opened_at,closed_at"
-)
 PAGE = 1000
 
 
@@ -154,42 +150,25 @@ class InMemoryTradeStateRepository:
         return state_from_rows(bot_id, self.rows.get(bot_id, ()))
 
 
-class PostgRESTTradeStateRepository:
-    """Lee ``trades`` de Supabase con la llave ``service_role`` (salta RLS)."""
+class WorkerApiTradeStateRepository:
+    """Lee ``trades`` con ``GET /internal/trades?bot_id=`` (API en Workers), por páginas."""
 
-    def __init__(
-        self, url: str, key: str, *, client: httpx.Client | None = None, page: int = PAGE
-    ) -> None:
-        if not url or not key:
-            raise ValueError("faltan SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY")
-        self._base = url.rstrip("/") + "/rest/v1/trades"
-        self._headers = {"apikey": key}
-        if key.startswith("eyJ"):
-            self._headers["Authorization"] = f"Bearer {key}"
-        self._client = client or httpx.Client(timeout=10.0)
+    def __init__(self, client: WorkerApiClient, *, page: int = PAGE) -> None:
+        self.client = client
         self._page = page
 
     @classmethod
     def from_env(
         cls, env: Mapping[str, str] | None = None, **kw: Any
-    ) -> PostgRESTTradeStateRepository:
-        env = os.environ if env is None else env
-        return cls(env.get("SUPABASE_URL", ""), env.get("SUPABASE_SERVICE_ROLE_KEY", ""), **kw)
+    ) -> WorkerApiTradeStateRepository:
+        return cls(WorkerApiClient.from_env(env), **kw)
 
     def rows(self, bot_id: str) -> list[Mapping[str, Any]]:
         out: list[Mapping[str, Any]] = []
         offset = 0
         while True:
-            params = {
-                "select": TRADE_SELECT,
-                "bot_id": f"eq.{bot_id}",
-                "order": "opened_at.asc,id.asc",
-                "limit": str(self._page),
-                "offset": str(offset),
-            }
-            resp = self._client.get(self._base, params=params, headers=self._headers)
-            resp.raise_for_status()
-            batch = resp.json()
+            params = {"bot_id": bot_id, "limit": self._page, "offset": offset}
+            batch = self.client.get("/internal/trades", params) or []
             out.extend(batch)
             if len(batch) < self._page:
                 return out
@@ -203,8 +182,8 @@ __all__ = [
     "BotState",
     "InMemoryTradeStateRepository",
     "OpenPosition",
-    "PostgRESTTradeStateRepository",
     "TradeStateRepository",
+    "WorkerApiTradeStateRepository",
     "open_position_from_row",
     "state_from_rows",
 ]

@@ -6,8 +6,8 @@
 - :mod:`~tm_agents.orchestrator.bot`: cada bot dimensiona esas señales con su capital y su
   nivel de riesgo y publica ``DecisionEnvelope`` en ``tm:decisions`` (``tm:shadow`` para las
   estrategias en shadow).
-- :mod:`~tm_agents.orchestrator.supervisor`: bots en ``running`` de Supabase y comandos de
-  ``tm:commands`` (``start``, ``stop``, ``kill``).
+- :mod:`~tm_agents.orchestrator.supervisor`: bots en ``running`` y comandos (``start``,
+  ``stop``, ``kill``) de la API en Workers (``/internal/bots`` y ``/internal/commands``).
 - :mod:`~tm_agents.orchestrator.state`: el libro de cada bot tras un reinicio, desde ``trades``.
 - :mod:`~tm_agents.orchestrator.runtime`: el worker en vivo y :func:`run_offline` para backtest.
 
@@ -28,19 +28,23 @@ from tm_agents.orchestrator.shared import FrameBarsProvider, SharedSignalLayer
 from tm_agents.orchestrator.state import (
     BotState,
     InMemoryTradeStateRepository,
-    PostgRESTTradeStateRepository,
+    WorkerApiTradeStateRepository,
 )
 from tm_agents.orchestrator.streams import (
-    COMMANDS_STREAM,
     DECISIONS_STREAM,
     SHADOW_STREAM,
     MemorySink,
 )
-from tm_agents.orchestrator.supervisor import BotSupervisor, InMemoryBotRepository
+from tm_agents.orchestrator.supervisor import (
+    BotSupervisor,
+    InMemoryBotRepository,
+    InMemoryCommandSource,
+    WorkerApiBotRepository,
+    WorkerApiCommandListener,
+)
 from tm_agents.signals import SIGNALS_STREAM, ListSignalSource, SignalEvent, StrategySnapshot
 
 __all__ = [
-    "COMMANDS_STREAM",
     "DECISIONS_STREAM",
     "SHADOW_STREAM",
     "SIGNALS_STREAM",
@@ -54,15 +58,18 @@ __all__ = [
     "CommandType",
     "FrameBarsProvider",
     "InMemoryBotRepository",
+    "InMemoryCommandSource",
     "InMemoryTradeStateRepository",
     "ListSignalSource",
     "MemorySink",
     "OfflineResult",
     "OrchestratorWorker",
-    "PostgRESTTradeStateRepository",
     "SharedSignalLayer",
     "SignalEvent",
     "StrategySnapshot",
+    "WorkerApiBotRepository",
+    "WorkerApiCommandListener",
+    "WorkerApiTradeStateRepository",
     "exposure_for_level",
     "run_offline",
 ]

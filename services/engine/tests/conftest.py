@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-import httpx
 import numpy as np
 import pandas as pd
 import pytest
 from tm_engine.decisions import DecisionEnvelope
+from tm_shared.api_client import WorkerApiClient
 from tm_shared.contracts import OrderSide, Rationale, RiskVerdict, TradeDecision
+from tm_shared.fake_api import FakeWorkerApi
 
 T0 = datetime(2024, 1, 1, tzinfo=UTC)
 
@@ -186,42 +186,17 @@ def live_orchestration():
 
 
 class FakeTradesTable:
-    """PostgREST mínimo para `public.trades` (POST, PATCH por id y GET con filtros), sin red."""
+    """Tabla `trades` detrás de la API simulada (`/internal/trades`), sin red."""
 
     def __init__(self) -> None:
-        self.rows: list[dict] = []
+        self.api = FakeWorkerApi()
 
-    def handler(self, request: httpx.Request) -> httpx.Response:
-        params = dict(request.url.params)
-        if request.method == "POST":
-            row = {**json.loads(request.content), "id": f"t-{len(self.rows) + 1}"}
-            row.setdefault("closed_at", None)
-            row.setdefault("pnl", None)
-            self.rows.append(row)
-            return httpx.Response(201, json=[row])
-        if request.method == "PATCH":
-            trade_id = params["id"].removeprefix("eq.")
-            row = next(r for r in self.rows if r["id"] == trade_id)
-            row.update(json.loads(request.content))
-            return httpx.Response(200, json=[row])
-        rows = [r for r in self.rows if self._match(r, params)]
-        offset, limit = int(params.get("offset", 0)), int(params.get("limit", 10**9))
-        return httpx.Response(200, json=rows[offset : offset + limit])
+    @property
+    def rows(self) -> list[dict]:
+        return list(self.api.trades.values())
 
-    @staticmethod
-    def _match(row: dict, params: dict) -> bool:
-        for col, cond in params.items():
-            if col in ("select", "order", "limit", "offset"):
-                continue
-            op, _, value = cond.partition(".")
-            if op == "eq" and str(row.get(col)) != value:
-                return False
-            if op == "is" and value == "null" and row.get(col) is not None:
-                return False
-        return True
-
-    def client(self) -> httpx.Client:
-        return httpx.Client(transport=httpx.MockTransport(self.handler))
+    def client(self) -> WorkerApiClient:
+        return self.api.client()
 
 
 @pytest.fixture

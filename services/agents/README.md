@@ -6,7 +6,56 @@ Worker con la biblioteca de estrategias (KronosAgent, TrendAgent, IntradayMoment
 uv run --package tm-agents python -m tm_agents
 ```
 
-El worker corre en el mismo proceso la capa compartida del orquestador (publica `tm:signals`), los BotRunner (leen `tm:signals`, publican `tm:decisions`) y el `ReferenceService` (lee `tm:signals` con su propio cursor). Cada pieza se apaga con `ORCHESTRATOR_SHARED=0`, `ORCHESTRATOR_BOTS=0` o `REFERENCE_SERVICE=0`; todas necesitan `REDIS_URL` y el `ReferenceService` además `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY`. Sin `REDIS_URL` solo escribe el heartbeat. Ver `.env.example` y `docs/arquitectura/orquestador.md`.
+El worker corre en el mismo proceso la capa compartida del orquestador (publica `tm:signals`), los BotRunner (leen `tm:signals`, publican `tm:decisions`) y el `ReferenceService` (lee `tm:signals` con su propio cursor). Cada pieza se apaga con `ORCHESTRATOR_SHARED=0`, `ORCHESTRATOR_BOTS=0` o `REFERENCE_SERVICE=0`; todas necesitan `REDIS_URL` y el `ReferenceService` además la API (`TM_API_URL` y `TM_SERVICE_TOKEN`). Sin `REDIS_URL` solo escribe el heartbeat. Ver `.env.example` y `docs/arquitectura/orquestador.md`.
+
+## Estrategia de demo `demo_pulse` (solo local)
+
+`tm_agents.strategies.demo_pulse.DemoPulseAgent` alterna long/flat en BTCUSDT cada
+`TM_DEMO_PULSE_MINUTES` minutos (2) sobre velas de 1 minuto, para ver el flujo completo en una
+demo (las estrategias reales operan con velas de 4 h y diarias). **No es una estrategia de
+trading**: su pronóstico para la SimulationGate es sintético y su `lab_report` inventado.
+
+- Solo se registra con `TM_DEMO_STRATEGY=1` (`register_demo_strategy` en `__main__.py`); el
+  paquete `tm_agents.strategies` no la importa. Lo prende `make dev` (`docker-compose.yml`);
+  `docker-compose.runner.yml` (dev y prod) nunca.
+- Su fila en `strategies` (en `active`) solo está en `apps/api/seed/seed.sql`, que se carga en
+  la D1 local; ninguna migración la crea. `tests/test_demo_pulse.py` lo verifica.
+- Con la bandera, el tope de operaciones por día del RiskAgent sube a
+  `TM_DEMO_MAX_TRADES_PER_DAY` (10,000) para que la demo no se frene.
+
+Guía: [`docs/correr-local.md`](../../docs/correr-local.md).
+
+## Conexión con la API en Cloudflare Workers (#116)
+
+El worker corre en la Mac (`make runner-up`, ver [`docs/arquitectura/motor-en-la-mac.md`](../../docs/arquitectura/motor-en-la-mac.md)) y **no tiene base de datos propia**: todo lo persistente está en D1 detrás de la API (`apps/api`, contrato en [`docs/arquitectura/api.md`](../../docs/arquitectura/api.md)). Solo hace conexiones salientes a `/internal/*` con el cliente común `tm_shared.api_client.WorkerApiClient`:
+
+| Variable | Uso |
+|---|---|
+| `TM_API_URL` | Base del Worker **sin** `/internal` (`https://tm-api.<subdominio>.workers.dev`; en desarrollo `http://host.docker.internal:8787`, `wrangler dev`). |
+| `TM_SERVICE_TOKEN` | Secreto `SERVICE_TOKEN` del Worker; va en el header `X-Service-Token`. |
+| `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET` | Opcionales: service token de Cloudflare Access (headers `CF-Access-Client-Id` / `CF-Access-Client-Secret`). |
+| `TM_API_TIMEOUT_SECONDS`, `TM_API_RETRIES` | Timeout por petición (10 s) y reintentos (3) con backoff exponencial (0.5, 1, 2… s, tope 8 s). |
+
+Los `GET`/`PUT`/`PATCH` se reintentan ante red caída, `429` y `5xx`; un `POST` solo si la conexión ni siquiera se abrió o con `429` (no se duplica una operación). Cada falla queda en el log con método, ruta, estado y el `code` del contrato.
+
+| Pieza | Endpoint | Antes |
+|---|---|---|
+| `registry.WorkerApiBackend` | `/internal/strategies[/{name}[/transitions]]` | `PostgRESTBackend` |
+| `orchestrator.supervisor.WorkerApiBotRepository` | `GET /internal/bots?status=running`, `/internal/bots/{id}` | `PostgRESTBotRepository` |
+| `orchestrator.supervisor.WorkerApiCommandListener` | `GET /internal/commands?after=<seq>` cada `COMMANDS_POLL_SECONDS` (5 s) y `POST /internal/commands/{id}/ack` (`done` o `failed` con el error) | stream `tm:commands` |
+| `orchestrator.state.WorkerApiTradeStateRepository` | `GET /internal/trades?bot_id=` por páginas | `PostgRESTTradeStateRepository` |
+| `reference.WorkerApiReferenceStore` | `POST /internal/reference/trades`, `PUT /internal/reference/equity` (lotes de 500) | `PostgRESTReferenceStore` |
+| `orchestrator.streams.WorkerApiDecisionSink` | `POST /internal/decisions` (`kind` = `decision` / `shadow`; `DECISIONS_AUDIT=0` lo apaga) | — |
+| `orchestrator.equity.EquitySnapshotReporter` | `POST /internal/equity-snapshots` cada `EQUITY_SNAPSHOT_SECONDS` (300 s) | — |
+| `explainer_runtime.WorkerApiExplanationSink` | `POST /internal/decisions` con `kind = "explanation"` | — (no corría en vivo) |
+| `orchestrator.settings.WorkerApiSettingsProvider` | `GET /internal/settings` | `WORKER_API_URL` + Bearer |
+| `tm_shared.api_client.HeartbeatReporter` | `POST /internal/heartbeat` (componente `agents`) cada `TM_HEARTBEAT_SECONDS` (30 s) | — |
+
+Los backends en memoria (`InMemoryBackend`, `InMemoryBotRepository`, `InMemoryCommandSource`, `InMemoryTradeStateRepository`, `InMemoryReferenceStore`) siguen para pruebas y backtests. Las pruebas usan `respx` y `tm_shared.fake_api.FakeWorkerApi` (la API simulada en memoria con las mismas respuestas y códigos de error que el Worker), sin red. Sin `TM_API_URL`, el orquestador corre con registro y bots en memoria (desarrollo).
+
+**Comandos de bots.** El frontend llama `POST /api/bots/{id}/start|stop|kill`; la API escribe el estado del bot y el comando en el mismo batch. El listener empieza en `after=0` al arrancar, así que los comandos que llegaron con la Mac apagada se aplican al volver; cada uno se confirma con `ack` (si el `ack` falla se reintenta en la siguiente consulta, sin volver a aplicarlo). El `sync()` periódico con `/internal/bots?status=running` es la red de seguridad si un comando se pierde.
+
+**ExplainerAgent en vivo.** El worker es síncrono (un bucle con `time.sleep`), así que antes el `asyncio.create_task` del BotRunner no tenía event loop y las explicaciones nunca se generaban en vivo. Ahora `explainer_runtime.ExplainerLoop` corre un event loop en un hilo *daemon*; el BotRunner le entrega la corrutina (`explain_executor`) y sigue sin esperar al LLM (tope de 100 explicaciones en vuelo). La explicación se guarda con `POST /internal/decisions` (`kind = "explanation"`, `payload = {envelope_id, text}`); `envelope_id` es el `id` del `DecisionEnvelope` que también se audita con `kind = "decision"`, así que el frontend puede unirlas. La tabla `trades` no tiene columna de explicación.
 
 ## MonteCarloService (laboratorio)
 
@@ -30,27 +79,80 @@ result.approved, result.reasons
 
 `reshuffle` permuta sin reemplazo (conserva el retorno final y cambia el camino); `bootstrap` remuestrea con reemplazo, por bloques circulares si `block_size > 1`. La semilla es obligatoria.
 
-## LLMClient
+Para tomar el límite de drawdown del perfil: `ApprovalCriteria.for_profile(profile.max_drawdown)` (el drawdown p95 debe quedar por debajo del `max_drawdown` del usuario).
 
-`tm_agents.llm` expone `LLMClient.complete_json(prompt, schema)`, que devuelve una instancia Pydantic ya validada o lanza `LLMError`. El proveedor se elige con `LLM_PROVIDER`:
+## LLM y noticias: opcionales y apagados por defecto (#118)
 
-| `LLM_PROVIDER` | Implementación | Variables |
+**Por defecto no cuesta nada.** Con la configuración por defecto el motor corre completo sin ninguna llave de LLM ni de noticias: no se arma el NewsAgent, no hay llamadas al LLM, la capa compartida recibe `news=None` (sin filtro de noticias) y el ExplainerAgent usa la plantilla determinista. Todo se prende por variables de entorno y, si se quiere, en caliente desde el admin.
+
+| Variable | Default | Valores | Qué hace |
+|---|---|---|---|
+| `NEWS_ENABLED` | `false` | `true`/`false` | Prende el NewsAgent (titulares → clasificación → vetos). Apagado: `news=None`. |
+| `EXPLAINER_ENABLED` | `false` | `true`/`false` | Prende el ExplainerAgent con LLM. Apagado (o sin LLM): plantilla. |
+| `LLM_PROVIDER` | `none` | `none`, `workers-ai`, `groq`, `openai-compatible`, `fake` | Proveedor del LLM. `none`: noticias por palabras clave y explainer con plantilla. |
+| `CF_ACCOUNT_ID`, `CF_AI_API_TOKEN` | — | | Workers AI por REST (10,000 neurons al día gratis). |
+| `WORKERS_AI_MODEL` | `@cf/meta/llama-3.1-8b-instruct` | | Modelo de Workers AI (debe soportar el modo JSON). |
+| `GROQ_API_KEY`, `GROQ_MODEL` | —, `openai/gpt-oss-20b` | | Groq (tier gratuito). |
+| `OPENAI_COMPAT_BASE_URL`, `OPENAI_COMPAT_API_KEY`, `OPENAI_COMPAT_MODEL` | — | | Cualquier API compatible con OpenAI (OpenRouter, Ollama local…). La llave es opcional. |
+| `OPENAI_COMPAT_RESPONSE_FORMAT` | `json_schema` | `json_schema`, `json_object` | `json_object` para servidores que no aceptan esquemas. |
+| `LLM_TIMEOUT_SECONDS`, `LLM_MAX_RETRIES` | `20` (`30` Workers AI), `3` | | Comunes a los proveedores HTTP. |
+| `NEWS_SOURCE` | `rss` | `rss`, `cryptopanic` | De dónde salen los titulares. |
+| `NEWS_RSS_FEEDS` | CoinDesk, Cointelegraph, Decrypt | URLs separadas por coma | Feeds RSS/Atom gratis. |
+| `NEWS_RSS_MAX_AGE_HOURS` | `24` | | Solo titulares recientes. |
+| `CRYPTOPANIC_TOKEN`, `CRYPTOPANIC_PLAN` | —, `developer` | | Solo con `NEWS_SOURCE=cryptopanic`. |
+| `NEWS_REFRESH_SECONDS` | `300` | | Cada cuánto corre el NewsAgent en el worker. |
+| `NEWS_VETO_HIGH_HOURS`, `NEWS_VETO_CRITICAL_HOURS` | `4`, `24` | | Duración de los vetos. |
+| `SETTINGS_SOURCE` | `worker-api` si hay `TM_API_URL` y `TM_SERVICE_TOKEN`; si no, `env` | `env`, `worker-api` | De dónde salen los interruptores en caliente (abajo). |
+| `SETTINGS_REFRESH_SECONDS` | `300` | | Caché de los interruptores remotos. |
+
+Combinaciones típicas:
+
+| Escenario | Variables | Costo |
 |---|---|---|
-| `groq` (por defecto) | `GroqClient` (API compatible con OpenAI, `response_format=json_schema`) | `GROQ_API_KEY`, `GROQ_MODEL` (`openai/gpt-oss-20b`), `LLM_TIMEOUT_SECONDS` (20), `LLM_MAX_RETRIES` (3) |
-| `fake` | `FakeLLM` (respuestas predefinidas, para pruebas) | — |
+| Todo apagado (default) | — | 0 |
+| Noticias gratis sin LLM | `NEWS_ENABLED=true` | 0 (RSS + palabras clave) |
+| Noticias con Workers AI | `NEWS_ENABLED=true LLM_PROVIDER=workers-ai CF_ACCOUNT_ID=… CF_AI_API_TOKEN=…` | 0 dentro de las 10,000 neurons diarias |
+| CryptoPanic + Groq | `NEWS_ENABLED=true NEWS_SOURCE=cryptopanic CRYPTOPANIC_TOKEN=… LLM_PROVIDER=groq GROQ_API_KEY=…` | 0 en los tiers gratuitos |
+| Explicaciones con LLM | `EXPLAINER_ENABLED=true` + cualquier `LLM_PROVIDER` | igual que el proveedor |
 
-`GroqClient` reintenta con backoff exponencial (respeta `Retry-After`) ante timeouts, errores de red, 408/409/429/5xx, JSON inválido o fuera del esquema; los demás 4xx fallan de inmediato.
+Si el proveedor elegido no tiene sus llaves, el worker lo registra y sigue **sin LLM** (palabras clave y plantilla), no se cae.
+
+### Interruptores en caliente (`tm_agents.orchestrator.settings`)
+
+El worker consulta un `SettingsProvider` (`get_bool("news_enabled")`, `get_bool("explainer_enabled")`) en cada ciclo:
+
+- `EnvSettingsProvider` (`SETTINGS_SOURCE=env`, o sin API): lee `NEWS_ENABLED` y `EXPLAINER_ENABLED`.
+- `WorkerApiSettingsProvider` (`SETTINGS_SOURCE=worker-api`, el default con API): el interruptor del admin (`PUT /api/admin/settings`). Hace `GET {TM_API_URL}/internal/settings` con el cliente común (`X-Service-Token` y, si existen, los headers de Access), que responde `{"news_enabled": bool, "explainer_enabled": bool}` desde la tabla `settings` de D1. Guarda la respuesta `SETTINGS_REFRESH_SECONDS` y no reintenta (el ciclo no se cuelga); si la API falla usa los últimos valores conocidos y, si nunca respondió, los del entorno.
+
+`NewsService` (`tm_agents.news.service`) aplica el interruptor: apagado, no arma el NewsAgent y deja `news=None`; prendido, lo arma la primera vez, lo conecta a la capa compartida y corre `refresh` cada `NEWS_REFRESH_SECONDS`. El ExplainerAgent revisa su interruptor en cada explicación.
+
+### LLMClient
+
+`tm_agents.llm` expone `LLMClient.complete_json(prompt, schema)`, que devuelve una instancia Pydantic ya validada o lanza `LLMError`. `build_llm_client()` lee `LLM_PROVIDER` y devuelve `None` con `none`.
+
+| `LLM_PROVIDER` | Implementación |
+|---|---|
+| `workers-ai` | `WorkersAIClient`: `POST https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/ai/run/{modelo}` con `response_format=json_schema` (modo JSON). |
+| `groq` | `GroqClient` (API compatible con OpenAI, `response_format=json_schema`, `reasoning_effort=low`). |
+| `openai-compatible` | `OpenAICompatibleClient` (`POST {base}/chat/completions`). |
+| `fake` | `FakeLLM` (respuestas predefinidas, para pruebas). |
+
+Todos reintentan con backoff exponencial (respetan `Retry-After`) ante timeouts, errores de red, 408/409/429/5xx, JSON inválido o fuera del esquema; los demás 4xx fallan de inmediato.
 
 ```python
 from tm_agents.llm import build_llm_client
 
-llm = build_llm_client()  # lee LLM_PROVIDER y GROQ_API_KEY del entorno
-result = llm.complete_json("...", MiEsquema)
+llm = build_llm_client()  # None con LLM_PROVIDER=none
+if llm is not None:
+    result = llm.complete_json("...", MiEsquema)
 ```
 
-## NewsAgent
+### NewsAgent
 
-`tm_agents.news` baja titulares de CryptoPanic (API v2, `CRYPTOPANIC_TOKEN`), los clasifica con el `LLMClient` (impacto `low`/`high`/`critical`, activos afectados y sentimiento en [-1, 1]) y **solo veta nuevas entradas**; nunca abre ni cierra operaciones.
+`tm_agents.news` baja titulares (RSS gratis por defecto o CryptoPanic), los clasifica (impacto `low`/`high`/`critical`, activos afectados y sentimiento en [-1, 1]) y **solo veta nuevas entradas**; nunca abre ni cierra operaciones.
+
+- **Fuente RSS** (`RSSNewsSource`): parsea RSS 2.0 y Atom con `xml.etree`, se queda con lo publicado en las últimas `NEWS_RSS_MAX_AGE_HOURS` horas que mencione BTC, ETH o las stablecoins (por ticker o por nombre). Si un feed falla se ignora; si fallan todos, fail-open.
+- **Clasificador**: con LLM (`LLMHeadlineClassifier`) o, con `LLM_PROVIDER=none`, por palabras clave (`KeywordClassifier`): `depeg`, `insolvency`, `bankruptcy`, `halts withdrawals`… → `critical`; `hack`, `exploit`, `breach`, `stolen`, `SEC`/`CFTC`/`DOJ`, `lawsuit`, `ban`, `delist`, `sanction`, `outage`… → `high`; lo demás `low`.
 
 | Impacto | Alcance | Duración (desde la publicación) |
 |---|---|---|
@@ -60,7 +162,7 @@ result = llm.complete_json("...", MiEsquema)
 
 Los vetos se guardan en Redis (`REDIS_URL`, claves `tm:news:veto:<scope>` con TTL) y, si Redis no está o falla, en memoria del proceso.
 
-**Fail-open:** si CryptoPanic o el LLM fallan, el ciclo no veta, registra un warning y lo reintenta en el siguiente ciclo (`RefreshResult.failed_open`). El RiskAgent y los SL siguen protegiendo el capital.
+**Fail-open:** si la fuente o el LLM fallan, el ciclo no veta, registra un warning y lo reintenta en el siguiente ciclo (`RefreshResult.failed_open`). El RiskAgent y los SL siguen protegiendo el capital.
 
 ```python
 from tm_agents.news import news_agent_from_env
@@ -70,7 +172,9 @@ agent.refresh(["BTCUSDT", "ETHUSDT"])  # noticias -> clasificación -> vetos
 agent.active_veto("BTCUSDT")  # Veto vigente o None
 ```
 
-Para tomar el límite de drawdown del perfil: `ApprovalCriteria.for_profile(profile.max_drawdown)` (el drawdown p95 debe quedar por debajo del `max_drawdown` del usuario).
+### ExplainerAgent
+
+`tm_agents.explainer.explainer_from_env(llm=…, enabled=…)` arma el ExplainerAgent del worker; el `BotSupervisor` se lo pasa a cada `BotRunner`. Con el interruptor apagado o sin LLM, la justificación sale de la plantilla determinista (#101) sin hacer red.
 
 ## PortfolioAllocator (capital por sleeve)
 
@@ -156,13 +260,13 @@ de 120 s).
 
 ## StrategyRegistry (ciclo de vida)
 
-`tm_agents.registry.StrategyRegistry` guarda el estado de cada estrategia (`research → lab → shadow → active → probation → retired`, con revalidación `retired → lab`) y su historial, sobre las tablas `strategies` y `strategy_transitions` de Supabase (ver `supabase/README.md`).
+`tm_agents.registry.StrategyRegistry` guarda el estado de cada estrategia (`research → lab → shadow → active → probation → retired`, con revalidación `retired → lab`) y su historial, sobre las tablas `strategies` y `strategy_transitions` de D1, detrás de la API (`/internal/strategies`, migración `apps/api/migrations/0002_strategies.sql`).
 
 ```python
-from tm_agents.registry import SYSTEM_ACTOR, InMemoryBackend, PostgRESTBackend, StrategyRegistry
+from tm_agents.registry import SYSTEM_ACTOR, InMemoryBackend, StrategyRegistry, WorkerApiBackend
 from tm_agents.strategy_stats import StrategyState
 
-registry = StrategyRegistry(PostgRESTBackend.from_env())  # o StrategyRegistry(InMemoryBackend())
+registry = StrategyRegistry(WorkerApiBackend.from_env())  # o StrategyRegistry(InMemoryBackend())
 registry.ensure("trend", {"lookbacks": [20, 50, 100]})  # nace en research
 registry.transition("trend", StrategyState.LAB, SYSTEM_ACTOR, "entra al laboratorio")
 registry.record_lab_report("trend", {"sharpe_oos": 0.8, "max_drawdown_p95": 0.22})
@@ -173,22 +277,22 @@ registry.history("trend")  # [StrategyTransition(from_state, to_state, actor, ..
 ```
 
 - `transition(name, to, actor, reason)` solo acepta las transiciones de `ALLOWED_TRANSITIONS` y lanza `TransitionError` en cualquier otra. Las promociones `shadow → active` y `probation → active` exigen un actor humano (el `user_id`, UUID); con `SYSTEM_ACTOR` fallan. Las degradaciones y los retiros pueden ser automáticos o manuales. La razón es obligatoria.
-- Si el estado cambió entre la lectura y la escritura (otro proceso llegó antes), se lanza `StaleStateError`; la base exige que `from_state` sea el estado actual.
-- La base vuelve a validar todo (checks y triggers), así que las reglas se respetan aunque otro servicio escriba directo con la llave `service_role`.
-- `PostgRESTBackend.from_env()` lee `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` (la llave `service_role` en JWT o la nueva `sb_secret_...`; ambas salen de `supabase status -o env`). Las pruebas usan `InMemoryBackend` y `respx`, sin red.
+- Si el estado cambió entre la lectura y la escritura (otro proceso llegó antes), la API responde `409 stale_state` y se lanza `StaleStateError`; la base exige que `from_state` sea el estado actual.
+- La base vuelve a validar todo (checks y triggers de D1), así que las reglas se respetan aunque otra pieza llame a la API directo. Los `code` del contrato se traducen: `strategy_exists` → `StrategyExistsError`, `transition_not_allowed`/`check_violation` → `TransitionError`, `not_found` → `StrategyNotFoundError`.
+- `WorkerApiBackend.from_env()` lee `TM_API_URL`, `TM_SERVICE_TOKEN` y los headers de Access. Las pruebas usan `InMemoryBackend`, `respx` y `FakeWorkerApi`, sin red.
 
 ## Portafolio de referencia y modo shadow (`tm_agents.reference`)
 
 Cada estrategia en `shadow`, `active` o `probation` tiene un **ledger de referencia** a nivel app (capa compartida, propuesta, sección 3.4). Corre a tamaño completo (100 % del sleeve, 100,000 USDT nominales repartidos por igual entre BTCUSDT y ETHUSDT) con las mismas señales que reciben los bots. El LifecycleMonitor juzga a la estrategia con este portafolio y no con el P&L de ningún usuario.
 
 ```python
-from tm_agents.reference import REFERENCE_CHECKPOINT, PostgRESTReferenceStore, ReferenceService
-from tm_agents.registry import PostgRESTBackend, StrategyRegistry
+from tm_agents.reference import REFERENCE_CHECKPOINT, ReferenceService, WorkerApiReferenceStore
+from tm_agents.registry import StrategyRegistry, WorkerApiBackend
 from tm_agents.signals import RedisSignalSource
 
 svc = ReferenceService(
-    StrategyRegistry(PostgRESTBackend.from_env()),
-    PostgRESTReferenceStore.from_env(),
+    StrategyRegistry(WorkerApiBackend.from_env()),
+    WorkerApiReferenceStore.from_env(),
     RedisSignalSource(redis_client, checkpoint_key=REFERENCE_CHECKPOINT),
 )
 svc.run_once()  # el worker `python -m tm_agents` lo llama cada HEARTBEAT_INTERVAL (REFERENCE_SERVICE=0 lo apaga)
@@ -199,5 +303,5 @@ svc.run_once()  # el worker `python -m tm_agents` lo llama cada HEARTBEAT_INTERV
 - **Métricas** (comparables con las del laboratorio): equity, drawdown actual y máximo, retorno, CAGR (desde 30 días), Sharpe diario anualizado con 365 días, trades, win rate, comisiones y Sharpe de los últimos 30 trades. Junto a ellas van el Sharpe OOS y el p95/p99 del drawdown del laboratorio (`lab.drawdown_vs_p95`). Se guardan en `strategies.live_metrics` con el estado del ledger (`ledger`), para retomarlo tras un reinicio.
 - **LifecycleMonitor cableado**: `check` corre cada vez que se cierra un trade de referencia y una vez al día. Si propone una transición, se aplica con `StrategyRegistry.transition(..., actor="system")` y queda en el log (`LifecycleMonitor: 'trend' active -> probation (actor=system): ...`). Las promociones nunca son automáticas. La banda del Monte Carlo sale de `lab_report`, en el formato del walk-forward (`montecarlo.max_drawdown.p95/p99`) o en el plano (`max_drawdown_p95/p99`).
 - **Persistencia** (`store.py`): `reference_trades` (trades cerrados) y `reference_equity` (un punto por día UTC), con escrituras idempotentes. Si la base falla, los datos quedan pendientes y se reintentan en el siguiente ciclo; el checkpoint del stream no avanza hasta que todo se guardó.
-- **Días en shadow sin fallas** (página #58): `live_metrics.shadow` trae `started_at` (entrada a shadow, cuando empieza la corrida), `clean_since`, `days_clean`, `min_days` (7), `eligible_for_promotion`, `failures` y la última falla. Una falla es una señal que no se pudo aplicar (de un símbolo que el ledger no opera o un error al aplicarla) o un silencio de más de 3 velas de su timeframe. En la base, `GET /strategies?select=*,shadow_days_clean` lo calcula al momento.
+- **Días en shadow sin fallas** (página #58): `live_metrics.shadow` trae `started_at` (entrada a shadow, cuando empieza la corrida), `clean_since`, `days_clean`, `min_days` (7), `eligible_for_promotion`, `failures` y la última falla. Una falla es una señal que no se pudo aplicar (de un símbolo que el ledger no opera o un error al aplicarla) o un silencio de más de 3 velas de su timeframe. La API lo devuelve como `shadow_days_clean` en `GET /api/strategies`.
 - **Shadow nunca envía órdenes**: este servicio no tiene cliente del exchange ni escribe en `tm:decisions`. Además, `TradingSleeveGuard` (`guard.py`) se le pasa a `AgenticStrategy` del motor: solo generan órdenes los sleeves cuya estrategia está en `active` o `probation`, y cualquier otro (shadow, desconocido o con el registro inaccesible) se rechaza. Hay pruebas de las dos cosas (`test_reference_service.py` y `services/engine/tests/test_shadow_guard.py`).

@@ -1,26 +1,23 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
-import { useAuth } from "@/components/auth/AuthProvider";
+import { useCallback, useMemo, useState } from "react";
+import useSWR from "swr";
 import { BotControls } from "@/components/dashboard/BotControls";
 import { EquityChart } from "@/components/dashboard/EquityChart";
 import { SleevePositions } from "@/components/dashboard/SleevePositions";
 import { TradeList } from "@/components/dashboard/TradeList";
+import { POLL_MS } from "@/components/providers/ApiProvider";
 import { Card, EmptyState, ErrorBox, LiveBadge, Loading } from "@/components/ui/feedback";
 import { primaryButtonClass } from "@/components/ui/styles";
 import { apiErrorMessage, createBot, type ApiBot } from "@/lib/api/client";
 import {
-  dashboardReducer,
-  DashboardLoadError,
-  EMPTY_DASHBOARD,
-  fetchDashboard,
+  DASHBOARD_KEY,
   portfolioEquity,
   sleeves,
   summarize,
-  type BotRow,
-  type SnapshotRow,
-  type TradeRow,
+  withBot,
+  type DashboardData,
 } from "@/lib/dashboard/data";
 import { formatDateTime, formatMoney, formatPct, formatSignedMoney } from "@/lib/format";
 
@@ -44,78 +41,31 @@ const tone = (v: number) => (v > 0 ? "good" : v < 0 ? "bad" : undefined);
 
 /**
  * Dashboard en tiempo real (#23): equity, P&L, posiciones por sleeve, últimas operaciones
- * con su rationale y los controles del bot. Carga con supabase-js y después escucha
- * trades, equity_snapshots y bots por Supabase Realtime (RLS filtra los eventos ajenos).
+ * con su rationale y los controles del bot. Lee `GET /api/dashboard` y lo vuelve a pedir
+ * cada `refreshMs` (polling con SWR, que se pausa con la pestaña oculta). Las respuestas de
+ * los botones del bot se aplican al momento sin esperar al siguiente refresco.
  * Va dentro de <RequireAuth>.
  */
-export function DashboardView() {
-  const { supabase, session } = useAuth();
-  const userId = session?.user.id;
-  const token = session?.access_token ?? "";
-  const [data, dispatch] = useReducer(dashboardReducer, EMPTY_DASHBOARD);
-  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
-  const [error, setError] = useState<string | null>(null);
-  const [live, setLive] = useState(false);
-  const [reload, setReload] = useState(0);
+export function DashboardView({ refreshMs = POLL_MS }: { refreshMs?: number }) {
+  const { data: loaded, error, isLoading, mutate } = useSWR<DashboardData>(DASHBOARD_KEY, {
+    refreshInterval: refreshMs,
+  });
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!supabase || !userId) return;
-    let active = true;
-    setStatus("loading");
-    fetchDashboard(supabase, userId)
-      .then((loaded) => {
-        if (!active) return;
-        dispatch({ type: "loaded", data: loaded });
-        setStatus("ready");
-      })
-      .catch((err) => {
-        if (!active) return;
-        setError(err instanceof DashboardLoadError ? err.message : "No se pudo cargar el dashboard.");
-        setStatus("error");
-      });
-    return () => {
-      active = false;
-    };
-  }, [supabase, userId, reload]);
-
-  useEffect(() => {
-    if (!supabase || !userId) return;
-    const channel = supabase
-      .channel(`dashboard:${userId}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "trades" }, (payload) => {
-        if (payload.eventType !== "DELETE") dispatch({ type: "trade", row: payload.new as TradeRow });
-      })
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "equity_snapshots" }, (payload) => {
-        dispatch({ type: "snapshot", row: payload.new as SnapshotRow });
-      })
-      .on("postgres_changes", { event: "*", schema: "public", table: "bots" }, (payload) => {
-        if (payload.eventType === "DELETE") {
-          const id = (payload.old as { id?: string }).id;
-          if (id) dispatch({ type: "botDeleted", id });
-        } else {
-          dispatch({ type: "bot", row: payload.new as BotRow });
-        }
-      })
-      .subscribe((state) => setLive(state === "SUBSCRIBED"));
-    return () => {
-      setLive(false);
-      void supabase.removeChannel(channel);
-    };
-  }, [supabase, userId]);
-
-  const onBotChange = useCallback((bot: ApiBot) => dispatch({ type: "bot", row: bot }), []);
-  const summary = useMemo(() => summarize(data), [data]);
-  const curve = useMemo(() => portfolioEquity(data.snapshots), [data.snapshots]);
-  const bySleeve = useMemo(() => sleeves(data), [data]);
+  const applyBot = useCallback(
+    (bot: ApiBot) => void mutate((current) => (current ? withBot(current, bot) : current), { revalidate: false }),
+    [mutate],
+  );
+  const summary = useMemo(() => (loaded ? summarize(loaded) : null), [loaded]);
+  const curve = useMemo(() => portfolioEquity(loaded?.snapshots ?? []), [loaded]);
+  const bySleeve = useMemo(() => (loaded ? sleeves(loaded) : []), [loaded]);
 
   async function handleCreateBot() {
     setCreating(true);
     setCreateError(null);
     try {
-      const bot = await createBot("Mi bot", { token });
-      dispatch({ type: "bot", row: bot });
+      applyBot(await createBot("Mi bot"));
     } catch (err) {
       setCreateError(apiErrorMessage(err));
     } finally {
@@ -131,11 +81,11 @@ export function DashboardView() {
           BTC/USDT y ETH/USDT en Binance Testnet (sin dinero real).
         </p>
       </div>
-      <LiveBadge live={live} />
+      <LiveBadge live={Boolean(loaded) && !error} />
     </div>
   );
 
-  if (status === "loading") {
+  if (isLoading && !loaded) {
     return (
       <>
         {header}
@@ -143,14 +93,15 @@ export function DashboardView() {
       </>
     );
   }
-  if (status === "error") {
+  if (!loaded || !summary) {
     return (
       <>
         {header}
-        <ErrorBox onRetry={() => setReload((n) => n + 1)}>{error}</ErrorBox>
+        <ErrorBox onRetry={() => void mutate()}>No se pudo cargar el dashboard. {apiErrorMessage(error)}</ErrorBox>
       </>
     );
   }
+  const data = loaded;
   if (!data.profile) {
     return (
       <>
@@ -225,7 +176,7 @@ export function DashboardView() {
           ) : (
             <div className="space-y-6">
               {data.bots.map((bot) => (
-                <BotControls key={bot.id} bot={bot} token={token} onChange={onBotChange} />
+                <BotControls key={bot.id} bot={bot} onChange={applyBot} />
               ))}
             </div>
           )}

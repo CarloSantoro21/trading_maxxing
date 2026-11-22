@@ -39,7 +39,7 @@ addopts = "-q --import-mode=importlib"
 testpaths = ["packages", "services"]
 
 [tool.coverage.run]
-source = ["packages/shared/src", "packages/marketdata/src", "services/api/src", "services/agents/src", "services/forecast/src", "services/engine/src"]
+source = ["packages/shared/src", "packages/marketdata/src", "services/agents/src", "services/forecast/src", "services/engine/src"]
 branch = true
 # Código de Kronos incorporado tal cual (vendor): no cuenta para la cobertura
 omit = ["services/forecast/src/tm_forecast/kronos/*"]

@@ -1,43 +1,91 @@
-# Estado del proyecto (8 de noviembre de 2026)
+# Estado del proyecto (21 de noviembre de 2026)
 
-Documento de traspaso para el equipo. Lo que está aquí ya está en `develop` y en `main`.
-
-> **Actualización del 17 de noviembre de 2026:** ya tenemos la rúbrica oficial y manda sobre este documento. Ver **[docs/rubrica.md](rubrica.md)**. El cambio principal: el backend se despliega en **Azure App Service** (ya no en AWS) y el deploy a dev y a prod es obligatorio, sin esperar al go/no-go.
+Documento de traspaso para el equipo. Manda la **[rúbrica oficial](rubrica.md)**: entrega y demo
+el **6 de diciembre de 2026**.
 
 ## Resumen
 
-**38 de 53 issues cerrados.** Están completos el motor, los datos, el laboratorio, los agentes, la API, la base de datos, el frontend principal y el CI/CD de pruebas e imágenes. Lo que falta está en la tabla de pendientes y depende sobre todo de cuentas externas: Binance Testnet, AWS, Cloudflare y Docker Hub.
+**47 de 60 issues cerrados.** Están completos el motor, los datos, el laboratorio, los agentes,
+el orquestador, el frontend principal, el CI de pruebas e imágenes y la API nueva en Cloudflare
+Workers. Lo que falta es, sobre todo, **la migración a Cloudflare y el deploy** (ruta crítica de
+la rúbrica).
 
-Para entender el diseño, lee en este orden:
-1. [Propuesta](propuesta/Propuesta-trading_maxxing.md). Las secciones clave son la 3.2 (flujo), la 3.3 (ciclo de vida de las estrategias) y la 3.4 (qué es de la app y qué es del usuario).
-2. [Criterios de aprobación](estrategias/criterios-de-aprobacion.md).
+Lo nuevo desde el 8 de noviembre:
+
+- **PRs de Javi fusionados** (#96 a #107): `MovingAverageAgent` SMA 50/100 (#82), `TsmomAgent`
+  semanal (#81), skill `nueva-estrategia` (#59), scaffold del go/no-go (#44), Wiki en
+  `docs/wiki/` con script de publicación (#7), `ExplainerAgent` con plantilla de respaldo
+  (#37), documentación final (#30), `TradingNode` contra Binance Testnet con smoke test (#11),
+  E2E con Playwright (#28) y caché de KV de Kronos (#62). Release a `main` en el PR #114.
+- **Auditor multimodal (#108) congelado** hasta después de la entrega: los PRs #110 a #113 se
+  cerraron sin fusionar.
+- **LLM y noticias opcionales** (#118, PR #119): apagados por defecto
+  (`NEWS_ENABLED=false`, `EXPLAINER_ENABLED=false`, `LLM_PROVIDER=none`), con proveedores
+  gratis si se prenden (RSS, Workers AI, Groq).
+- **API en Cloudflare Workers** (#115, PR #120): Hono + TypeScript + D1, login con Access,
+  endpoints `/api/*` para la web y `/internal/*` para el motor. Contrato en
+  [`arquitectura/api.md`](arquitectura/api.md).
+- **Migración a Cloudflare en curso** (decisión del 21 de noviembre, ver abajo).
+
+## Arquitectura final
+
+Todo lo público en **Cloudflare, plan gratuito**, sin Supabase:
+
+- **Pages** (`tm-web-dev` / `tm-web`): export estático de Next.js; reenvía `/api/*` al Worker
+  por el service binding `API`.
+- **Workers + Hono** (`tm-api-dev` / `tm-api`) con **D1** (`tm-dev` / `tm-prod`).
+- **Access** (Zero Trust) delante de Pages, y una app con *service token* para el motor.
+- **Workers Observability** para APM y métricas.
+- **Motor en la Mac de Carlo**: agents, engine (NautilusTrader), forecast (Kronos) y Redis con
+  `docker compose`, imágenes de Docker Hub y Watchtower. Solo conexiones salientes a Binance
+  Spot Testnet y a `/internal/*` del Worker.
+- **Terraform** de Cloudflare en el repo separado
+  [`trading_maxxing-infra`](https://github.com/CarloSantoro21/trading_maxxing-infra).
+
+Por qué el motor no va en Workers y el plan con Cloudflare Containers:
+[`arquitectura/cloudflare.md`](arquitectura/cloudflare.md). Diagramas en la
+[Wiki](wiki/Infraestructura.md).
+
+## Para entender el diseño, en este orden
+
+1. [Propuesta](propuesta/Propuesta-trading_maxxing.md): secciones 3.2 (flujo), 3.3 (ciclo de
+   vida) y 3.4 (qué es de la app y qué es del usuario).
+2. [Arquitectura final en Cloudflare](arquitectura/cloudflare.md) y
+   [contrato de la API](arquitectura/api.md).
 3. [Arquitectura del orquestador](arquitectura/orquestador.md).
-4. [Resultados del Trend](estrategias/resultados-trend.md) y [del Momentum](estrategias/resultados-intraday-momentum.md).
-5. [Investigación de estrategias nuevas](estrategias/investigacion-nuevas-estrategias.md).
+4. [Criterios de aprobación](estrategias/criterios-de-aprobacion.md) y resultados del
+   [Trend](estrategias/resultados-trend.md) y del
+   [Momentum](estrategias/resultados-intraday-momentum.md).
 
 ## Cómo levantarlo en local
 
+Todo el sistema (API en `wrangler dev` con D1 local, web y motor en Docker) con un comando,
+sin llaves: el motor usa la estrategia de demo `demo_pulse` y, sin llaves de Binance Testnet,
+la ejecución simulada. Guía: [`correr-local.md`](correr-local.md).
+
 ```bash
-cp .env.example .env              # llena las llaves que tengas
-make up                           # Supabase (CLI) + Redis + api + agents + engine + forecast
-make web                          # frontend en http://localhost:3000
+make dev          # API + web + motor; imprime las URLs
+make e2e-local    # Playwright de punta a punta: arranca un bot y espera su primera operación
+make dev-down
 make test && make lint
 ```
 
-- **Usuario demo (admin):** `demo@trading-maxxing.local` / `demo1234`. Para dar de alta a alguien más: `make user EMAIL=... ROLE=member`.
-- **Datos históricos:** no están en git. Se bajan con `uv run --package tm-marketdata python -m tm_marketdata download --symbols BTCUSDT ETHUSDT --tf 1m 15m 30m 1d --start 2020-01-01 --end 2026-10-31`.
-- **Pronósticos de Kronos:** `services/forecast/scripts/precompute.py`. Tarda unas 3 h en una Mac M5 con MPS.
+- **Datos históricos:** no están en git. Se bajan con
+  `uv run --package tm-marketdata python -m tm_marketdata download --symbols BTCUSDT ETHUSDT --tf 1m 15m 30m 1d --start 2020-01-01 --end 2026-10-31`.
+- **Pronósticos de Kronos:** `services/forecast/scripts/precompute.py` (más rápido con la caché
+  de KV de #62).
 
 ## Decisiones tomadas
 
 | Tema | Decisión |
 |---|---|
 | Mercado | Solo cripto: BTC/USDT y ETH/USDT en Binance **Spot Testnet**. `long` = comprar, `flat` = USDT; no se abren cortos |
-| Arquitectura | **Capa compartida** (señales, laboratorio, noticias, SimulationGate y ciclo de vida se calculan una vez) y **capa por usuario** (cada bot ejecuta según su capital y su nivel de riesgo del 1 al 5) |
-| Usuarios | App para menos de 10 personas. Cada quien tiene su portafolio, aislado por RLS. Sin registro público; roles admin y member |
-| Estrategias | Entran por PR, se validan en el laboratorio (walk-forward + Monte Carlo) y pasan por shadow ≥ 7 días antes de que un admin las promueva. La degradación es automática por el p95 y el p99 |
-| Validación | Walk-forward de 20 tramos, de 2021 a 2025. **Holdout 2026 (enero a octubre): no se ha corrido.** El de 2025 quedó contaminado en #84 |
-| Despliegue | **Local primero**: la nube solo para la entrega o si el go/no-go (#44) da *go*. El frontend se publica estático en Cloudflare Pages; el backend va en ECS Fargate ARM con Terraform |
+| Arquitectura del motor | **Capa compartida** (señales, laboratorio, noticias, SimulationGate y ciclo de vida, una vez) y **capa por usuario** (cada bot según su capital y su nivel de riesgo del 1 al 5) |
+| Usuarios | Menos de 10 personas. Login con Cloudflare Access (allowlist); roles admin y member en D1; cada quien ve solo lo suyo (filtros por usuario en la API) |
+| Estrategias | Entran por PR, se validan en el laboratorio (walk-forward + Monte Carlo) y pasan por shadow ≥ 7 días antes de que un admin las promueva. Degradación automática por el p95 y el p99 |
+| Validación | Walk-forward de 20 tramos, de 2021 a 2025. **Holdout 2026 (enero a octubre): no se ha corrido** |
+| Nube | **Cloudflare, plan gratuito** (Pages, Workers, D1, Access, Observability); el motor en la Mac. El deploy es obligatorio y ya no depende del go/no-go (#44) |
+| LLM | Opcional y apagado por defecto; ninguna decisión de trading depende de él |
 
 ## Resultados del laboratorio
 
@@ -51,35 +99,41 @@ Fuera de muestra 2021–2025, con comisiones:
 | Momentum intradía | −2.65 | — | 15.1 % | Rechazada: las comisiones se comen la ventaja |
 | Comprar y mantener | 0.71 | 77.4 % | — | — |
 
-**Decisión pendiente:** aprobar el Trend con un tope fijo de ~75 % o con volatility targeting, o correr el holdout 2026 una sola vez con ambos y decidir con ese resultado. Kronos tiene listos los pronósticos de julio de 2024 a octubre de 2026, pero su laboratorio no se ha corrido.
+**Decisión pendiente:** aprobar el Trend con tope fijo o con volatility targeting, o correr el
+holdout 2026 una sola vez con ambos. Los laboratorios de Kronos, SMA 50/100 y TSMOM están
+pendientes de correr.
 
-## Pendientes
+## Pendientes (ruta crítica de la rúbrica primero)
 
-| Issue | Qué falta | Bloqueado por |
+| Issue | Qué falta | Criterio de la rúbrica |
 |---|---|---|
-| #11 | Probar el TradingNode contra Binance Testnet; el código está listo | Llaves de Binance Testnet |
-| #44 | Go/no-go: ≥ 5 días de paper trading continuo | Llaves de Binance. **Ruta crítica**: debe empezar alrededor del 25 de noviembre |
-| #28 | Pruebas E2E con Playwright (login → onboarding → bot → trade → dashboard) | — |
-| #81, #82 | Nuevas estrategias: TSMOM semanal y SMA 50/100. Entran en *research* | — |
-| #37 | ExplainerAgent (LLM que redacta la justificación) | Llave de Groq |
-| #26, #39, #29 | Terraform: el código está, falta el *apply* | Cuenta de AWS (¿AWS Academy?) |
-| #27 | CD a AWS (workflow manual) | Cuenta de AWS |
-| #45 | Deploy en Cloudflare Pages: el código y el workflow están | Cuenta de Cloudflare y token |
-| #30 | Documentación final y demo | — |
-| #7 | Wiki | — |
-| #59, #62 | Skill de estrategias y caché de KV de Kronos (opcionales) | — |
+| #26, #39, #109 | Terraform de Cloudflare: `apply` de D1, Pages y Access en dev y prod, estado remoto y CI del repo de infra | Terraform, Ambientes |
+| #117 | Frontend sin Supabase: login con Access, datos por `/api/*` y polling | Ambientes, Pipeline del front |
+| #116 | Motor en la Mac: `WorkerApiBackend` con `TM_API_URL` / `TM_SERVICE_TOKEN`, runner con Docker Hub + Watchtower y heartbeat | (necesario para ver trades reales) |
+| #27 | Pipeline del backend: cobertura visible, deploy del Worker y D1 a dev y prod con aprobación, imágenes del motor | Pipeline del backend, Ambientes, Aprobación, Cambio en Prod |
+| #45 | Pipeline del frontend: Pages en dev y prod con aprobación e indicador de versión | Pipeline del front, Cambio en Dev y en Prod |
+| #28 | UAT contra dev en el pipeline | Pipeline del backend |
+| #29 | Workers Observability: trazas, error de demo y métricas (preguntar si basta CPU + requests) | APM, Métricas |
+| #103 | PBI → Story → Task en el board y protección de ramas | Plan de trabajo, Ramas |
+| #7 | Publicar la Wiki con `scripts/publish_wiki.sh` | Wiki |
+| #30 | Ensayo de la demo con el guion de [`final/demo-guion.md`](final/demo-guion.md) | Presentación |
+| #44 | Go/no-go en paper trading (ya no condiciona el deploy) | — |
 
-También quedan pendientes estos puntos menores:
-- La gráfica de velas con el pronóstico de Kronos superpuesto en el dashboard.
-- Los enlaces desde el dashboard hacia `/backtests` y `/goals`.
-- Publicar en CloudWatch las métricas de drawdown y kill switch del motor.
-- Los SL/TP emulados no sobreviven a un reinicio del motor.
+Puntos menores: gráfica de velas con el pronóstico de Kronos en el dashboard, enlaces del
+dashboard a `/backtests` y `/goals`, y que los SL/TP emulados sobrevivan a un reinicio del
+motor. `services/api` (FastAPI) y `supabase/` ya se borraron; falta quitar el Terraform de AWS
+en `infra/`.
 
 ## Cómo trabajar en el repo
 
-- **Ramas:** `feature/<issue>-<descripcion>` desde `develop`, PR a `develop` con **squash merge**. `main` solo recibe `develop` o `release/*` con **merge commit**.
+- **Ramas:** `feature/<issue>-<descripcion>` desde `develop`, PR a `develop` con **squash
+  merge**. `main` solo recibe `develop` o `release/*` con **merge commit**.
 - **Commits:** Conventional Commits (`feat:`, `fix:`, `test:`, `ci:`, `docs:`).
-- **CI obligatorio:** ruff, pytest con cobertura ≥ 70 %, eslint, tsc, vitest y build de las 5 imágenes. Los cambios en `supabase/` corren pgTAP y los de `infra/` corren Terraform validate.
-- **Issues:** develop no es la rama por defecto, así que `Closes #N` no los cierra solo. Ciérralos a mano al fusionar.
-- **Lockfiles:** si `uv.lock` tiene conflicto, no lo resuelvas a mano. Toma una versión y corre `uv lock`. Lo mismo con `pnpm-lock.yaml` y `pnpm install`.
-- **Llaves:** solo en `.env`, que está en `.gitignore`. Nunca van al repo.
+- **CI obligatorio:** ruff, pytest con cobertura ≥ 70 %, eslint, tsc, vitest (web y
+  `apps/api`) y build de las imágenes.
+- **Issues:** `develop` no es la rama por defecto, así que `Closes #N` no los cierra solo.
+  Ciérralos a mano al fusionar.
+- **Lockfiles:** si `uv.lock` tiene conflicto, toma una versión y corre `uv lock`. Lo mismo con
+  `pnpm-lock.yaml` y `pnpm install`.
+- **Llaves:** solo en `.env` / `.dev.vars` (en `.gitignore`) o en los secrets de GitHub y de
+  `wrangler`. Nunca van al repo.

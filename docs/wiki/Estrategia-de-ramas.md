@@ -44,8 +44,8 @@ gitGraph
 
 | Rama | Uso | Sale de | Regresa a | Ambiente |
 |---|---|---|---|---|
-| `main` | Producción. Cada merge lleva un tag `vX.Y.Z` | — | — | **prod** (App Service `tm-api-prod` y Cloudflare Pages `tm-web`) |
-| `develop` | Integración | `main` | — | **dev** (App Service `tm-api-dev` y Cloudflare Pages `tm-web-dev`) |
+| `main` | Producción. Cada merge lleva un tag `vX.Y.Z` | — | — | **prod** (Worker `tm-api` + D1 `tm-prod` y Pages `tm-web`) |
+| `develop` | Integración | `main` | — | **dev** (Worker `tm-api-dev` + D1 `tm-dev` y Pages `tm-web-dev`) |
 | `feature/<issue>-<descripcion>` | Funcionalidades | `develop` | `develop` (squash merge) | CI en PR |
 | `release/X.Y.Z` | Estabilización antes de liberar | `develop` | `main` y `develop` | CI en PR |
 | `hotfix/<descripcion>` | Correcciones urgentes en producción | `main` | `main` y `develop` | CI en PR |
@@ -55,16 +55,16 @@ gitGraph
 - Los commits siguen **Conventional Commits** (`feat:`, `fix:`, `docs:`, `test:`, `ci:`, etc.).
 - Cada pull request **enlaza su issue** (`Closes #N`) y se fusiona con **squash merge**.
 - `develop` no es la rama por defecto del repo, así que `Closes #N` **no cierra el issue automáticamente**: hay que cerrarlos a mano al fusionar.
-- Las ramas `main` y `develop` tienen protecciones: PR obligatorio, CI en verde y (para `main`) revisión de un segundo mantenedor.
+- Las ramas `main` y `develop` (de este repo y de `trading_maxxing-infra`) están protegidas: PR obligatorio sin push directo, checks de CI en verde, conversaciones resueltas, sin force push ni borrado. No se exigen aprobaciones para no bloquear al equipo y la regla no aplica a administradores para poder intervenir en una emergencia. Los checks requeridos están en [CONTRIBUTING.md → Protección de ramas](https://github.com/CarloSantoro21/trading_maxxing/blob/main/CONTRIBUTING.md#protección-de-ramas).
 
 ## Mapa con los ambientes
 
 ```
-feature/*  ──PR──▶  develop  ──auto──▶  App Service dev   +  Cloudflare Pages dev
+feature/*  ──PR──▶  develop  ──auto──▶  Worker dev        +  Cloudflare Pages dev
                       │                 (tm-api-dev)         (tm-web-dev)
                       │
                       │  release/X.Y.Z  o  merge directo
                       ▼
-                     main   ──aprobación──▶  App Service prod  +  Cloudflare Pages prod
-                                              (tm-api-prod)       (tm-web)
+                     main   ──aprobación──▶  Worker prod       +  Cloudflare Pages prod
+                                              (tm-api)            (tm-web)
 ```

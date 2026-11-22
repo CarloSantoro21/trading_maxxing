@@ -26,7 +26,7 @@ class FailingRecorder:
 
     def on_fill(self, record) -> None:
         self.calls += 1
-        raise RuntimeError("Supabase caído")
+        raise RuntimeError("API caída")
 
 
 def test_timer_polling_and_recorder_failure_do_not_stop_engine(make_frame, envelope):

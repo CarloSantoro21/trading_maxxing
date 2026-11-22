@@ -1,15 +1,16 @@
-# Override para usar las imágenes publicadas en Docker Hub en lugar de construirlas.
-#   export DOCKERHUB_USERNAME=<usuario> TM_TAG=develop
+# Override para usar las imágenes publicadas en Docker Hub en lugar de construirlas, con la
+# API en wrangler dev (desarrollo). Para el motor "de verdad" en la Mac usa
+# docker-compose.runner.yml (make runner-up).
+#
+# El pipeline (backend.yml) publica cada imagen con `sha-<corto>` y con el canal: `dev` en
+# cada push a develop y `prod` en cada push a main.
+#   export DOCKERHUB_NAMESPACE=<usuario> TM_ENV=dev
 #   docker compose -f docker-compose.yml -f docker-compose.hub.yml pull
 #   docker compose -f docker-compose.yml -f docker-compose.hub.yml up -d
 services:
-  api:
-    image: ${DOCKERHUB_USERNAME:?define DOCKERHUB_USERNAME}/trading-maxxing-api:${TM_TAG:-develop}
   agents:
-    image: ${DOCKERHUB_USERNAME:?define DOCKERHUB_USERNAME}/trading-maxxing-agents:${TM_TAG:-develop}
+    image: ${DOCKERHUB_NAMESPACE:?define DOCKERHUB_NAMESPACE}/trading-maxxing-agents:${TM_ENV:-dev}
   engine:
-    image: ${DOCKERHUB_USERNAME:?define DOCKERHUB_USERNAME}/trading-maxxing-engine:${TM_TAG:-develop}
+    image: ${DOCKERHUB_NAMESPACE:?define DOCKERHUB_NAMESPACE}/trading-maxxing-engine:${TM_ENV:-dev}
   forecast:
-    image: ${DOCKERHUB_USERNAME:?define DOCKERHUB_USERNAME}/trading-maxxing-forecast:${TM_TAG:-develop}
-  web:
-    image: ${DOCKERHUB_USERNAME:?define DOCKERHUB_USERNAME}/trading-maxxing-web:${TM_TAG:-develop}
+    image: ${DOCKERHUB_NAMESPACE:?define DOCKERHUB_NAMESPACE}/trading-maxxing-forecast:${TM_ENV:-dev}

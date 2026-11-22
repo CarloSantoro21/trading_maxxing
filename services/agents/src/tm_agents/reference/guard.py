@@ -12,7 +12,7 @@ exchange; bloquearla dejaría la posición huérfana, protegida solo por su SL/T
 
 Falla cerrado para las entradas: si la estrategia no existe o no se puede leer el registro,
 no se abren posiciones (los cierres siguen pasando). El estado se guarda en caché ``ttl``
-segundos para no pegarle a Supabase en cada decisión.
+segundos para no pegarle a la API en cada decisión.
 """
 
 from __future__ import annotations

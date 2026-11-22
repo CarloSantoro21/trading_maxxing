@@ -36,9 +36,10 @@ virtual las refleja cuando el precio de un evento posterior del símbolo cruza e
 (:meth:`VirtualBook.settle_brackets`). Es una aproximación: el libro no lee los fills del
 motor.
 
-Comandos (``tm:commands``): ``start`` reanuda, ``stop`` deja de operar (las posiciones se
-quedan) y ``kill`` cierra todas las posiciones a mercado y detiene el bot. El kill switch
-por drawdown del RiskAgent hace lo mismo que ``kill``.
+Comandos (cola ``commands`` de la API, ``GET /internal/commands``): ``start`` reanuda,
+``stop`` deja de operar (las posiciones se quedan) y ``kill`` cierra todas las posiciones a
+mercado y detiene el bot. El kill switch por drawdown del RiskAgent hace lo mismo que
+``kill``. Cada comando se confirma con ``POST /internal/commands/{id}/ack``.
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import ROUND_DOWN, Decimal
@@ -77,6 +78,10 @@ from tm_agents.strategy_stats import StrategyState
 #: lanzar: la explicación es informativa, no afecta la ejecución de la decisión.
 ExplanationSink = Callable[[str, str], None]
 
+#: Recibe la corrutina del ExplainerAgent y la corre fuera del hilo del orquestador
+#: (:class:`tm_agents.explainer_runtime.ExplainerLoop`). Debe cerrar la corrutina si la descarta.
+ExplainExecutor = Callable[[Coroutine[Any, Any, None]], Any]
+
 log = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
@@ -102,13 +107,16 @@ class CommandType(StrEnum):
 
 @dataclass(frozen=True)
 class BotCommand:
-    """Una entrada de ``tm:commands`` (la publica la API, #21)."""
+    """Un comando de bot de la cola ``commands`` de la API (``GET /internal/commands``)."""
 
     type: CommandType
     bot_id: str
     reason: str = ""
     user_id: str | None = None
     id: str | None = None
+
+    seq: int | None = None
+    payload: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_fields(cls, fields: Mapping[str, str], entry_id: str | None = None) -> BotCommand:
@@ -118,6 +126,19 @@ class BotCommand:
             reason=fields.get("reason", ""),
             user_id=fields.get("user_id"),
             id=entry_id,
+        )
+
+    @classmethod
+    def from_api(cls, row: Mapping[str, Any]) -> BotCommand:
+        """Fila de ``GET /internal/commands`` (``seq``, ``id``, ``type``, ``bot_id``...)."""
+        return cls(
+            type=CommandType(row["type"]),
+            bot_id=str(row["bot_id"]),
+            reason=row.get("reason") or "",
+            user_id=row.get("user_id"),
+            id=str(row["id"]),
+            seq=int(row["seq"]),
+            payload=dict(row.get("payload") or {}),
         )
 
 
@@ -315,9 +336,12 @@ class BotRunner:
             lanza ``asyncio.create_task(explainer.explain(...))`` como *fire-and-forget*: la
             explicación llega a ``explanation_sink`` cuando el LLM responde (o con la
             plantilla determinista si falla), sin bloquear al orquestador. Si no hay un event
-            loop en marcha (p. ej. en backtest ``run_offline``) no se programa nada.
+            loop en marcha ni ``explain_executor`` (p. ej. en backtest ``run_offline``) no se
+            programa nada.
         explanation_sink: callback ``(envelope_id, texto)`` que persiste la explicación. No
             debe lanzar: cualquier excepción se registra como warning y se descarta.
+        explain_executor: en vivo (worker síncrono, sin event loop) recibe la corrutina del
+            explainer y la corre en el hilo de :class:`~tm_agents.explainer_runtime.ExplainerLoop`.
     """
 
     def __init__(
@@ -331,6 +355,7 @@ class BotRunner:
         fee: Decimal = SPOT_FEE,
         explainer: ExplainerAgent | None = None,
         explanation_sink: ExplanationSink | None = None,
+        explain_executor: ExplainExecutor | None = None,
     ) -> None:
         self.config = config
         self.bot_id = config.bot_id
@@ -349,6 +374,7 @@ class BotRunner:
         self.kill_reason: str | None = None
         self.explainer = explainer
         self.explanation_sink = explanation_sink
+        self.explain_executor = explain_executor
         #: Tareas del ExplainerAgent en vuelo (para que las pruebas puedan esperarlas).
         self.explain_tasks: list[asyncio.Task[Any]] = []
 
@@ -683,13 +709,20 @@ class BotRunner:
         """Lanza el ExplainerAgent en segundo plano. Nunca bloquea ni propaga errores."""
         if self.explainer is None:
             return
+        rationale = envelope.decision.rationale.model_dump(mode="json")
+        envelope_id = envelope.id or f"{self.bot_id}:{envelope.decision.decided_at.isoformat()}"
+        if self.explain_executor is not None:
+            # En vivo: el worker es síncrono y la corrutina va al hilo del ExplainerLoop.
+            try:
+                self.explain_executor(self._run_explainer(envelope_id, rationale))
+            except Exception as exc:  # el explainer nunca detiene la decisión
+                log.warning("no se pudo programar la explicación de %s: %s", envelope_id, exc)
+            return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            # Sin event loop (p. ej. en backtest): el explainer queda fuera, por diseño.
+            # Sin event loop ni executor (p. ej. en backtest): el explainer queda fuera.
             return
-        rationale = envelope.decision.rationale.model_dump(mode="json")
-        envelope_id = envelope.id or f"{self.bot_id}:{envelope.decision.decided_at.isoformat()}"
         task = loop.create_task(self._run_explainer(envelope_id, rationale))
         self.explain_tasks.append(task)
         task.add_done_callback(self._cleanup_explain_task)

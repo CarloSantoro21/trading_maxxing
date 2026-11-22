@@ -13,14 +13,15 @@ from tm_agents.orchestrator.state import (
     BotState,
     InMemoryTradeStateRepository,
     OpenPosition,
-    PostgRESTTradeStateRepository,
+    WorkerApiTradeStateRepository,
     open_position_from_row,
     state_from_rows,
 )
 from tm_agents.orchestrator.streams import MemorySink
 from tm_agents.orchestrator.supervisor import BotSupervisor, InMemoryBotRepository
+from tm_shared.api_client import WorkerApiClient
 
-URL = "http://supabase.test"
+URL = "https://tm-api.test"
 NOW = datetime(2024, 3, 10, tzinfo=UTC)
 
 
@@ -185,25 +186,24 @@ def test_supervisor_does_not_start_a_bot_without_its_state():
 
 
 @respx.mock
-def test_postgrest_repository_pages_and_filters_by_bot():
-    endpoint = f"{URL}/rest/v1/trades"
-    pages = [[_row(id="a"), _row(id="b", closed_at="2024-03-01", pnl="5")], [_row(id="c")]]
+def test_api_repository_pages_and_filters_by_bot():
+    endpoint = f"{URL}/internal/trades"
+    pages = [[_row(id="a"), _row(id="b", closed_at="2024-03-01", pnl=5)], [_row(id="c")]]
     route = respx.get(endpoint).mock(side_effect=[httpx.Response(200, json=p) for p in pages])
-    with httpx.Client() as client:
-        repo = PostgRESTTradeStateRepository(URL, "eyJkey", client=client, page=2)
+    with WorkerApiClient(URL, "tok") as client:
+        repo = WorkerApiTradeStateRepository(client, page=2)
         state = repo.load("bot-a")
     assert route.call_count == 2
     first, second = (c.request for c in route.calls)
-    assert first.url.params["bot_id"] == "eq.bot-a"
+    assert first.url.params["bot_id"] == "bot-a"
     assert (first.url.params["offset"], second.url.params["offset"]) == ("0", "2")
-    assert first.headers["Authorization"] == "Bearer eyJkey"
+    assert first.url.params["limit"] == "2"
+    assert first.headers["X-Service-Token"] == "tok"
     assert state.closed_pnl == Decimal("5") and len(state.positions) == 1
 
 
-def test_postgrest_repository_needs_env():
-    with pytest.raises(ValueError):
-        PostgRESTTradeStateRepository.from_env({})
-    repo = PostgRESTTradeStateRepository.from_env(
-        {"SUPABASE_URL": URL, "SUPABASE_SERVICE_ROLE_KEY": "sb_secret"}
-    )
-    assert "Authorization" not in repo._headers
+def test_api_repository_needs_env():
+    with pytest.raises(ValueError, match="TM_API_URL"):
+        WorkerApiTradeStateRepository.from_env({})
+    repo = WorkerApiTradeStateRepository.from_env({"TM_API_URL": URL, "TM_SERVICE_TOKEN": "t"})
+    assert repo.client.base_url == URL

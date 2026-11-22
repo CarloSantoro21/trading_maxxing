@@ -1,19 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { useAuth } from "@/components/auth/AuthProvider";
-import { SectionNav } from "@/components/nav/SectionNav";
+import { useEffect, useState } from "react";
+import useSWR from "swr";
+import { SLOW_POLL_MS } from "@/components/providers/ApiProvider";
 import { cardClass, secondaryButtonClass } from "@/components/ui/styles";
+import { apiErrorMessage } from "@/lib/api/client";
 import {
-  getLabReport,
-  listBacktests,
-  listLabReports,
+  BACKTESTS_KEY,
+  LAB_REPORTS_KEY,
+  labReportKey,
   type BacktestJob,
   type LabReportDetail,
   type LabReportSummary,
 } from "@/lib/backtests/api";
 import { pct } from "@/lib/backtests/format";
-import type { Fetcher } from "@/lib/tmApi";
 import { BacktestForm } from "./BacktestForm";
 import { ReportDetail, VerdictBadge } from "./ReportDetail";
 
@@ -115,55 +115,22 @@ function JobsList({ jobs }: { jobs: BacktestJob[] }) {
   );
 }
 
-/** Página /backtests: reportes del laboratorio, su detalle y los backtests del usuario. */
-export function BacktestsView({ fetcher }: { fetcher?: Fetcher }) {
-  const { session } = useAuth();
-  const token = session?.access_token ?? "";
-  const [reports, setReports] = useState<LabReportSummary[] | null>(null);
-  const [jobs, setJobs] = useState<BacktestJob[]>([]);
-  const [error, setError] = useState<string | null>(null);
+/**
+ * Página /backtests: reportes del laboratorio, su detalle y los backtests del usuario. La
+ * lista de backtests se refresca sola (el worker del motor los procesa en la Mac).
+ */
+export function BacktestsView({ refreshMs = SLOW_POLL_MS }: { refreshMs?: number }) {
   const [selected, setSelected] = useState<string | null>(null);
-  const [detail, setDetail] = useState<LabReportDetail | null>(null);
-  const [detailError, setDetailError] = useState<string | null>(null);
 
   useEffect(() => {
     setSelected(reportFromUrl());
   }, []);
 
-  const loadJobs = useCallback(() => {
-    if (!token) return;
-    listBacktests(token, fetcher)
-      .then(setJobs)
-      .catch(() => setJobs([]));
-  }, [token, fetcher]);
-
-  useEffect(() => {
-    if (!token) return;
-    let active = true;
-    listLabReports(token, fetcher)
-      .then((r) => active && setReports(r))
-      .catch((err) => active && setError(err instanceof Error ? err.message : String(err)));
-    loadJobs();
-    return () => {
-      active = false;
-    };
-  }, [token, fetcher, loadJobs]);
-
-  useEffect(() => {
-    if (!token || !selected) {
-      setDetail(null);
-      return;
-    }
-    let active = true;
-    setDetail(null);
-    setDetailError(null);
-    getLabReport(token, selected, fetcher)
-      .then((d) => active && setDetail(d))
-      .catch((err) => active && setDetailError(err instanceof Error ? err.message : String(err)));
-    return () => {
-      active = false;
-    };
-  }, [token, selected, fetcher]);
+  const { data: reports, error: reportsError } = useSWR<LabReportSummary[]>(LAB_REPORTS_KEY);
+  const { data: jobs, mutate: reloadJobs } = useSWR<BacktestJob[]>(BACKTESTS_KEY, { refreshInterval: refreshMs });
+  const { data: detail, error: detailErrorRaw } = useSWR<LabReportDetail>(selected ? labReportKey(selected) : null);
+  const error = reportsError ? apiErrorMessage(reportsError) : null;
+  const detailError = detailErrorRaw ? apiErrorMessage(detailErrorRaw) : null;
 
   function select(name: string | null) {
     setSelected(name);
@@ -172,8 +139,7 @@ export function BacktestsView({ fetcher }: { fetcher?: Fetcher }) {
 
   if (selected) {
     return (
-      <main className="mx-auto w-full max-w-5xl px-4 py-10">
-        <SectionNav current="/backtests" />
+      <div className="mx-auto w-full max-w-5xl">
         <button type="button" className={`${secondaryButtonClass} mb-6`} onClick={() => select(null)}>
           ← Todos los reportes
         </button>
@@ -188,13 +154,12 @@ export function BacktestsView({ fetcher }: { fetcher?: Fetcher }) {
           </p>
         )}
         {detail && <ReportDetail report={detail} />}
-      </main>
+      </div>
     );
   }
 
   return (
-    <main className="mx-auto w-full max-w-5xl space-y-6 px-4 py-10">
-      <SectionNav current="/backtests" />
+    <div className="mx-auto w-full max-w-5xl space-y-6">
       <header>
         <h1 className="text-2xl font-semibold">Backtests y reportes</h1>
         <p className="mt-1 text-sm text-neutral-600 dark:text-neutral-300">
@@ -211,7 +176,7 @@ export function BacktestsView({ fetcher }: { fetcher?: Fetcher }) {
             {error}
           </p>
         )}
-        {!error && reports === null && (
+        {!error && reports === undefined && (
           <p role="status" className="text-neutral-500">
             Cargando reportes…
           </p>
@@ -223,15 +188,15 @@ export function BacktestsView({ fetcher }: { fetcher?: Fetcher }) {
         <h2 id="enqueue-title" className="mb-3 text-lg font-semibold">
           Encolar un backtest
         </h2>
-        {token && <BacktestForm token={token} fetcher={fetcher} onCreated={loadJobs} />}
+        <BacktestForm onCreated={() => void reloadJobs()} />
       </section>
 
       <section className={cardClass} aria-labelledby="jobs-title">
         <h2 id="jobs-title" className="mb-3 text-lg font-semibold">
           Mis backtests
         </h2>
-        <JobsList jobs={jobs} />
+        <JobsList jobs={jobs ?? []} />
       </section>
-    </main>
+    </div>
   );
 }

@@ -4,22 +4,48 @@ y heartbeat, en un solo proceso.
 python -m tm_agents           # corre en bucle
 python -m tm_agents --once    # imprime su estado y termina
 
+Todo lo persistente vive en D1 detrás de la API en Cloudflare Workers (``/internal/*``, ver
+``docs/arquitectura/api.md``). El motor solo hace conexiones salientes con ``TM_API_URL``,
+``TM_SERVICE_TOKEN`` (header ``X-Service-Token``) y, si existen, ``CF_ACCESS_CLIENT_ID`` y
+``CF_ACCESS_CLIENT_SECRET`` (service token de Cloudflare Access).
+
 Con ``REDIS_URL`` corre las dos capas del orquestador (ver ``tm_agents.orchestrator``):
 
-- capa compartida: estrategias del registro de Supabase (``SUPABASE_URL`` y
-  ``SUPABASE_SERVICE_ROLE_KEY``), velas de ``MarketDataService`` y vetos de Redis; publica en
-  ``tm:signals`` (formato de :mod:`tm_agents.signals`). Se apaga con
-  ``ORCHESTRATOR_SHARED=0`` (por ejemplo, si se separa en otro contenedor).
-- capa por usuario: lee ``tm:signals`` y ``tm:commands``, bots en ``running`` de la tabla
-  ``bots``; publica en ``tm:decisions`` y ``tm:shadow``. Se apaga con ``ORCHESTRATOR_BOTS=0``.
+- capa compartida: estrategias del registro (``/internal/strategies``), velas de
+  ``MarketDataService`` y vetos de Redis; publica en ``tm:signals`` (formato de
+  :mod:`tm_agents.signals`). Se apaga con ``ORCHESTRATOR_SHARED=0``.
+- capa por usuario: lee ``tm:signals``, los bots en ``running`` (``/internal/bots``) y los
+  comandos ``start``/``stop``/``kill`` de la cola de la API (``GET /internal/commands`` cada
+  ``COMMANDS_POLL_SECONDS``, 5 s, y ``ack``); publica en ``tm:decisions`` y ``tm:shadow`` y
+  copia cada decisión a ``POST /internal/decisions`` (``DECISIONS_AUDIT=0`` lo apaga). Cada
+  ``EQUITY_SNAPSHOT_SECONDS`` (300 s) manda la equity de cada bot a
+  ``/internal/equity-snapshots``. Se apaga con ``ORCHESTRATOR_BOTS=0``.
+- ExplainerAgent: corre en su propio hilo con event loop (:mod:`tm_agents.explainer_runtime`)
+  y guarda cada explicación con ``POST /internal/decisions`` (``kind = "explanation"``).
 
-Con ``REDIS_URL``, ``SUPABASE_URL`` y ``SUPABASE_SERVICE_ROLE_KEY`` corre además el
-``ReferenceService`` (#57): lee el mismo ``tm:signals`` con su propio cursor
-(``tm:reference:last_signal_id``), lleva el portafolio de referencia de cada estrategia en
-shadow, active y probation, y aplica las degradaciones del LifecycleMonitor. Se apaga con
-``REFERENCE_SERVICE=0``. Corre cada ``HEARTBEAT_INTERVAL`` segundos.
+Con ``REDIS_URL`` y la API corre además el ``ReferenceService`` (#57): lee el mismo
+``tm:signals`` con su propio cursor (``tm:reference:last_signal_id``), lleva el portafolio de
+referencia de cada estrategia en shadow, active y probation, y aplica las degradaciones del
+LifecycleMonitor. Se apaga con ``REFERENCE_SERVICE=0``. Corre cada ``HEARTBEAT_INTERVAL``
+segundos.
 
-Sin ``REDIS_URL`` solo escribe el heartbeat (desarrollo y pruebas).
+Con la API, el latido va a ``POST /internal/heartbeat`` (componente ``agents``) cada
+``TM_HEARTBEAT_SECONDS`` (30 s); el frontend lo muestra en ``/api/engine/status``. Sin la API
+el orquestador corre con registro y bots en memoria (desarrollo).
+
+Noticias y ExplainerAgent (#118) son **opcionales y están apagados por defecto**:
+``NEWS_ENABLED=false`` (no se arma el NewsAgent y la capa compartida recibe ``news=None``) y
+``EXPLAINER_ENABLED=false`` (plantilla determinista). ``LLM_PROVIDER=none`` por defecto. Se
+pueden prender en caliente con ``SETTINGS_SOURCE=worker-api`` (interruptor del admin en D1,
+ver :mod:`tm_agents.orchestrator.settings`).
+
+Sin ``REDIS_URL`` solo escribe el heartbeat (archivo y, con la API, ``/internal/heartbeat``).
+
+Demo local (``make dev``): con ``TM_DEMO_STRATEGY=1`` se registra la estrategia
+``demo_pulse`` (:mod:`tm_agents.strategies.demo_pulse`, alterna long/flat cada
+``TM_DEMO_PULSE_MINUTES`` minutos sobre velas de 1 min) y el tope de operaciones por día del
+RiskAgent sube a ``TM_DEMO_MAX_TRADES_PER_DAY`` (10,000) para que la demo no se frene a los
+pocos minutos. Nunca se prende en dev ni en prod.
 """
 
 from __future__ import annotations
@@ -35,6 +61,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from tm_shared.api_client import HeartbeatReporter, WorkerApiClient, api_configured
 from tm_shared.health import health
 
 HEARTBEAT = Path(os.environ.get("HEARTBEAT_FILE", "/tmp/heartbeat"))
@@ -55,6 +82,40 @@ def _flag(env: Mapping[str, str], name: str, default: bool = True) -> bool:
     return value.strip().lower() not in ("0", "false", "no", "off")
 
 
+DEMO_ENV = "TM_DEMO_STRATEGY"
+
+
+def register_demo_strategy(env: Mapping[str, str] | None = None) -> bool:
+    """Registra ``demo_pulse`` solo con ``TM_DEMO_STRATEGY=1``; devuelve si quedó registrada."""
+    env = os.environ if env is None else env
+    if not _flag(env, DEMO_ENV, default=False):
+        return False
+    from tm_agents.strategies import demo_pulse
+
+    log.warning(
+        "TM_DEMO_STRATEGY=1: estrategia de demo '%s' registrada (pulso de %s min). "
+        "Solo para ver el flujo en local; nunca en dev ni en prod.",
+        demo_pulse.DEMO_NAME,
+        demo_pulse.pulse_minutes(),
+    )
+    return True
+
+
+def demo_risk_overrides(env: Mapping[str, str]) -> dict[str, Any]:
+    """Límites del RiskAgent que cambian en la demo local (ninguno fuera de ella)."""
+    if not _flag(env, DEMO_ENV, default=False):
+        return {}
+    return {"max_trades_per_day": int(env.get("TM_DEMO_MAX_TRADES_PER_DAY") or 10_000)}
+
+
+def api_from_env(env: Mapping[str, str] | None = None) -> WorkerApiClient | None:
+    """Cliente de la API en Workers; ``None`` sin ``TM_API_URL``/``TM_SERVICE_TOKEN``."""
+    env = os.environ if env is None else env
+    if not api_configured(env):
+        return None
+    return WorkerApiClient.from_env(env)
+
+
 def build_worker(env: Mapping[str, str] | None = None) -> Any | None:
     """Arma el ``OrchestratorWorker`` desde el entorno; ``None`` si no hay ``REDIS_URL``."""
     env = os.environ if env is None else env
@@ -65,58 +126,160 @@ def build_worker(env: Mapping[str, str] | None = None) -> Any | None:
     import redis
     from tm_marketdata.service import MarketDataService
 
-    from tm_agents.news.veto import RedisVetoStore
+    from tm_agents.explainer_runtime import ExplainerLoop, WorkerApiExplanationSink
+    from tm_agents.orchestrator.equity import EquitySnapshotReporter
     from tm_agents.orchestrator.runtime import OrchestratorWorker
-    from tm_agents.orchestrator.shared import (
-        MarketDataBarsProvider,
-        SharedSignalLayer,
-        StoreVetoProvider,
-    )
-    from tm_agents.orchestrator.state import PostgRESTTradeStateRepository
+    from tm_agents.orchestrator.shared import MarketDataBarsProvider, SharedSignalLayer
+    from tm_agents.orchestrator.state import WorkerApiTradeStateRepository
     from tm_agents.orchestrator.streams import (
         DECISIONS_STREAM,
         SHADOW_STREAM,
+        FanoutSink,
         RedisStreamSink,
+        WorkerApiDecisionSink,
     )
     from tm_agents.orchestrator.supervisor import (
         BotSupervisor,
-        CommandListener,
         InMemoryBotRepository,
-        PostgRESTBotRepository,
+        WorkerApiBotRepository,
+        WorkerApiCommandListener,
     )
-    from tm_agents.registry import InMemoryBackend, PostgRESTBackend, StrategyRegistry
+    from tm_agents.registry import InMemoryBackend, StrategyRegistry, WorkerApiBackend
     from tm_agents.signals import RedisSignalSink, RedisSignalSource
 
     client = redis.Redis.from_url(url)
-    has_supabase = bool(env.get("SUPABASE_URL") and env.get("SUPABASE_SERVICE_ROLE_KEY"))
+    register_demo_strategy(env)
+    api = api_from_env(env)
+    if api is None:
+        log.warning("sin TM_API_URL/TM_SERVICE_TOKEN: registro y bots en memoria (desarrollo)")
     symbols = [s.strip().upper() for s in env.get("ORCHESTRATOR_SYMBOLS", "").split(",")]
     symbols = [s for s in symbols if s] or ["BTCUSDT", "ETHUSDT"]
 
+    settings, llm, explainer = build_optional_ai(env)
+
     shared = None
+    news = None
     if _flag(env, "ORCHESTRATOR_SHARED"):
-        backend = PostgRESTBackend.from_env(env) if has_supabase else InMemoryBackend()
+        backend = WorkerApiBackend(api) if api is not None else InMemoryBackend()
         shared = SharedSignalLayer(
             StrategyRegistry(backend),
             MarketDataBarsProvider(MarketDataService(data_dir=env.get("TM_DATA_DIR") or None)),
             RedisSignalSink(client),
             symbols=symbols,
-            news=StoreVetoProvider(RedisVetoStore(client)),
+            news=None,  # lo conecta NewsService solo si news_enabled está prendido
         )
-    repository = PostgRESTBotRepository.from_env(env) if has_supabase else InMemoryBotRepository()
-    # Cada bot reconstruye su libro desde la tabla trades al arrancar (#89).
-    trades = PostgRESTTradeStateRepository.from_env(env) if has_supabase else None
+        news = news_service_from_env(env, settings, llm, symbols, layer=shared)
+    if not _flag(env, "ORCHESTRATOR_BOTS"):
+        return OrchestratorWorker(
+            shared, BotSupervisor(InMemoryBotRepository(), _NullSink()), _NoSignals(), news=news
+        )
+
+    decisions: Any = RedisStreamSink(client, DECISIONS_STREAM)
+    shadow: Any = RedisStreamSink(client, SHADOW_STREAM)
+    if api is not None and _flag(env, "DECISIONS_AUDIT"):
+        # Auditoría en D1 (GET /api/decisions); Redis sigue siendo el camino hacia el motor.
+        decisions = FanoutSink(decisions, WorkerApiDecisionSink(api, kind="decision"))
+        shadow = FanoutSink(shadow, WorkerApiDecisionSink(api, kind="shadow"))
+    explain_loop = explanation_sink = None
+    if api is not None:
+        # El worker es síncrono: el ExplainerAgent corre en su propio hilo con event loop.
+        explain_loop = ExplainerLoop().start()
+        explanation_sink = WorkerApiExplanationSink(api)
     supervisor = BotSupervisor(
-        repository,
-        RedisStreamSink(client, DECISIONS_STREAM),
-        shadow_sink=RedisStreamSink(client, SHADOW_STREAM),
-        trades=trades,
+        WorkerApiBotRepository(api) if api is not None else InMemoryBotRepository(),
+        decisions,
+        shadow_sink=shadow,
+        # Cada bot reconstruye su libro desde la tabla trades al arrancar (#89).
+        trades=WorkerApiTradeStateRepository(api) if api is not None else None,
+        explainer=explainer,
+        explanation_sink=explanation_sink,
+        explain_executor=explain_loop,
+        risk_overrides=demo_risk_overrides(env),
     )
-    bots = _flag(env, "ORCHESTRATOR_BOTS")
+    commands = equity = None
+    if api is not None:
+        commands = WorkerApiCommandListener(
+            api, interval=float(env.get("COMMANDS_POLL_SECONDS") or 5)
+        )
+        equity = EquitySnapshotReporter(
+            api, supervisor, interval=float(env.get("EQUITY_SNAPSHOT_SECONDS") or 300)
+        )
     return OrchestratorWorker(
         shared,
-        supervisor if bots else BotSupervisor(InMemoryBotRepository(), _NullSink()),
-        RedisSignalSource(client) if bots else _NoSignals(),
-        CommandListener(client) if bots else None,
+        supervisor,
+        RedisSignalSource(client),
+        commands,
+        news=news,
+        equity=equity,
+        explain_loop=explain_loop,
+    )
+
+
+def heartbeat_from_env(
+    worker: Any | None = None, env: Mapping[str, str] | None = None
+) -> HeartbeatReporter | None:
+    """Latido ``agents`` en ``/internal/heartbeat``; ``None`` sin API."""
+    env = os.environ if env is None else env
+    api = api_from_env(env)
+    if api is None:
+        return None
+
+    def details() -> dict[str, Any]:
+        supervisor = getattr(worker, "supervisor", None)
+        runners = getattr(supervisor, "runners", None) or {}
+        return {"orchestrator": worker is not None, "bots": sorted(runners)}
+
+    return HeartbeatReporter(
+        api, "agents", interval=float(env.get("TM_HEARTBEAT_SECONDS") or 30), details=details
+    )
+
+
+def build_optional_ai(env: Mapping[str, str]) -> tuple[Any, Any | None, Any]:
+    """Interruptores, cliente de LLM (``None`` con ``LLM_PROVIDER=none``) y ExplainerAgent.
+
+    Si el proveedor elegido no tiene sus llaves, se registra y se sigue **sin LLM**: las
+    noticias caen al clasificador por palabras clave y el explainer a la plantilla.
+    """
+    from tm_agents.explainer import explainer_from_env
+    from tm_agents.llm import build_llm_client, llm_provider
+    from tm_agents.orchestrator.settings import settings_from_env
+
+    settings = settings_from_env(env)
+    try:
+        llm = build_llm_client(env)
+    except Exception as exc:
+        log.warning("LLM_PROVIDER=%s sin configurar; se sigue sin LLM (%s)", llm_provider(env), exc)
+        llm = None
+    explainer = explainer_from_env(
+        env, llm=llm, enabled=lambda: settings.get_bool("explainer_enabled")
+    )
+    log.info(
+        "IA opcional: LLM_PROVIDER=%s, noticias=%s, explainer=%s",
+        llm_provider(env) if llm is not None else "none",
+        "on" if settings.get_bool("news_enabled") else "off",
+        "on" if explainer.uses_llm() else "plantilla",
+    )
+    return settings, llm, explainer
+
+
+def news_service_from_env(
+    env: Mapping[str, str],
+    settings: Any,
+    llm: Any | None,
+    symbols: list[str],
+    *,
+    layer: Any | None = None,
+) -> Any:
+    """``NewsService`` que arma el NewsAgent solo cuando ``news_enabled`` está prendido."""
+    from tm_agents.news import news_agent_from_env
+    from tm_agents.news.service import NewsService
+
+    return NewsService(
+        lambda: settings.get_bool("news_enabled"),
+        lambda: news_agent_from_env(env, llm=llm),
+        symbols,
+        layer=layer,
+        interval=float(env.get("NEWS_REFRESH_SECONDS") or 300),
     )
 
 
@@ -131,11 +294,11 @@ class _NoSignals:
 
 
 def reference_service_from_env(env: Mapping[str, str] | None = None) -> Any | None:
-    """``ReferenceService`` con Redis y Supabase; ``None`` si falta alguna variable o si
+    """``ReferenceService`` con Redis y la API; ``None`` si falta alguna variable o si
     ``REFERENCE_SERVICE=0``."""
     env = os.environ if env is None else env
     url = env.get("REDIS_URL")
-    if not url or not env.get("SUPABASE_URL") or not env.get("SUPABASE_SERVICE_ROLE_KEY"):
+    if not url or not api_configured(env):
         return None
     if not _flag(env, "REFERENCE_SERVICE"):
         log.info("REFERENCE_SERVICE=0: el ledger de referencia no corre")
@@ -144,16 +307,17 @@ def reference_service_from_env(env: Mapping[str, str] | None = None) -> Any | No
 
     from tm_agents.reference import (
         REFERENCE_CHECKPOINT,
-        PostgRESTReferenceStore,
         ReferenceService,
+        WorkerApiReferenceStore,
     )
-    from tm_agents.registry import PostgRESTBackend, StrategyRegistry
+    from tm_agents.registry import StrategyRegistry, WorkerApiBackend
     from tm_agents.signals import RedisSignalSource
 
     client = redis.Redis.from_url(url)
+    api = WorkerApiClient.from_env(env)
     return ReferenceService(
-        StrategyRegistry(PostgRESTBackend.from_env(env)),
-        PostgRESTReferenceStore.from_env(env),
+        StrategyRegistry(WorkerApiBackend(api)),
+        WorkerApiReferenceStore(api),
         RedisSignalSource(client, checkpoint_key=REFERENCE_CHECKPOINT),
     )
 
@@ -182,8 +346,13 @@ def main(argv: list[str] | None = None) -> None:
     reference = None
     try:
         reference = reference_service_from_env()
-    except Exception as exc:  # sin Redis o Supabase el worker sigue con su heartbeat
+    except Exception as exc:  # sin Redis o la API el worker sigue con su heartbeat
         log.warning("no se pudo arrancar el ledger de referencia: %s", exc)
+    try:
+        heartbeat = heartbeat_from_env(worker)
+    except Exception as exc:
+        log.warning("no se pudo armar el latido hacia la API: %s", exc)
+        heartbeat = None
     sleep = min(INTERVAL, TICK) if worker is not None else INTERVAL
     last_beat = float("-inf")
     while running:
@@ -191,6 +360,8 @@ def main(argv: list[str] | None = None) -> None:
             # Heartbeat y ledger de referencia a la cadencia de HEARTBEAT_INTERVAL.
             beat()
             last_beat = time.monotonic()
+            if heartbeat is not None:
+                heartbeat.maybe_beat()
             if reference is not None:
                 try:
                     reference.run_once()
@@ -204,6 +375,11 @@ def main(argv: list[str] | None = None) -> None:
         if not running:
             break
         time.sleep(sleep)
+    if heartbeat is not None:
+        heartbeat.beat("stopping")
+    explain_loop = getattr(worker, "explain_loop", None)
+    if explain_loop is not None:
+        explain_loop.stop()
 
 
 if __name__ == "__main__":

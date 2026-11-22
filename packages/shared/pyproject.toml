@@ -5,6 +5,7 @@ description = "Contratos compartidos (Signal, TradeDecision, configuración)"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "pydantic>=2.9",
+    "httpx>=0.28",
 ]
 
 [build-system]

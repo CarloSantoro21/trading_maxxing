@@ -11,8 +11,9 @@ calcula una vez para todos y lo que es **de cada usuario** lo calcula su bot.
                                   ReferenceService (#57) ◀───────────┤  ledger de referencia
                                   y LifecycleMonitor                 │  por estrategia
                  ┌──────────── capa por usuario (un BotRunner por bot) ───────┐
- tm:commands ───▶│ peso del sleeve × exposición del nivel × confianza          │──▶ tm:decisions
- (API, #21)      │ → RiskAgent con los límites del nivel                       │──▶ tm:shadow
+ comandos ──────▶│ peso del sleeve × exposición del nivel × confianza          │──▶ tm:decisions
+ (/internal/     │ → RiskAgent con los límites del nivel                       │──▶ tm:shadow
+  commands)
                  └────────────────────────────────────────────────────────────┘
                                                                      │
                                          engine (AgenticStrategy) ◀──┘  órdenes por bot y sleeve
@@ -28,8 +29,8 @@ comparten el orquestador y el `ReferenceService` de `tm_agents.reference` (#57).
 | `policy.py` | Niveles de cada operación por estrategia: stop de catástrofe (salida por señal) o stop real (Kronos), y horizonte del gate |
 | `exposure.py` | Exposición de cada sleeve por nivel de riesgo, con la curva de sensibilidad del laboratorio |
 | `bot.py` | `BotRunner`: posición objetivo, compras y ventas parciales, libro virtual, comandos |
-| `supervisor.py` | `BotSupervisor`: un runner por bot en `running` (tabla `bots`), comandos de `tm:commands` |
-| `streams.py` | `tm:decisions`, `tm:shadow` y `tm:commands` en Redis y sus versiones en memoria |
+| `supervisor.py` | `BotSupervisor`: un runner por bot en `running` (`GET /internal/bots`) y `WorkerApiCommandListener`, que lee los comandos de `GET /internal/commands` y los confirma con `ack` |
+| `streams.py` | `tm:decisions` y `tm:shadow` en Redis (y la copia de auditoría en `POST /internal/decisions`) y sus versiones en memoria |
 | `../signals.py` | `tm:signals`: `SignalEvent`, `StrategySnapshot` (lo que el bot necesita del `lab_report`), `publish_signal` / `RedisSignalSink`, `RedisSignalSource` / `ListSignalSource` |
 | `runtime.py` | `OrchestratorWorker` (en vivo) y `run_offline` (backtest) |
 
@@ -44,7 +45,9 @@ sirva la vela), para cada estrategia viva cuyo timeframe cerró y para cada sím
    depende de cuántos bots haya.
 3. Consulta el veto vigente del símbolo (global, luego el activo base y luego la moneda de
    cotización), leído de Redis igual que el `NewsAgent`. Si la consulta falla, no veta
-   (fail-open).
+   (fail-open). Las noticias son opcionales y están **apagadas por defecto**
+   (`NEWS_ENABLED=false`): en ese caso la capa recibe `news=None` y no hay veto; el
+   `NewsService` la conecta o desconecta en caliente (ver `services/agents/README.md`, #118).
 4. Si la señal es `long`, corre la SimulationGate (bootstrap histórico con comisión de 0.1 %,
    combinado con las trayectorias de Kronos cuando aplica).
 5. Publica un `SignalEvent` en `tm:signals`.
@@ -195,10 +198,14 @@ en vez de dejar la posición huérfana. Lo prueba de punta a punta
 `services/engine/tests/test_orchestrator_hardening.py`. El ledger de referencia de una estrategia
 en shadow lo lleva el `ReferenceService`, no el bot.
 
-### Comandos (`tm:commands`)
+### Comandos (`/internal/commands`)
 
-Los publica la API (#21) con campos planos `type`, `bot_id`, `user_id`, `reason`, `issued_at`
-y `payload`.
+La API (`POST /api/bots/{id}/start|stop|kill`) escribe el cambio de estado del bot y el
+comando en la tabla `commands` de D1 en un solo batch. El worker `agents` los lee con
+`GET /internal/commands?after=<seq>` cada `COMMANDS_POLL_SECONDS` (5 s) y confirma cada uno con
+`POST /internal/commands/{id}/ack` (`done` o `failed` con el error). Cada fila trae `seq`, `id`,
+`type`, `bot_id`, `user_id`, `reason`, `payload` e `issued_at` ([`api.md`](api.md) §3). Ya no
+existe el stream `tm:commands` de Redis.
 
 | Comando | Efecto |
 |---|---|
@@ -222,20 +229,20 @@ Sin `target_quantity` se conserva el comportamiento anterior.
 
 ## Reinicios: fuente de verdad (#89)
 
-**La fuente de verdad es la tabla `trades`**, que escribe el motor (`SupabaseTradeRecorder`)
+**La fuente de verdad es la tabla `trades`**, que escribe el motor (`WorkerApiTradeRecorder`, por `/internal/trades`)
 con los fills reales: una fila por operación de cada bot y sleeve, abierta mientras
 `closed_at` es nulo, con lo que sigue abierto en `rationale.position` (`open_quantity`,
 `realized_pnl`, `target_fraction`). El libro virtual del bot y el libro por `bot/sleeve` del
 motor son derivados y se reconstruyen de ahí al arrancar:
 
 - **BotRunner** (`tm_agents.orchestrator.state`): el `BotSupervisor` lee las filas del bot con
-  `PostgRESTTradeStateRepository` antes de arrancar su runner (al sincronizar los bots en
+  `WorkerApiTradeStateRepository` (`GET /internal/trades`) antes de arrancar su runner (al sincronizar los bots en
   `running` y con el comando `start`) y siembra posiciones, efectivo
   (`capital + P&L cerrado + P&L parcial - costo de lo abierto`) y pico del equity. Si la
   lectura falla, el bot no arranca (no opera con un libro equivocado) y se reintenta en el
   siguiente ciclo.
 - **Motor** (`TradingEngineService._restore_positions`): siembra el libro por `bot/sleeve` con
-  `SupabaseTradeRecorder.open_positions()`, para que un cierre que llegue después del reinicio
+  `WorkerApiTradeRecorder.open_positions()`, para que un cierre que llegue después del reinicio
   encuentre su posición. Si falla, el motor arranca igual y lo reporta en
   `status()["restore_error"]`.
 
@@ -252,7 +259,7 @@ Las mismas clases corren en los dos modos; solo cambian la fuente de velas y los
 | | En vivo | Backtest |
 |---|---|---|
 | Velas | `MarketDataBarsProvider` | `FrameBarsProvider` (DataFrames) |
-| Estrategias | `StrategyRegistry` con `PostgRESTBackend` | `StrategyRegistry` con `InMemoryBackend` |
+| Estrategias | `StrategyRegistry` con `WorkerApiBackend` | `StrategyRegistry` con `InMemoryBackend` |
 | `tm:signals` | `RedisSignalSink` / `RedisSignalSource` (`tm_agents.signals`) | `run_offline` (en memoria) o `ListSignalSource` |
 | `tm:decisions` | `RedisStreamSink` | `MemorySink` → `ScheduledDecisionSource` del engine |
 

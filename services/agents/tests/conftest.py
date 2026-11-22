@@ -1,6 +1,6 @@
 """Fixtures comunes de tm_agents.
 
-Ninguna prueba ve Redis, Supabase ni llaves del entorno. Los constructores de eventos y bots
+Ninguna prueba ve Redis, la API ni llaves del entorno. Los constructores de eventos y bots
 del orquestador (#19) se exponen como fixtures (`make_event`, `make_bot`, `make_snapshot`).
 """
 
@@ -118,8 +118,11 @@ def make_snapshot():
 def _no_external_services(monkeypatch):
     for var in (
         "REDIS_URL",
-        "SUPABASE_URL",
-        "SUPABASE_SERVICE_ROLE_KEY",
+        "TM_API_URL",
+        "TM_SERVICE_TOKEN",
+        "CF_ACCESS_CLIENT_ID",
+        "CF_ACCESS_CLIENT_SECRET",
+        "SETTINGS_SOURCE",
         "GROQ_API_KEY",
         "CRYPTOPANIC_API_KEY",
     ):

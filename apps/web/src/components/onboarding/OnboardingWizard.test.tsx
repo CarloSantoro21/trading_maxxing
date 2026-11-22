@@ -1,18 +1,18 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { createFakeSupabase, type Responder } from "@/test/fakeSupabase";
+import { mockApi, type Routes } from "@/test/api";
 import { OnboardingWizard } from "./OnboardingWizard";
 
-const ok: Responder = (q) => (q.table === "profiles" ? { data: { id: "p1" } } : { data: null });
+const ok: Routes = { "PUT /onboarding": { profileId: "p1", profile_id: "p1" } };
 
-function setup(respond: Responder = ok) {
-  const fake = createFakeSupabase(respond);
+function setup(routes: Routes = ok) {
+  const api = mockApi(routes);
   const onSaved = vi.fn();
   const user = userEvent.setup();
-  render(<OnboardingWizard supabase={fake.client} userId="user-1" onSaved={onSaved} />);
+  render(<OnboardingWizard onSaved={onSaved} />);
   const next = () => user.click(screen.getByRole("button", { name: "Siguiente" }));
-  return { fake, onSaved, user, next };
+  return { api, onSaved, user, next };
 }
 
 async function fillAll({ user, next }: ReturnType<typeof setup>) {
@@ -87,11 +87,12 @@ describe("OnboardingWizard", () => {
 
     expect(await screen.findByRole("heading", { name: "¡Perfil guardado!" })).toBeInTheDocument();
     expect(ctx.onSaved).toHaveBeenCalledWith("p1");
-    const [profile, , goals] = ctx.fake.queries;
-    expect(profile.calls[0].args[0]).toEqual({ user_id: "user-1", risk_level: 4, capital: 10000 });
-    expect(goals.calls[0].args[0]).toEqual([
-      { target_return: 0.12, deadline: "2099-12-31", profile_id: "p1" },
-    ]);
+    expect(ctx.api.actions()).toHaveLength(1);
+    expect(ctx.api.actions()[0]).toMatchObject({
+      method: "PUT",
+      path: "/onboarding",
+      body: { risk_level: 4, capital: 10000, goals: [{ target_return: 0.12, deadline: "2099-12-31" }] },
+    });
 
     await ctx.user.click(screen.getByRole("button", { name: "Editar de nuevo" }));
     expect(screen.getByRole("button", { name: "Guardar perfil" })).toBeInTheDocument();
@@ -104,17 +105,18 @@ describe("OnboardingWizard", () => {
     await ctx.user.click(screen.getByRole("button", { name: "Guardar perfil" }));
     expect(screen.getByText("Escribe el retorno objetivo.")).toBeInTheDocument();
     expect(screen.getByText("Elige una fecha límite.")).toBeInTheDocument();
-    expect(ctx.fake.queries).toHaveLength(0);
+    expect(ctx.api.actions()).toHaveLength(0);
 
     await ctx.user.click(screen.getByRole("button", { name: "Quitar meta 2" }));
     expect(screen.queryByLabelText("Retorno objetivo (%) · meta 2")).not.toBeInTheDocument();
   });
 
-  it("muestra el error de Supabase si falla el guardado (p. ej. RLS)", async () => {
-    const ctx = setup(() => ({ error: { message: "new row violates row-level security policy" } }));
+  it("muestra el error de la API si falla el guardado", async () => {
+    const ctx = setup({ "PUT /onboarding": { status: 422, body: { detail: "capital debe ser >= 500" } } });
     await fillAll(ctx);
     await ctx.user.click(screen.getByRole("button", { name: "Guardar perfil" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo guardar tu perfil.");
+    expect(screen.getByRole("alert")).toHaveTextContent("capital debe ser >= 500");
     expect(ctx.onSaved).not.toHaveBeenCalled();
   });
 
@@ -128,12 +130,10 @@ describe("OnboardingWizard", () => {
   });
 
   it("se prellena con un perfil existente", async () => {
-    const fake = createFakeSupabase();
+    mockApi();
     const user = userEvent.setup();
     render(
       <OnboardingWizard
-        supabase={fake.client}
-        userId="user-1"
         initial={{ capital: "2000", riskLevel: "1", goals: [{ targetReturnPct: "8", deadline: "2099-01-01" }] }}
       />,
     );
@@ -143,12 +143,10 @@ describe("OnboardingWizard", () => {
   });
 
   it("si el nivel guardado no es válido, pide elegir uno", async () => {
-    const fake = createFakeSupabase();
+    mockApi();
     const user = userEvent.setup();
     render(
       <OnboardingWizard
-        supabase={fake.client}
-        userId="user-1"
         initial={{ capital: "", riskLevel: "", goals: [{ targetReturnPct: "", deadline: "" }] }}
       />,
     );

@@ -1,4 +1,4 @@
-"""Pruebas del StrategyRegistry: reglas del ciclo de vida, backend en memoria y PostgREST."""
+"""Pruebas del StrategyRegistry: ciclo de vida, backend en memoria y API en Workers."""
 
 import json
 import threading
@@ -12,7 +12,6 @@ from tm_agents.registry import (
     HUMAN_ONLY_TRANSITIONS,
     SYSTEM_ACTOR,
     InMemoryBackend,
-    PostgRESTBackend,
     RegistryError,
     StaleStateError,
     StrategyExistsError,
@@ -20,12 +19,15 @@ from tm_agents.registry import (
     StrategyRecord,
     StrategyRegistry,
     TransitionError,
+    WorkerApiBackend,
     is_allowed_transition,
     normalize_actor,
     requires_human,
     validate_transition,
 )
 from tm_agents.strategy_stats import StrategyState as S
+from tm_shared.api_client import WorkerApiClient
+from tm_shared.fake_api import FakeWorkerApi
 
 HUMAN = UUID("11111111-1111-1111-1111-111111111111")
 
@@ -292,10 +294,10 @@ def test_record_and_transition_coerce_strings():
     assert rec.state is S.LAB
 
 
-# --- PostgREST ---------------------------------------------------------------------------
-URL = "http://supabase.test"
-REST = f"{URL}/rest/v1"
-JWT = "eyJhbGciOiJIUzI1NiJ9.e30.sig"
+# --- API en Workers (/internal/strategies) ------------------------------------------------
+URL = "https://tm-api.test"
+API = f"{URL}/internal/strategies"
+TOKEN = "service-token"
 SID = uuid4()
 
 
@@ -307,9 +309,10 @@ def row(name="trend", state="research", **kw):
         "params": {"lookbacks": [20]},
         "lab_report": None,
         "live_metrics": {},
-        "state_changed_at": "2026-11-07T10:00:00+00:00",
-        "created_at": "2026-11-07T10:00:00+00:00",
-        "updated_at": "2026-11-07T10:00:00Z",
+        "state_changed_at": "2026-11-07T10:00:00.000Z",
+        "created_at": "2026-11-07T10:00:00.000Z",
+        "updated_at": "2026-11-07T10:00:00.000Z",
+        "shadow_days_clean": None,
     }
     base.update(kw)
     return base
@@ -318,95 +321,87 @@ def row(name="trend", state="research", **kw):
 def trow(frm, to, actor="system", reason="r", id_=1):
     return {
         "id": id_,
+        "strategy": "trend",
         "strategy_id": str(SID),
         "from_state": frm,
         "to_state": to,
         "actor": actor,
         "reason": reason,
-        "created_at": "2026-11-07T11:00:00.123456+00:00",
+        "created_at": "2026-11-07T11:00:00.123Z",
     }
 
 
 @pytest.fixture
-def pg():
-    backend = PostgRESTBackend(URL + "/", JWT)
+def api():
+    backend = WorkerApiBackend(WorkerApiClient(URL + "/", TOKEN, sleep=lambda _s: None))
     yield backend
     backend.close()
 
 
 @respx.mock
-def test_pg_get_sends_service_role_headers(pg):
-    route = respx.get(f"{REST}/strategies").mock(return_value=httpx.Response(200, json=[row()]))
-    rec = StrategyRegistry(pg).get("trend")
+def test_api_get_sends_service_token(api):
+    route = respx.get(f"{API}/trend").mock(return_value=httpx.Response(200, json=row()))
+    rec = StrategyRegistry(api).get("trend")
     assert rec.name == "trend" and rec.state is S.RESEARCH and rec.id == SID
     assert rec.params == {"lookbacks": [20]} and rec.live_metrics == {}
     req = route.calls.last.request
-    assert req.url.params["name"] == "eq.trend"
-    assert req.headers["apikey"] == JWT
-    assert req.headers["authorization"] == f"Bearer {JWT}"
+    assert req.headers["x-service-token"] == TOKEN
+    assert "authorization" not in req.headers
 
 
 @respx.mock
-def test_pg_get_missing_returns_none():
-    pg = PostgRESTBackend(URL, "sb_secret_abc")
-    route = respx.get(f"{REST}/strategies").mock(return_value=httpx.Response(200, json=[]))
-    assert pg.get("nope") is None
+def test_api_get_missing_returns_none(api):
+    respx.get(f"{API}/nope").mock(
+        return_value=httpx.Response(404, json={"detail": "no", "code": "not_found"})
+    )
+    assert api.get("nope") is None
     with pytest.raises(StrategyNotFoundError):
-        StrategyRegistry(pg).get("nope")
-    # Las llaves nuevas (no JWT) solo van en apikey
-    assert "authorization" not in route.calls.last.request.headers
+        StrategyRegistry(api).get("nope")
 
 
 @respx.mock
-def test_pg_list_filters_by_state(pg):
-    route = respx.get(f"{REST}/strategies").mock(
+def test_api_list_filters_by_state(api):
+    route = respx.get(API).mock(
         return_value=httpx.Response(200, json=[row("a", "active"), row("b", "probation")])
     )
-    recs = StrategyRegistry(pg).trading()
+    recs = StrategyRegistry(api).trading()
     assert [r.name for r in recs] == ["a", "b"]
-    params = route.calls.last.request.url.params
-    assert params["state"] == "in.(active,probation)"
-    assert params["order"] == "name.asc"
-    StrategyRegistry(pg).list()
+    assert route.calls.last.request.url.params["state"] == "active,probation"
+    StrategyRegistry(api).list()
     assert "state" not in route.calls.last.request.url.params
 
 
 @respx.mock
-def test_pg_register_posts_and_returns_record(pg):
-    route = respx.post(f"{REST}/strategies").mock(
-        return_value=httpx.Response(201, json=[row(params={"k": 1})])
-    )
-    rec = StrategyRegistry(pg).register("trend", {"k": 1})
+def test_api_register_posts_and_returns_record(api):
+    route = respx.post(API).mock(return_value=httpx.Response(201, json=row(params={"k": 1})))
+    rec = StrategyRegistry(api).register("trend", {"k": 1})
     assert rec.params == {"k": 1}
-    req = route.calls.last.request
-    assert json.loads(req.content) == {"name": "trend", "params": {"k": 1}}
-    assert req.headers["prefer"] == "return=representation"
+    assert json.loads(route.calls.last.request.content) == {"name": "trend", "params": {"k": 1}}
 
 
 @respx.mock
-def test_pg_register_duplicate_maps_to_exists(pg):
-    respx.post(f"{REST}/strategies").mock(
-        return_value=httpx.Response(409, json={"code": "23505", "message": "duplicate key"})
-    )
-    with pytest.raises(StrategyExistsError, match="duplicate"):
-        StrategyRegistry(pg).register("trend")
-
-
-@respx.mock
-def test_pg_transition_inserts_row_with_observed_state(pg):
-    respx.get(f"{REST}/strategies").mock(
-        return_value=httpx.Response(200, json=[row(state="shadow")])
-    )
-    route = respx.post(f"{REST}/strategy_transitions").mock(
+def test_api_register_duplicate_maps_to_exists(api):
+    respx.post(API).mock(
         return_value=httpx.Response(
-            201, json=[trow("shadow", "active", str(HUMAN), "aprobada", id_=7)]
+            409, json={"detail": "ya existe 'trend'", "code": "strategy_exists"}
         )
     )
-    t = StrategyRegistry(pg).transition("trend", S.ACTIVE, HUMAN, " aprobada ")
+    with pytest.raises(StrategyExistsError, match="ya existe"):
+        StrategyRegistry(api).register("trend")
+
+
+@respx.mock
+def test_api_transition_posts_observed_state(api):
+    respx.get(f"{API}/trend").mock(return_value=httpx.Response(200, json=row(state="shadow")))
+    route = respx.post(f"{API}/trend/transitions").mock(
+        return_value=httpx.Response(
+            201, json=trow("shadow", "active", str(HUMAN), "aprobada", id_=7)
+        )
+    )
+    t = StrategyRegistry(api).transition("trend", S.ACTIVE, HUMAN, " aprobada ")
     assert (t.from_state, t.to_state, t.actor, t.id) == (S.SHADOW, S.ACTIVE, str(HUMAN), 7)
-    assert t.created_at.microsecond == 123456
+    assert t.created_at.microsecond == 123000
     assert json.loads(route.calls.last.request.content) == {
-        "strategy_id": str(SID),
         "from_state": "shadow",
         "to_state": "active",
         "actor": str(HUMAN),
@@ -415,101 +410,112 @@ def test_pg_transition_inserts_row_with_observed_state(pg):
 
 
 @respx.mock
-def test_pg_transition_validates_before_calling(pg):
-    respx.get(f"{REST}/strategies").mock(
-        return_value=httpx.Response(200, json=[row(state="shadow")])
-    )
-    route = respx.post(f"{REST}/strategy_transitions")
+def test_api_transition_validates_before_calling(api):
+    respx.get(f"{API}/trend").mock(return_value=httpx.Response(200, json=row(state="shadow")))
+    route = respx.post(f"{API}/trend/transitions")
     with pytest.raises(TransitionError, match="actor humano"):
-        StrategyRegistry(pg).transition("trend", S.ACTIVE, SYSTEM_ACTOR, "auto")
+        StrategyRegistry(api).transition("trend", S.ACTIVE, SYSTEM_ACTOR, "auto")
     assert not route.called
 
 
 @pytest.mark.parametrize(
     ("status", "code", "exc"),
     [
-        (500, "40001", StaleStateError),
-        (400, "23514", TransitionError),
-        (403, "42501", TransitionError),
-        (409, "23503", StrategyNotFoundError),
-        (500, "XX000", RegistryError),
+        (409, "stale_state", StaleStateError),
+        (409, "transition_not_allowed", TransitionError),
+        (422, "check_violation", TransitionError),
+        (404, "not_found", StrategyNotFoundError),
+        (422, "foreign_key_violation", StrategyNotFoundError),
+        (409, "unique_violation", StrategyExistsError),
+        (400, None, RegistryError),
     ],
 )
 @respx.mock
-def test_pg_transition_maps_database_errors(pg, status, code, exc):
-    respx.get(f"{REST}/strategies").mock(return_value=httpx.Response(200, json=[row()]))
-    respx.post(f"{REST}/strategy_transitions").mock(
-        return_value=httpx.Response(status, json={"code": code, "message": "boom"})
-    )
+def test_api_transition_maps_contract_errors(api, status, code, exc):
+    respx.get(f"{API}/trend").mock(return_value=httpx.Response(200, json=row()))
+    body = {"detail": "boom", **({"code": code} if code else {})}
+    respx.post(f"{API}/trend/transitions").mock(return_value=httpx.Response(status, json=body))
     with pytest.raises(exc, match="boom"):
-        StrategyRegistry(pg).transition("trend", S.LAB, SYSTEM_ACTOR, "lab")
+        StrategyRegistry(api).transition("trend", S.LAB, SYSTEM_ACTOR, "lab")
 
 
 @respx.mock
-def test_pg_non_json_error_and_network_error(pg):
-    respx.get(f"{REST}/strategies").mock(return_value=httpx.Response(502, text="bad gateway"))
-    with pytest.raises(RegistryError, match="502: bad gateway"):
-        pg.get("trend")
-    respx.get(f"{REST}/strategy_transitions").mock(side_effect=httpx.ConnectError("down"))
+def test_api_retries_idempotent_reads_and_reports_network_errors(api):
+    route = respx.get(f"{API}/trend").mock(
+        side_effect=[httpx.Response(502, text="bad gateway"), httpx.Response(200, json=row())]
+    )
+    assert api.get("trend").name == "trend"
+    assert route.call_count == 2
+    respx.get(f"{API}/trend/transitions").mock(side_effect=httpx.ConnectError("down"))
     with pytest.raises(RegistryError, match="no se pudo llamar"):
-        pg.history(StrategyRecord(name="trend"))
+        api.history(StrategyRecord(name="trend"))
 
 
 @respx.mock
-def test_pg_history_orders_by_time(pg):
-    respx.get(f"{REST}/strategies").mock(return_value=httpx.Response(200, json=[row()]))
-    route = respx.get(f"{REST}/strategy_transitions").mock(
+def test_api_history_in_order(api):
+    respx.get(f"{API}/trend").mock(return_value=httpx.Response(200, json=row()))
+    respx.get(f"{API}/trend/transitions").mock(
         return_value=httpx.Response(
             200, json=[trow("research", "lab", id_=1), trow("lab", "shadow", id_=2)]
         )
     )
-    history = StrategyRegistry(pg).history("trend")
+    history = StrategyRegistry(api).history("trend")
     assert [(t.from_state, t.to_state) for t in history] == [
         (S.RESEARCH, S.LAB),
         (S.LAB, S.SHADOW),
     ]
-    params = route.calls.last.request.url.params
-    assert params["strategy_id"] == f"eq.{SID}"
-    assert params["order"] == "created_at.asc,id.asc"
 
 
 @respx.mock
-def test_pg_update_patches_and_handles_missing(pg):
-    route = respx.patch(f"{REST}/strategies").mock(
-        side_effect=[
-            httpx.Response(200, json=[row(live_metrics={"drawdown": 0.1})]),
-            httpx.Response(200, json=[]),
-        ]
+def test_api_update_patches_and_handles_missing(api):
+    route = respx.patch(f"{API}/trend").mock(
+        return_value=httpx.Response(200, json=row(live_metrics={"drawdown": 0.1}))
     )
-    rec = StrategyRegistry(pg).record_live_metrics("trend", {"drawdown": 0.1})
+    respx.patch(f"{API}/nope").mock(
+        return_value=httpx.Response(404, json={"detail": "no", "code": "not_found"})
+    )
+    rec = StrategyRegistry(api).record_live_metrics("trend", {"drawdown": 0.1})
     assert rec.live_metrics == {"drawdown": 0.1}
-    req = route.calls.last.request
-    assert req.url.params["name"] == "eq.trend"
-    assert json.loads(req.content) == {"live_metrics": {"drawdown": 0.1}}
+    assert json.loads(route.calls.last.request.content) == {"live_metrics": {"drawdown": 0.1}}
     with pytest.raises(StrategyNotFoundError):
-        StrategyRegistry(pg).record_lab_report("nope", {"a": 1})
+        StrategyRegistry(api).record_lab_report("nope", {"a": 1})
 
 
 @respx.mock
-def test_pg_empty_success_body_returns_empty(pg):
-    respx.get(f"{REST}/strategies").mock(return_value=httpx.Response(204))
-    assert pg.get("trend") is None
+def test_api_quotes_names_in_paths(api):
+    route = respx.get(f"{API}/a%20b").mock(return_value=httpx.Response(200, json=row("a b")))
+    assert api.get("a b").name == "a b"
+    assert route.called
 
 
-def test_pg_from_env_and_validation():
-    pg = PostgRESTBackend.from_env({"SUPABASE_URL": URL, "SUPABASE_SERVICE_ROLE_KEY": JWT})
-    assert pg._base == REST
-    pg.close()
-    with pytest.raises(ValueError, match="URL"):
-        PostgRESTBackend.from_env({})
-    with pytest.raises(ValueError, match="llave"):
-        PostgRESTBackend(URL, "")
+def test_api_against_fake_worker_full_lifecycle():
+    """Ciclo completo contra la API simulada (mismas respuestas que el Worker)."""
+    fake = FakeWorkerApi()
+    reg = StrategyRegistry(WorkerApiBackend(fake.client()))
+    reg.register("trend", {"k": 1})
+    reg.transition("trend", S.LAB, SYSTEM_ACTOR, "lab")
+    reg.transition("trend", S.SHADOW, SYSTEM_ACTOR, "pasa el lab")
+    assert reg.get("trend").state is S.SHADOW
+    assert [t.to_state for t in reg.history("trend")] == [S.LAB, S.SHADOW]
+    fake.strategies["trend"]["state"] = "active"  # otro proceso la cambió
+    with pytest.raises(StaleStateError):
+        reg.backend.append_transition(
+            StrategyRecord(name="trend", state=S.SHADOW), S.ACTIVE, str(HUMAN), "x"
+        )
 
 
-def test_pg_from_env_reads_process_environment(monkeypatch):
-    monkeypatch.setenv("SUPABASE_URL", URL)
-    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", JWT)
-    client = httpx.Client()
-    pg = PostgRESTBackend.from_env(client=client)
-    assert pg._client is client
-    pg.close()
+def test_api_from_env_and_validation(monkeypatch):
+    backend = WorkerApiBackend.from_env({"TM_API_URL": URL + "/internal", "TM_SERVICE_TOKEN": "t"})
+    assert backend.client.base_url == URL
+    backend.close()
+    with pytest.raises(ValueError, match="TM_API_URL"):
+        WorkerApiBackend.from_env({})
+    with pytest.raises(ValueError, match="TM_SERVICE_TOKEN"):
+        WorkerApiBackend.from_env({"TM_API_URL": URL})
+    monkeypatch.setenv("TM_API_URL", URL)
+    monkeypatch.setenv("TM_SERVICE_TOKEN", "t")
+    monkeypatch.setenv("CF_ACCESS_CLIENT_ID", "id.access")
+    monkeypatch.setenv("CF_ACCESS_CLIENT_SECRET", "s3cr3t")
+    backend = WorkerApiBackend.from_env()
+    assert backend.client.headers["CF-Access-Client-Id"] == "id.access"
+    backend.close()

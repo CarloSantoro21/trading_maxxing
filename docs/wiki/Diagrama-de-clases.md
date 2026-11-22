@@ -11,29 +11,29 @@ Vista de alto nivel de los componentes del sistema (agentes, servicios, orquesta
 | Componente | Responsabilidad | Motor | Métodos principales |
 |---|---|---|---|
 | web (Next.js) | Onboarding, perfil, dashboard, backtests | — | `/onboarding`, `/dashboard`, `/strategies`, `/backtests`, `/trades` |
-| api (FastAPI) | API REST, validación, disparo de jobs | — | `POST /profiles`, `GET /portfolio`, `POST /backtests`, `POST /bots/{id}/start`, `POST /bots/{id}/stop`, `GET /trades` |
+| api (Cloudflare Worker, Hono + TypeScript) | API REST, login con Access, validación, comandos para el motor | D1 | `POST /profiles`, `GET /portfolio`, `POST /backtests`, `POST /bots/{id}/start`, `POST /bots/{id}/stop`, `GET /trades` |
 | InvestmentProfile | Capital, nivel de riesgo (1 a 5) y metas del usuario | Python | `validate()`, `to_risk_limits()` |
 | InvestmentGoal | Metas de rendimiento | Python | `progress(equity)`, `probability(sim)` |
 | BaseAgent (abstracta) | Contrato común de las estrategias | — | `analyze(ctx) -> Signal` |
 | KronosAgent | Señal y trayectorias a partir de Kronos | Kronos-small | `analyze(ctx)`, `trajectories(ctx)` |
 | TrendAgent | Trend following con canales Donchian | Python | `analyze(ctx)` |
 | IntradayMomentumAgent | Momentum de la primera a la última media hora | Python | `analyze(ctx)` |
-| NewsAgent | Veto ante noticias de alto impacto | LLM (Groq) | `fetch_news(symbol)`, `classify(articles)`, `veto(ctx)` |
+| NewsAgent | Veto ante noticias de alto impacto (opcional, apagado por defecto) | Palabras clave o LLM opcional | `fetch_news(symbol)`, `classify(articles)`, `veto(ctx)` |
 | AgentOrchestrator | Ciclo por vela: corre cada sleeve activo y en shadow | Python | `run_cycle(profile)`, `run_sleeve(sleeve, ctx)` |
 | PortfolioAllocator | Pesos globales por estrategia y exposición por usuario según su nivel de riesgo | Python | `weights(strategies)`, `allocate(profile, weights) -> dict[str, Decimal]` |
-| StrategyRegistry | Estado del ciclo de vida de cada estrategia (tabla `strategies`) | Python + Supabase | `get(name)`, `transition(name, to, reason)`, `active()`, `shadow()` |
+| StrategyRegistry | Estado del ciclo de vida de cada estrategia (tabla `strategies`) | Python + API (D1) | `get(name)`, `transition(name, to, reason)`, `active()`, `shadow()` |
 | LifecycleMonitor | Detecta deterioro en vivo y degrada estrategias | Python | `check(strategy, live_stats, mc_report) -> Transition` |
 | SimulationGate | Monte Carlo antes de cada operación | numpy | `simulate(decision, paths) -> SimResult`, `approve(sim)` |
 | RiskAgent | Tamaño de posición y límites | Python | `evaluate(decision, portfolio)`, `position_size(signal, equity)`, `check_drawdown(portfolio)` |
 | ExplainerAgent | Justificación en lenguaje natural (fuera del camino de la decisión) | LLM | `explain(decision) -> str` |
-| LLMClient | Interfaz común para proveedores de LLM | Groq | `complete_json(prompt, schema)` |
+| LLMClient | Interfaz común para proveedores de LLM (opcional) | none, Workers AI, Groq u OpenAI-compatible | `complete_json(prompt, schema)` |
 | KronosForecastService | Inferencia de Kronos | Kronos | `load_model(name)`, `predict(ohlcv, pred_len, samples)` |
 | MarketDataService | Velas históricas y en tiempo real | Python | `get_bars(symbol, tf, start, end)`, `stream_bars(symbol, tf)` |
 | TradingEngineService | Envuelve el TradingNode de Nautilus | Nautilus | `start(profile)`, `stop()`, `submit(decision)`, `get_positions()` |
 | AgenticStrategy | Convierte decisiones en órdenes | Nautilus | `on_start()`, `on_bar(bar)`, `on_signal(decision)`, `on_order_filled(event)`, `on_stop()` |
 | BacktestService | Backtests in-sample y out-of-sample | Nautilus | `run(config) -> BacktestReport`, `walk_forward(config)` |
 | MonteCarloService | Remuestreo de operaciones y proyección de metas | numpy | `reshuffle(trades, n)`, `goal_probability(stats, goal)` |
-| TradeRepository | Persistencia en Supabase | Python | `save_trade(trade)`, `list_trades(user_id)`, `save_equity_snapshot(snap)` |
+| TradeRepository | Persistencia en D1 a través de `/internal/*` de la API | Python | `save_trade(trade)`, `list_trades(user_id)`, `save_equity_snapshot(snap)` |
 
 ## Esqueleto en Mermaid (resumen)
 
@@ -100,4 +100,4 @@ Fase 2, producción (en cada cierre de vela):
 4. `SimulationGate` bloquea operaciones con valor esperado negativo.
 5. `RiskAgent` calcula el tamaño de la posición y SL/TP.
 6. `AgenticStrategy` envía la orden bracket a Binance Testnet.
-7. La operación se guarda en Supabase y el dashboard se actualiza con Supabase Realtime.
+7. La operación se guarda en D1 a través de la API (`/internal/*`) y el dashboard se actualiza con polling a `/api/*`.

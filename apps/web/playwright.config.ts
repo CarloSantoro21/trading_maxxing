@@ -4,10 +4,11 @@ import { defineConfig, devices } from "@playwright/test";
  * Configuración de Playwright para las pruebas E2E / UAT del frontend (#28).
  *
  * Hay dos modos:
- *   - *mocked* (`pnpm e2e:mocked`): intercepta Supabase y la API con `page.route()`, corre
- *     sin servicios externos. Es la variante que corre CI en el push/PR.
- *   - *UAT*    (`pnpm e2e:uat`): apunta a `APP_URL` (el deploy de dev) y corre en el pipeline
- *     después del deploy. Si falla, bloquea la promoción a prod.
+ *   - *mocked* (`pnpm e2e:mocked`): intercepta `/api/*` (mismo origen) con `page.route()`,
+ *     corre sin la API ni Cloudflare Access.
+ *   - *UAT*    (`pnpm e2e:uat`): apunta a `APP_URL` (el deploy de dev en Cloudflare Pages)
+ *     con un service token de Access y corre en el pipeline después del deploy. Si falla,
+ *     bloquea la promoción a prod.
  *
  * Resolución del `baseURL`:
  *   1. `APP_URL` (UAT contra dev).
@@ -58,25 +59,23 @@ export default defineConfig({
     },
   ],
   // Arranca `pnpm dev` si no hay nada escuchando ya. Para la UAT contra dev (`APP_URL`
-  // definido) NO arrancamos nada: el frontend ya está desplegado. En local sin APP_URL,
-  // inyectamos valores "mocked" para que el cliente de Supabase y el de la API apunten a
-  // los hosts que la variante `mocked` intercepta con `page.route()`.
+  // definido) NO arrancamos nada: el frontend ya está desplegado. En la variante mocked
+  // `page.route()` responde `/api/*` antes de que llegue al proxy de `next dev`, así que
+  // `API_DEV_URL` apunta a un puerto sin nada (si un mock falta, la llamada falla en vez de
+  // pegarle a un `wrangler dev` local).
   webServer: SKIP_WEBSERVER
     ? undefined
     : {
-        command: "pnpm dev",
+        command: `pnpm dev --port ${PORT} --hostname ${HOST}`,
         url: BASE_URL,
         reuseExistingServer: true,
         stdout: "ignore",
         stderr: "pipe",
         timeout: 180_000,
         env: {
-          NEXT_PUBLIC_SUPABASE_URL:
-            process.env.E2E_SUPABASE_URL ?? "http://127.0.0.1:54399",
-          NEXT_PUBLIC_SUPABASE_ANON_KEY:
-            process.env.E2E_SUPABASE_ANON_KEY ?? "test-anon-key",
-          NEXT_PUBLIC_API_URL:
-            process.env.E2E_API_URL ?? "http://127.0.0.1:8099",
+          API_DEV_URL: process.env.E2E_API_URL ?? "http://127.0.0.1:8099",
+          NEXT_PUBLIC_ENV: "local",
+          NEXT_PUBLIC_COMMIT_SHA: process.env.E2E_COMMIT_SHA ?? "e2e0000",
         },
       },
 });

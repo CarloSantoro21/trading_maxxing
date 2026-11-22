@@ -1,0 +1,514 @@
+name: Backend
+
+# Pipeline del backend (#27, #28, #29). Ver docs/pipeline-y-ambientes.md.
+#
+#   PR a develop/main  -> api (tsc + vitest + cobertura + JUnit) | python (ruff + pytest) | docker (build sin push)
+#   push a develop     -> lo anterior + push a Docker Hub (sha-<corto>, dev) + deploy-dev (D1 tm-dev + Worker tm-api-dev + smoke) + UAT
+#   push a main        -> lo anterior + push a Docker Hub (sha-<corto>, prod) + gate UAT + deploy-prod (D1 tm-prod + Worker tm-api)
+#   Las imágenes trading-maxxing-{agents,engine,forecast}:{dev,prod} son las que sigue
+#   watchtower en docker-compose.runner.yml (TM_ENV=dev|prod).
+#                         (environment `prod` con required reviewers: espera aprobación manual)
+#
+# Sin secrets de Cloudflare o Docker Hub los jobs no fallan: dejan un aviso en el summary.
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+    # En push solo corre si cambió algo del backend (en PR corre siempre: es check requerido).
+    paths:
+      - "apps/api/**"
+      - "services/**"
+      - "packages/**"
+      - "docs/estrategias/reportes/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".python-version"
+      - ".nvmrc"
+      - ".github/workflows/backend.yml"
+      - ".github/workflows/uat.yml"
+      - ".github/workflows/uat-gate.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: backend-${{ github.ref }}
+  # En PR se cancela la corrida vieja; en develop/main nunca se corta un deploy a medias.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  WRANGLER_SEND_METRICS: "false"
+
+jobs:
+  # ---------------------------------------------------------------------------------
+  # (a) API en Cloudflare Workers: tipos, pruebas con cobertura y JUnit
+  # ---------------------------------------------------------------------------------
+  api:
+    name: API Worker (tsc + vitest + build)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    defaults:
+      run:
+        working-directory: apps/api
+    env:
+      CI: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: apps/api/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: apps/api/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Tipos (genera también los reportes del laboratorio)
+        run: pnpm typecheck
+      - name: Pruebas con cobertura en el runtime de Workers con D1 local
+        run: pnpm test:coverage
+      - name: Build del Worker (wrangler deploy --dry-run, sin publicar)
+        run: pnpm build
+      - name: Nombres alineados con Terraform (trading_maxxing-infra)
+        working-directory: .
+        run: |
+          python3 - <<'PY'
+          import os, sys, tomllib
+          cfg = tomllib.load(open("apps/api/wrangler.toml", "rb"))
+          # envs/dev y envs/prod de trading_maxxing-infra: Worker y base D1 de cada ambiente.
+          want = {"dev": ("tm-api-dev", "tm-dev"), "production": ("tm-api", "tm-prod")}
+          bad, rows = [], []
+          for env, (worker, d1) in want.items():
+              e = cfg["env"][env]
+              got = (e.get("name"), e["d1_databases"][0]["database_name"])
+              rows.append(f"| {env} | `{got[0]}` | `{got[1]}` |")
+              if got != (worker, d1):
+                  bad.append(f"{env}: {got} (se esperaba {(worker, d1)})")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("### Worker y D1 por ambiente\n\n| Ambiente | Worker | D1 |\n|---|---|---|\n")
+              f.write("\n".join(rows) + "\n")
+          if bad:
+              print("::error::wrangler.toml no coincide con Terraform: " + "; ".join(bad))
+              sys.exit(1)
+          PY
+      - name: APM habilitado (Workers Observability en dev y production, #29)
+        working-directory: .
+        run: |
+          python3 - <<'PY'
+          import os, sys, tomllib
+          path = "apps/api/wrangler.toml"
+          if not os.path.exists(path):
+              print(f"::warning::{path} no existe; no se verificó Observability")
+              sys.exit(0)
+          cfg = tomllib.load(open(path, "rb"))
+          rows, bad = [], []
+          for name, env in [("(raíz)", cfg)] + list(cfg.get("env", {}).items()):
+              obs = env.get("observability", cfg.get("observability", {}))
+              ok = bool(obs.get("enabled"))
+              logs = bool(obs.get("logs", {}).get("enabled", ok))
+              traces = bool(obs.get("traces", {}).get("enabled", False))
+              rows.append(f"| {name} | {'sí' if ok else 'NO'} | {'sí' if logs else 'NO'} | {'sí' if traces else 'NO'} |")
+              if not ok:
+                  bad.append(name)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("### APM: Workers Observability\n\n| Ambiente | enabled | logs | traces |\n|---|---|---|---|\n")
+              f.write("\n".join(rows) + "\n")
+          if bad:
+              print(f"::error::Observability apagado en: {', '.join(bad)}")
+              sys.exit(1)
+          PY
+      - name: Resultados de pruebas en la pestaña Checks
+        if: ${{ !cancelled() }}
+        uses: mikepenz/action-junit-report@v5
+        with:
+          report_paths: apps/api/reports/junit.xml
+          check_name: "Pruebas API (vitest)"
+          detailed_summary: true
+          include_passed: false
+          fail_on_failure: false
+          require_tests: false
+          annotate_only: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+      - name: Cobertura en el summary
+        if: ${{ !cancelled() }}
+        run: |
+          f=coverage/coverage-summary.json
+          if [ ! -f "$f" ]; then echo "Sin coverage-summary.json"; exit 0; fi
+          {
+            echo "### Cobertura API (vitest + istanbul)"
+            echo ""
+            echo "| Métrica | % | Cubiertas / total |"
+            echo "|---|---|---|"
+            for m in lines statements functions branches; do
+              jq -r --arg m "$m" '.total[$m] | "| \($m) | \(.pct) % | \(.covered) / \(.total) |"' "$f"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Subir cobertura y JUnit
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-coverage-y-junit
+          path: |
+            apps/api/coverage
+            apps/api/reports/junit.xml
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------------
+  # (b) Servicios de Python (motor): ruff + pytest con cobertura y JUnit
+  # ---------------------------------------------------------------------------------
+  python:
+    # El nombre se conserva: es check requerido en la protección de develop.
+    name: Python (ruff + pytest)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Instalar dependencias del workspace
+        run: uv sync --all-packages --locked
+      - name: Lint
+        run: uv run ruff check .
+      - name: Formato
+        run: uv run ruff format --check .
+      - name: Pruebas con cobertura (mínimo 70 %)
+        run: uv run pytest --cov --cov-report=term --cov-report=xml --junitxml=reports/pytest-junit.xml
+      - name: Resultados de pruebas en la pestaña Checks
+        if: ${{ !cancelled() }}
+        uses: mikepenz/action-junit-report@v5
+        with:
+          report_paths: reports/pytest-junit.xml
+          check_name: "Pruebas Python (pytest)"
+          detailed_summary: true
+          include_passed: false
+          fail_on_failure: false
+          require_tests: false
+          annotate_only: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+      - name: Cobertura en el summary
+        if: ${{ !cancelled() }}
+        run: |
+          if [ ! -f .coverage ]; then echo "Sin datos de cobertura"; exit 0; fi
+          {
+            echo "### Cobertura Python (pytest-cov, mínimo 70 %)"
+            echo ""
+            uv run coverage report --format=markdown --fail-under=0
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Subir cobertura y JUnit
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-coverage-y-junit
+          path: |
+            coverage.xml
+            reports/pytest-junit.xml
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------------
+  # (c) Imágenes del motor (corren en la Mac con docker compose)
+  #     PR: build amd64 sin publicar. Push: multi-arch (amd64 + arm64) y push a Docker Hub.
+  # ---------------------------------------------------------------------------------
+  docker:
+    name: Docker (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [agents, engine, forecast]
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Decidir si se publica
+        id: mode
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          SERVICE: ${{ matrix.service }}
+        run: |
+          short="${GITHUB_SHA::7}"
+          case "$REF" in
+            refs/heads/develop) channel=dev ;;
+            refs/heads/main)    channel=prod ;;
+            *)                  channel="" ;;
+          esac
+          if [ "$EVENT" != "pull_request" ] && [ -n "$channel" ] \
+             && [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+            {
+              echo "short=$short"
+              echo "channel=$channel"
+              echo "publish=true"
+              echo "platforms=linux/amd64,linux/arm64"
+              echo "image=${DOCKERHUB_USERNAME}/trading-maxxing-${SERVICE}"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "### Imagen $SERVICE publicada"
+              echo "\`${DOCKERHUB_USERNAME}/trading-maxxing-${SERVICE}\` con tags \`sha-${short}\` y \`${channel}\` (amd64 + arm64)."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "short=$short"
+              echo "channel=$channel"
+              echo "publish=false"
+              echo "platforms=linux/amd64"
+              echo "image=trading-maxxing-${SERVICE}"
+            } >> "$GITHUB_OUTPUT"
+            if [ "$EVENT" = "pull_request" ] || [ -z "$channel" ]; then
+              why="es un pull request (solo se valida el build)"
+            else
+              why="faltan los secrets DOCKERHUB_USERNAME y/o DOCKERHUB_TOKEN"
+              echo "::warning title=Docker Hub omitido::$SERVICE no se publicó: $why"
+            fi
+            {
+              echo "### Imagen $SERVICE: solo build (amd64), NO se publicó"
+              echo "Motivo: $why."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: docker/setup-qemu-action@v3
+        if: steps.mode.outputs.publish == 'true'
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login en Docker Hub
+        if: steps.mode.outputs.publish == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Tags y labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.mode.outputs.image }}
+          tags: |
+            type=raw,value=sha-${{ steps.mode.outputs.short }}
+            type=raw,value=${{ steps.mode.outputs.channel }},enable=${{ steps.mode.outputs.channel != '' }}
+
+      - name: Build${{ steps.mode.outputs.publish == 'true' && ' y push' || '' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/${{ matrix.service }}/Dockerfile
+          platforms: ${{ steps.mode.outputs.platforms }}
+          push: ${{ steps.mode.outputs.publish == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=motor-${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=motor-${{ matrix.service }}
+
+  # ---------------------------------------------------------------------------------
+  # (d) Deploy a dev: automático en cada push a develop
+  # ---------------------------------------------------------------------------------
+  deploy-dev:
+    name: Deploy API a dev
+    needs: [api, python]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    environment:
+      name: dev
+      url: ${{ steps.deploy.outputs.url }}
+    concurrency:
+      group: deploy-api-dev
+      cancel-in-progress: false
+    outputs:
+      deployed: ${{ steps.creds.outputs.ok }}
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+      CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+      TM_SERVICE_TOKEN: ${{ secrets.TM_SERVICE_TOKEN }}
+      API_URL: ${{ vars.API_URL }}
+      D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
+      ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
+      ACCESS_AUD: ${{ vars.ACCESS_AUD }}
+      WRANGLER_ENV: dev
+    steps:
+      - &creds
+        name: Revisar credenciales de Cloudflare
+        id: creds
+        run: |
+          if [ -n "$CLOUDFLARE_API_TOKEN" ] && [ -n "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            msg="Faltan CLOUDFLARE_API_TOKEN y/o CLOUDFLARE_ACCOUNT_ID en el environment $WRANGLER_ENV: no se desplegó nada."
+            echo "::warning title=Deploy omitido::$msg"
+            {
+              echo "### Deploy omitido ($WRANGLER_ENV)"
+              echo "$msg"
+              echo ""
+              echo "Ver docs/pipeline-y-ambientes.md (sección Secrets)."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - &checkout
+        uses: actions/checkout@v4
+        if: steps.creds.outputs.ok == 'true'
+      - &pnpm
+        uses: pnpm/action-setup@v4
+        if: steps.creds.outputs.ok == 'true'
+        with:
+          package_json_file: apps/api/package.json
+      - &node
+        uses: actions/setup-node@v4
+        if: steps.creds.outputs.ok == 'true'
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: apps/api/pnpm-lock.yaml
+      - &install
+        name: Instalar dependencias
+        if: steps.creds.outputs.ok == 'true'
+        working-directory: apps/api
+        run: pnpm install --frozen-lockfile
+
+      - &d1id
+        name: Id real de la base D1 (si se definió la variable D1_DATABASE_ID)
+        if: steps.creds.outputs.ok == 'true' && env.D1_DATABASE_ID != ''
+        working-directory: apps/api
+        run: |
+          python3 - <<'PY'
+          import os, re
+          env, new_id = os.environ["WRANGLER_ENV"], os.environ["D1_DATABASE_ID"]
+          lines, out, inside = open("wrangler.toml").read().splitlines(), [], False
+          for line in lines:
+              s = line.strip()
+              if s.startswith("["):
+                  inside = s == f"[[env.{env}.d1_databases]]"
+              if inside and re.match(r"database_id\s*=", s):
+                  line = f'database_id = "{new_id}"'
+              out.append(line)
+          open("wrangler.toml", "w").write("\n".join(out) + "\n")
+          print(f"database_id de env.{env} sustituido por la variable D1_DATABASE_ID")
+          PY
+
+      # Binding DB de wrangler.toml: base tm-dev (env dev) o tm-prod (env production).
+      - &migrate
+        name: Migraciones de D1 (remoto)
+        if: steps.creds.outputs.ok == 'true'
+        working-directory: apps/api
+        run: pnpm exec wrangler d1 migrations apply DB --env "$WRANGLER_ENV" --remote
+
+      - &secret
+        name: Secreto SERVICE_TOKEN del Worker (si existe TM_SERVICE_TOKEN)
+        if: steps.creds.outputs.ok == 'true' && env.TM_SERVICE_TOKEN != ''
+        working-directory: apps/api
+        run: printf '%s' "$TM_SERVICE_TOKEN" | pnpm exec wrangler secret put SERVICE_TOKEN --env "$WRANGLER_ENV"
+
+      - &deploy
+        name: wrangler deploy
+        id: deploy
+        if: steps.creds.outputs.ok == 'true'
+        working-directory: apps/api
+        run: |
+          set -o pipefail
+          args=(--env "$WRANGLER_ENV" --var "AUTH_MODE:access")
+          [ -n "$ACCESS_TEAM_DOMAIN" ] && args+=(--var "ACCESS_TEAM_DOMAIN:$ACCESS_TEAM_DOMAIN")
+          [ -n "$ACCESS_AUD" ] && args+=(--var "ACCESS_AUD:$ACCESS_AUD")
+          pnpm exec wrangler deploy "${args[@]}" | tee deploy.log
+          url="${API_URL:-$(grep -oE 'https://[A-Za-z0-9.-]+\.workers\.dev' deploy.log | head -1)}"
+          echo "url=${url%/}" >> "$GITHUB_OUTPUT"
+          version="$(grep -oiE 'Current Version ID: [0-9a-f-]+' deploy.log | awk '{print $4}' || true)"
+          {
+            echo "### Worker desplegado ($WRANGLER_ENV)"
+            echo ""
+            echo "- URL: ${url:-desconocida}"
+            echo "- Commit: \`${GITHUB_SHA::7}\`"
+            echo "- Version ID: \`${version:-ver salida de wrangler}\`"
+            echo "- Rollback: \`wrangler rollback --env $WRANGLER_ENV\` (ver docs/pipeline-y-ambientes.md)"
+            echo "- APM: Cloudflare → Workers & Pages → el Worker → Observability"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - &smoke
+        name: Smoke test de /api/health
+        if: steps.creds.outputs.ok == 'true'
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          if [ -z "$URL" ]; then
+            echo "::warning title=Smoke omitido::No se conoce la URL del Worker; define la variable API_URL del environment."
+            exit 0
+          fi
+          headers=()
+          if [ -n "$CF_ACCESS_CLIENT_ID" ] && [ -n "$CF_ACCESS_CLIENT_SECRET" ]; then
+            headers+=(-H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET")
+          fi
+          for i in 1 2 3 4 5 6; do
+            # Sin -L: un 302 al login de Access cuenta como fallo, no como éxito.
+            code=$(curl -sS --max-time 15 -o health.json -w '%{http_code}' "${headers[@]}" "$URL/api/health" || echo 000)
+            if [ "$code" = "200" ]; then
+              cat health.json
+              { echo "### Smoke test OK: GET $URL/api/health → 200"; echo '```json'; cat health.json; echo; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "Intento $i: HTTP $code; reintento en 10 s"; sleep 10
+          done
+          echo "::error title=Smoke test::$URL/api/health no respondió 200 (último código: $code)"
+          exit 1
+
+  uat-dev:
+    name: UAT dev
+    needs: deploy-dev
+    if: needs.deploy-dev.outputs.deployed == 'true'
+    uses: ./.github/workflows/uat.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      checks: write
+
+  # ---------------------------------------------------------------------------------
+  # (e) Deploy a prod: push a main, con gate de UAT y aprobación manual (environment prod)
+  # ---------------------------------------------------------------------------------
+  uat-gate:
+    name: Gate UAT
+    needs: [api, python]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/uat-gate.yml
+    permissions:
+      contents: read
+      checks: read
+
+  deploy-prod:
+    name: Deploy API a prod
+    needs: [api, python, uat-gate]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: prod
+      url: ${{ steps.deploy.outputs.url }}
+    concurrency:
+      group: deploy-api-prod
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+      CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+      TM_SERVICE_TOKEN: ${{ secrets.TM_SERVICE_TOKEN }}
+      API_URL: ${{ vars.API_URL }}
+      D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
+      ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
+      ACCESS_AUD: ${{ vars.ACCESS_AUD }}
+      WRANGLER_ENV: production
+    steps:
+      - *creds
+      - *checkout
+      - *pnpm
+      - *node
+      - *install
+      - *d1id
+      - *migrate
+      - *secret
+      - *deploy
+      - *smoke

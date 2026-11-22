@@ -66,10 +66,11 @@ export function Card({
   );
 }
 
-/** Indicador de la suscripción a Supabase Realtime. */
+/** Indicador del refresco automático (polling): "En vivo" mientras la última consulta funcionó. */
 export function LiveBadge({ live }: { live: boolean }) {
   return (
     <span
+      title="Los datos se actualizan solos cada pocos segundos mientras la pestaña está visible"
       className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${
         live
           ? "bg-emerald-50 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"

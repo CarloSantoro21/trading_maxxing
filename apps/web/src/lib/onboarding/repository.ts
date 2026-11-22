@@ -1,4 +1,4 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
+import { apiErrorMessage, apiFetch } from "@/lib/api/client";
 import {
   fractionToPct,
   isRiskLevel,
@@ -8,14 +8,16 @@ import {
 } from "./schema";
 
 /**
- * Lectura y escritura del perfil y las metas con supabase-js.
+ * Lectura y escritura del perfil y las metas con la API: `GET /api/onboarding` y
+ * `PUT /api/onboarding`. La API identifica al usuario por la sesión de Cloudflare Access,
+ * así que solo toca sus propias filas.
  *
- * Todas las consultas van con la sesión del usuario (llave anon + JWT), así que las
- * políticas RLS garantizan que solo toque sus propias filas; aquí no se usa service role.
- *
- * El perfil solo guarda nivel de riesgo y capital: la base deriva max_drawdown del nivel
- * (trigger profiles_derive_max_drawdown) y pone los defaults de horizon e instruments.
+ * El perfil solo guarda nivel de riesgo y capital: la API deriva max_drawdown del nivel y
+ * pone los defaults de horizon e instruments. El PUT crea o actualiza el perfil y reemplaza
+ * las metas en un batch atómico.
  */
+
+export const ONBOARDING_KEY = "/onboarding";
 
 export interface ProfileRow {
   id: string;
@@ -33,14 +35,11 @@ export class OnboardingSaveError extends Error {
   }
 }
 
-/** Filas para profiles y goals a partir de los valores validados. */
-export function toDbRows(userId: string, values: OnboardingValues) {
+/** Cuerpo de `PUT /api/onboarding` a partir de los valores validados. */
+export function toOnboardingBody(values: OnboardingValues) {
   return {
-    profile: {
-      user_id: userId,
-      risk_level: values.riskLevel,
-      capital: values.capital,
-    },
+    risk_level: values.riskLevel,
+    capital: values.capital,
     goals: values.goals.map((g) => ({
       target_return: pctToFraction(g.targetReturnPct),
       deadline: g.deadline,
@@ -62,53 +61,23 @@ export function profileToForm(row: ProfileRow): OnboardingFormState {
 }
 
 /** Perfil del usuario con sus metas, o null si todavía no hace el onboarding. */
-export async function fetchProfile(
-  supabase: SupabaseClient,
-  userId: string,
-): Promise<ProfileRow | null> {
-  const { data, error } = await supabase
-    .from("profiles")
-    .select("id, risk_level, capital, max_drawdown, goals(target_return, deadline)")
-    .eq("user_id", userId)
-    .maybeSingle();
-  if (error) throw new OnboardingSaveError("No se pudo leer tu perfil.", { cause: error });
-  return (data as ProfileRow | null) ?? null;
+export async function fetchProfile(): Promise<ProfileRow | null> {
+  try {
+    return (await apiFetch<ProfileRow | null>(ONBOARDING_KEY)) ?? null;
+  } catch (err) {
+    throw new OnboardingSaveError(`No se pudo leer tu perfil. ${apiErrorMessage(err)}`, { cause: err });
+  }
 }
 
-/**
- * Crea o actualiza el perfil (uno por usuario) y reemplaza sus metas.
- *
- * No es transaccional: si falla la escritura de metas, el perfil ya quedó guardado y el
- * usuario puede reintentar; reintentar es idempotente porque las metas se reemplazan.
- */
-export async function saveOnboarding(
-  supabase: SupabaseClient,
-  userId: string,
-  values: OnboardingValues,
-): Promise<{ profileId: string }> {
-  const rows = toDbRows(userId, values);
-
-  const { data: profile, error: profileError } = await supabase
-    .from("profiles")
-    .upsert(rows.profile, { onConflict: "user_id" })
-    .select("id")
-    .single();
-  if (profileError || !profile) {
-    throw new OnboardingSaveError("No se pudo guardar tu perfil.", { cause: profileError });
+/** Crea o actualiza el perfil (uno por usuario) y reemplaza sus metas. */
+export async function saveOnboarding(values: OnboardingValues): Promise<{ profileId: string }> {
+  try {
+    const res = await apiFetch<{ profileId: string; profile_id: string }>(ONBOARDING_KEY, {
+      method: "PUT",
+      body: toOnboardingBody(values),
+    });
+    return { profileId: res.profileId ?? res.profile_id };
+  } catch (err) {
+    throw new OnboardingSaveError(`No se pudo guardar tu perfil. ${apiErrorMessage(err)}`, { cause: err });
   }
-  const profileId = (profile as { id: string }).id;
-
-  const { error: deleteError } = await supabase.from("goals").delete().eq("profile_id", profileId);
-  if (deleteError) {
-    throw new OnboardingSaveError("No se pudieron actualizar tus metas.", { cause: deleteError });
-  }
-
-  const { error: goalsError } = await supabase
-    .from("goals")
-    .insert(rows.goals.map((g) => ({ ...g, profile_id: profileId })));
-  if (goalsError) {
-    throw new OnboardingSaveError("No se pudieron guardar tus metas.", { cause: goalsError });
-  }
-
-  return { profileId };
 }

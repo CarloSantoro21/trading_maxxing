@@ -306,7 +306,7 @@ def test_bot_explanation_sink_exception_is_swallowed(make_bot, make_event):
     """Un sink que lanza no detiene al runner ni altera la decisión."""
 
     def crashing_sink(env_id, text):
-        raise RuntimeError("supabase caído")
+        raise RuntimeError("API caída")
 
     runner, sink, _ = _build_runner_with_explainer(
         make_bot, ExplainerAgent(_RecordingLLM("ok")), crashing_sink

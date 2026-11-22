@@ -1,14 +1,11 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
 import type { BotStatus } from "@/lib/api/client";
 import { asRationale } from "@/lib/dashboard/rationale";
 import { toNumber } from "@/lib/format";
 
 /**
- * Datos del dashboard (#23), leídos con supabase-js y la sesión del usuario.
- *
- * RLS limita cada consulta a las filas del usuario (profiles -> bots -> trades y
- * equity_snapshots), así que aquí no hay filtros de seguridad, solo de forma. Las
- * actualizaciones en vivo llegan por Supabase Realtime y se aplican con `dashboardReducer`.
+ * Datos del dashboard (#23): `GET /api/dashboard` devuelve todo en una llamada, ya
+ * filtrado por el usuario de la sesión (la API reemplaza a RLS). El dashboard la vuelve a
+ * pedir cada pocos segundos (polling con SWR).
  *
  * Cada bot es el portafolio de un usuario y cada estrategia es un sleeve dentro de él; la
  * tabla trades no tiene columna de sleeve: va en `rationale.sleeve` (lo escribe el engine).
@@ -80,92 +77,14 @@ export const EMPTY_DASHBOARD: DashboardData = {
   closed: {},
 };
 
-export class DashboardLoadError extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
-    super(message, options);
-    this.name = "DashboardLoadError";
-  }
-}
+/** Llave de SWR (ruta de la API) del dashboard. */
+export const DASHBOARD_KEY = "/dashboard";
 
 export const NO_SLEEVE = "sin_sleeve";
 
 export function sleeveOf(trade: Pick<TradeRow, "rationale">): string {
   const sleeve = asRationale(trade.rationale).sleeve;
   return typeof sleeve === "string" && sleeve ? sleeve : NO_SLEEVE;
-}
-
-function check<T>(res: { data: T | null; error: unknown }, what: string): T {
-  if (res.error) throw new DashboardLoadError(`No se pudo leer ${what}.`, { cause: res.error });
-  return (res.data ?? ([] as unknown as T)) as T;
-}
-
-const TRADE_COLUMNS =
-  "id, bot_id, symbol, side, quantity, entry_price, exit_price, stop_loss, take_profit, fees, pnl, rationale, opened_at, closed_at";
-
-export async function fetchDashboard(supabase: SupabaseClient, userId: string): Promise<DashboardData> {
-  const profileRes = await supabase
-    .from("profiles")
-    .select("id, capital, risk_level, max_drawdown")
-    .eq("user_id", userId)
-    .maybeSingle();
-  if (profileRes.error) {
-    throw new DashboardLoadError("No se pudo leer tu perfil.", { cause: profileRes.error });
-  }
-  const raw = profileRes.data as { id: string; capital: unknown; risk_level: unknown; max_drawdown: unknown } | null;
-  if (!raw) return EMPTY_DASHBOARD;
-  const profile: ProfileSummary = {
-    id: raw.id,
-    capital: toNumber(raw.capital) ?? 0,
-    risk_level: toNumber(raw.risk_level) ?? 3,
-    max_drawdown: toNumber(raw.max_drawdown),
-  };
-
-  const bots = check<BotRow[]>(
-    await supabase
-      .from("bots")
-      .select("id, profile_id, name, status, started_at, stopped_at")
-      .eq("profile_id", profile.id)
-      .order("created_at", { ascending: true }),
-    "tus bots",
-  );
-  const ids = bots.map((b) => b.id);
-  if (ids.length === 0) return { ...EMPTY_DASHBOARD, profile, bots };
-
-  const [snapRes, recentRes, openRes, closedRes] = await Promise.all([
-    supabase
-      .from("equity_snapshots")
-      .select("bot_id, ts, equity, cash, positions_value, drawdown")
-      .in("bot_id", ids)
-      .order("ts", { ascending: false })
-      .limit(MAX_SNAPSHOTS),
-    supabase
-      .from("trades")
-      .select(TRADE_COLUMNS)
-      .in("bot_id", ids)
-      .order("opened_at", { ascending: false })
-      .limit(RECENT_TRADES),
-    supabase
-      .from("trades")
-      .select(TRADE_COLUMNS)
-      .in("bot_id", ids)
-      .is("closed_at", null)
-      .order("opened_at", { ascending: false }),
-    supabase
-      .from("trades")
-      .select("id, pnl, sleeve:rationale->>sleeve")
-      .in("bot_id", ids)
-      .not("closed_at", "is", null),
-  ]);
-
-  const snapshots = [...check<SnapshotRow[]>(snapRes, "tu curva de equity")].reverse();
-  const recentTrades = check<TradeRow[]>(recentRes, "tus operaciones");
-  const openTrades = check<TradeRow[]>(openRes, "tus posiciones");
-  const closedRows = check<{ id: string; pnl: unknown; sleeve: string | null }[]>(closedRes, "tu P&L");
-  const closed: DashboardData["closed"] = {};
-  for (const row of closedRows) {
-    closed[row.id] = { sleeve: row.sleeve || NO_SLEEVE, pnl: toNumber(row.pnl) ?? 0 };
-  }
-  return { profile, bots, snapshots, recentTrades, openTrades, closed };
 }
 
 // --- cálculos ------------------------------------------------------------------------
@@ -285,57 +204,17 @@ export function sleeves(data: DashboardData): SleeveSummary[] {
   return [...map.values()].sort((a, b) => a.sleeve.localeCompare(b.sleeve));
 }
 
-// --- Realtime ------------------------------------------------------------------------
+// --- respuestas de la API -------------------------------------------------------------
 
-export type DashboardAction =
-  | { type: "loaded"; data: DashboardData }
-  | { type: "trade"; row: TradeRow }
-  | { type: "snapshot"; row: SnapshotRow }
-  | { type: "bot"; row: BotRow }
-  | { type: "botDeleted"; id: string };
-
-function byOpenedDesc(a: TradeRow, b: TradeRow) {
-  return Date.parse(b.opened_at) - Date.parse(a.opened_at);
-}
-
-function upsert<T extends { id: string }>(rows: T[], row: T): T[] {
-  const i = rows.findIndex((r) => r.id === row.id);
-  if (i === -1) return [...rows, row];
-  const next = [...rows];
-  next[i] = { ...next[i], ...row };
-  return next;
-}
-
-/** Aplica un cambio de Realtime (o una respuesta de la API) al estado del dashboard. */
-export function dashboardReducer(state: DashboardData, action: DashboardAction): DashboardData {
-  switch (action.type) {
-    case "loaded":
-      return action.data;
-    case "trade": {
-      const row = action.row;
-      if (!state.bots.some((b) => b.id === row.bot_id)) return state;
-      const recentTrades = upsert(state.recentTrades, row).sort(byOpenedDesc).slice(0, RECENT_TRADES);
-      const merged = recentTrades.find((t) => t.id === row.id) ?? row;
-      const isOpen = merged.closed_at === null || merged.closed_at === undefined;
-      const openTrades = isOpen
-        ? upsert(state.openTrades, row).sort(byOpenedDesc)
-        : state.openTrades.filter((t) => t.id !== row.id);
-      const closed = { ...state.closed };
-      if (!isOpen) closed[row.id] = { sleeve: sleeveOf(merged), pnl: toNumber(merged.pnl) ?? 0 };
-      return { ...state, recentTrades, openTrades, closed };
-    }
-    case "snapshot": {
-      const row = action.row;
-      if (!state.bots.some((b) => b.id === row.bot_id)) return state;
-      if (state.snapshots.some((s) => s.bot_id === row.bot_id && s.ts === row.ts)) return state;
-      return { ...state, snapshots: [...state.snapshots, row].slice(-MAX_SNAPSHOTS) };
-    }
-    case "bot": {
-      const row = action.row;
-      if (!state.profile || row.profile_id !== state.profile.id) return state;
-      return { ...state, bots: upsert(state.bots, row) };
-    }
-    case "botDeleted":
-      return { ...state, bots: state.bots.filter((b) => b.id !== action.id) };
-  }
+/**
+ * Aplica el bot que devuelve la API (crear, arrancar, detener, paro) sin esperar al
+ * siguiente refresco. Ignora bots de otro perfil.
+ */
+export function withBot(state: DashboardData, bot: BotRow): DashboardData {
+  if (!state.profile || bot.profile_id !== state.profile.id) return state;
+  const i = state.bots.findIndex((b) => b.id === bot.id);
+  if (i === -1) return { ...state, bots: [...state.bots, bot] };
+  const bots = [...state.bots];
+  bots[i] = { ...bots[i], ...bot };
+  return { ...state, bots };
 }

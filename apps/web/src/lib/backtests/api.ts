@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { apiFetch, type Fetcher } from "@/lib/tmApi";
+import { apiFetch } from "@/lib/api/client";
 
-/** Tipos de GET /lab/reports, GET /lab/reports/{name} y /backtests (services/api). */
+/** Tipos de GET /api/lab/reports, GET /api/lab/reports/{name} y /api/backtests. */
 
 export type Metrics = Partial<
   Record<
@@ -99,16 +99,12 @@ export interface BacktestJob {
   created_at: string;
 }
 
-export function listLabReports(token: string, fetcher?: Fetcher) {
-  return apiFetch<LabReportSummary[]>("/lab/reports", token, {}, fetcher);
-}
+/** Llaves de SWR (rutas de la API). */
+export const LAB_REPORTS_KEY = "/lab/reports";
+export const BACKTESTS_KEY = "/backtests";
 
-export function getLabReport(token: string, name: string, fetcher?: Fetcher) {
-  return apiFetch<LabReportDetail>(`/lab/reports/${encodeURIComponent(name)}`, token, {}, fetcher);
-}
-
-export function listBacktests(token: string, fetcher?: Fetcher) {
-  return apiFetch<BacktestJob[]>("/backtests", token, {}, fetcher);
+export function labReportKey(name: string) {
+  return `/lab/reports/${encodeURIComponent(name)}`;
 }
 
 // --- formulario para encolar un backtest -------------------------------------------------
@@ -148,7 +144,7 @@ export const EMPTY_BACKTEST_FORM: BacktestFormState = {
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Usa el formato AAAA-MM-DD");
 
-/** Mismas reglas que BacktestConfig en services/api/src/tm_api/schemas.py. */
+/** Mismas reglas que el config de POST /api/backtests (apps/api). */
 export const backtestSchema = z
   .object({
     symbols: z.array(z.enum(SYMBOLS)).min(1, "Elige al menos un instrumento"),
@@ -191,11 +187,6 @@ export function validateBacktest(form: BacktestFormState):
   return { ok: true, body: { config } };
 }
 
-export function createBacktest(token: string, body: { config: Record<string, unknown> }, fetcher?: Fetcher) {
-  return apiFetch<BacktestJob>(
-    "/backtests",
-    token,
-    { method: "POST", body: JSON.stringify(body) },
-    fetcher,
-  );
+export function createBacktest(body: { config: Record<string, unknown> }) {
+  return apiFetch<BacktestJob>(BACKTESTS_KEY, { method: "POST", body });
 }

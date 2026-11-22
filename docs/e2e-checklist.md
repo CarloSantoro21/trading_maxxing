@@ -1,12 +1,30 @@
 # Checklist de pruebas end-to-end (#28)
 
-Este documento cubre dos cosas separadas:
+Hay tres niveles de E2E, de más rápido a más completo:
 
-1. **UAT automática contra dev** con Playwright: corre en el pipeline después del deploy
-   a dev y bloquea la promoción a prod si falla. Sección *UAT automatizada*.
-2. **Checklist manual del flujo completo contra Binance Testnet** (señal → orden →
-   trade visible): sirve para grabar el video de demostración y para validar visualmente
-   el stack local. Sección *Checklist manual (Binance Testnet)*.
+| Prueba | Comando | Qué cubre | Dónde corre |
+|---|---|---|---|
+| **Mocked** | `cd apps/web && pnpm e2e:mocked` | Flujo de la UI (onboarding → bot → trade) con `/api/*` respondido por `page.route()`; sin API, motor ni Access | CI de cada PR (job *E2E mocked (Playwright)* de `frontend.yml`) |
+| **Stack local real** | `make e2e-local` | Todo el sistema sin mocks: web → API (D1 local) → motor (agents + engine en Docker) → trade → dashboard | En la Mac ([`correr-local.md`](correr-local.md) §7) |
+| **UAT contra dev** | `pnpm e2e:uat` | El deploy de dev en Cloudflare (Pages + service binding + Worker + Access) | Pipeline, después de cada deploy a dev; bloquea la promoción a prod |
+
+---
+
+## Stack local real (`make e2e-local`)
+
+`apps/web/tests/e2e/local-stack.spec.ts`. Si el stack no está arriba lo levanta con
+`make dev` (y lo apaga al final; `KEEP_UP=1` lo deja). Verifica:
+
+1. `GET /api/health` por el proxy de `next dev`.
+2. El sitio: onboarding si el usuario no tiene perfil; si no, el dashboard.
+3. Crea el bot si no hay y pulsa **Arrancar** (queda *Operando*).
+4. Espera hasta 6 minutos a que el motor registre una operación nueva de `demo_pulse` en
+   `trades` (`GET /api/trades`).
+5. El dashboard la muestra sin recargar (*Demo (pulso)*, *BTC/USDT*).
+6. `GET /api/engine/status` dice `online` con `agents` y `engine`.
+
+Sin llaves de Binance Testnet la operación es **simulada** (precio público de Binance y 0.1 %
+de comisión; `rationale.execution = "sim"`); con llaves en `.env` pasa por Testnet.
 
 ---
 
@@ -14,151 +32,89 @@ Este documento cubre dos cosas separadas:
 
 El spec vive en `apps/web/tests/e2e/uat.spec.ts` y recorre:
 
-- `GET $API_URL/health` (si `API_URL` está configurada).
-- Login con el usuario demo.
-- Onboarding (capital, nivel de riesgo, metas) si el perfil todavía no existe.
-- Dashboard: el encabezado *Mi portafolio* y la tarjeta *Bot* están presentes.
-- `/strategies`: la página carga el catálogo compartido.
+- `GET $APP_URL/api/health` a través de la Pages Function y el service binding.
+- El sitio estático con el badge de ambiente (`EXPECTED_ENV`) y el indicador del motor.
+- Si la identidad del service token está dada de alta: onboarding o dashboard y
+  `/strategies`. Si no (lo normal: un service token de Access no trae correo), valida la
+  pantalla de *No tienes acceso*.
 
-Si algo falla, el job `uat` del workflow `.github/workflows/uat.yml` termina rojo y el
-job `promote-to-prod` no corre (`needs: uat`). El reporte HTML y el JUnit se suben como
-artifact `playwright-report`.
+Lo llama `uat.yml` como job dependiente (`workflow_call`) después del deploy a dev desde
+`backend.yml` y `frontend.yml`. Si falla, el check *UAT (Playwright)* del commit queda en rojo
+y el job *Gate UAT* (`uat-gate.yml`) del push a `main` bloquea el deploy a prod.
 
 ### Variables y secrets
 
-| Variable       | Dónde                                      | Ejemplo                                 |
-| -------------- | ------------------------------------------ | --------------------------------------- |
-| `APP_URL`      | Secret de GitHub Actions / env local       | `https://dev.trading-maxxing.pages.dev` |
-| `API_URL`      | Secret (opcional: habilita `/health` check)| `https://api.dev.trading-maxxing.xyz`   |
-| `DEMO_EMAIL`   | Secret                                     | `demo@trading-maxxing.local`            |
-| `DEMO_PASSWORD`| Secret                                     | `demo1234` (del seed; rotar en nube)    |
+| Variable | Dónde | Ejemplo |
+|---|---|---|
+| `APP_URL` | Variable `WEB_URL` del environment `dev` | `https://tm-web-dev.pages.dev` |
+| `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` | Secrets del environment `dev` (service token de Access, outputs de Terraform) | — |
+| `EXPECTED_ENV` | Fijo en `uat.yml` | `dev` |
 
-**Nunca** commitear credenciales. En GitHub: *Settings → Secrets and variables → Actions*.
-En local:
+No hay usuario ni contraseña: el login es Cloudflare Access. **Nunca** commitear
+credenciales. En local:
 
 ```bash
 cd apps/web
-APP_URL=https://dev.<...> \
-API_URL=https://api.dev.<...> \
-DEMO_EMAIL=demo@trading-maxxing.local \
-DEMO_PASSWORD=demo1234 \
-  pnpm e2e:uat
+APP_URL=https://tm-web-dev.pages.dev CF_ACCESS_CLIENT_ID=... CF_ACCESS_CLIENT_SECRET=... \
+  EXPECTED_ENV=dev pnpm e2e:uat
 ```
 
-Sin `APP_URL` en local, `pnpm e2e:uat` hace `test.skip` con un mensaje claro y termina
-en verde. En CI, si `APP_URL` falta, el workflow avisa en el *Step Summary* y sale en
-verde sin verificar nada (el fallo real lo detecta el gate `needs: uat` del pipeline a
-prod).
-
-### Estado del pipeline
-
-El workflow está como `workflow_dispatch` y escucha también `workflow_run` del único
-job que hoy publica el frontend (*Deploy web (Cloudflare Pages)*). Cuando aterrice el
-pipeline de deploy completo a dev (#27, #45) hay que:
-
-1. Cambiar el `workflows:` del `workflow_run` por el nombre del workflow de deploy-a-dev.
-2. Mover (o duplicar) el job `promote-to-prod` al workflow de deploy-a-prod, con
-   `needs: uat` desde este workflow o con otro `workflow_run` encadenado.
+Sin `APP_URL` en local, `pnpm e2e:uat` se omite. En CI, si falta configuración, el workflow
+lo avisa en el *Step Summary* y sale en verde sin verificar nada.
 
 ---
 
-## Checklist manual (Binance Testnet)
+## Checklist manual (para el video de la demo)
 
-Guía para validar el flujo completo **con dinero falso en Binance Testnet**, usado para
-grabar el video de demostración o depurar visualmente el stack local. Sustituye a la
-parte "live" del spec anterior, que ahora corre automatizada contra dev (sin testnet).
+Con el stack local (`make dev`) o contra dev en la nube. Para operar de verdad en Binance Spot
+Testnet pon `BINANCE_TESTNET_API_KEY` / `BINANCE_TESTNET_API_SECRET` en `.env`
+([`correr-local.md`](correr-local.md) §4).
 
 ### Requisitos previos
 
-- [ ] Node 24 instalado (`.nvmrc`).
-- [ ] Cuenta en <https://testnet.binance.vision> con API key + secret creados.
-- [ ] Supabase CLI instalado y con `supabase start` corriendo (API en `http://127.0.0.1:54321`).
-- [ ] `cp .env.example .env` en la raíz con `BINANCE_API_KEY` / `BINANCE_API_SECRET` de
-      testnet y `BINANCE_TESTNET=1` (nunca llaves de producción) y
-      `cp apps/web/.env.example apps/web/.env.local` con la llave `anon` de
-      `supabase status`.
-- [ ] `make up` levantó Redis, `api`, `agents`, `engine` y (en Linux/Intel) `forecast`.
-      En Mac con MPS: `make up-mps` + `make forecast-mps` en otra terminal.
-- [ ] Usuario demo creado por el seed (o `make user EMAIL=... ROLE=member`).
-- [ ] Frontend en vivo: `make web` (o `pnpm dev` dentro de `apps/web`).
+- [ ] `make dev` terminó con *Listo* y el encabezado dice *Motor en línea*.
+- [ ] (Opcional) llaves de https://testnet.binance.vision en `.env`.
 
-### 1. Login y onboarding
+### 1. Perfil
 
-- [ ] Abrir <http://localhost:3000/> y clic en *Iniciar sesión*.
-- [ ] Capturar `demo@trading-maxxing.local` / `demo1234` y enviar.
-- [ ] Sin perfil previo, redirige a `/onboarding`.
-- [ ] Paso 1 *Capital*: escribir `1000` USDT.
-- [ ] Paso 2 *Nivel de riesgo*: dejar en 3 (Moderado) o elegir otro; verificar que la
-      explicación muestra la caída máxima en USDT.
-- [ ] Paso 3 *Metas*: agregar al menos una (p. ej. 15 % a fecha futura) y guardar.
-- [ ] Aparece la confirmación ("¡Perfil guardado!"); *Ir a mi dashboard* lleva a
-      `/dashboard`.
+- [ ] Abrir <http://localhost:3000/> (en la nube: login con código por correo de Access).
+- [ ] `/onboarding`: capital, nivel de riesgo (la explicación muestra la caída máxima en
+      USDT) y al menos una meta; *Guardar perfil* → *Ir a mi dashboard*.
 
-### 2. Crear y arrancar el bot
+### 2. Arrancar el bot
 
-- [ ] En `/dashboard`, la tarjeta *Bot* muestra *Aún no tienes bot* y el botón
-      *Crear mi bot*.
-- [ ] Al crearlo aparece la etiqueta *Detenido* y los controles *Arrancar / Detener /
-      Paro de emergencia*.
-- [ ] Pulsar *Arrancar*; la etiqueta cambia a *Operando* sin recargar la página.
+- [ ] En `/dashboard`, la tarjeta *Bot* muestra *Detenido* y los controles *Arrancar /
+      Detener / Paro de emergencia* (o *Crear mi bot* si no hay).
+- [ ] Pulsar *Arrancar*; la etiqueta cambia a *Operando* sin recargar.
 
-### 3. Señal (publicación por los agentes)
+### 3. Señal, decisión y ejecución
 
-- [ ] En `make logs agents` aparece un mensaje `agent=<trend|meanrev|ml>` publicando una
-      señal con `symbol=BTCUSDT|ETHUSDT`, `side=buy|sell` y una confianza.
-- [ ] En Redis (`make redis-cli`) el stream `tm:signals` tiene la entrada nueva
-      (`XLEN tm:signals`).
-- [ ] Si no llegan señales en la ventana esperada: revisar `OFFLINE=0` en `.env` y que
-      los agentes tengan el símbolo habilitado.
+- [ ] `make dev-logs`: `agents` dice `bot … arrancado` y, al cierre del minuto, publica la
+      señal de `demo_pulse` (y de las demás estrategias vivas en su timeframe).
+- [ ] `docker compose exec redis redis-cli XLEN tm:decisions` crece.
+- [ ] `engine` registra `fill simulado entry …` (sin llaves) o el fill de Nautilus contra
+      Testnet (con llaves; la orden aparece en *Trade history* de testnet.binance.vision).
 
-### 4. Decisión y orden a Binance Testnet
+### 4. Trade visible en el dashboard
 
-- [ ] `make logs engine` muestra la decisión del guardia (riesgo, sizing) y, si aprueba,
-      una orden enviada a Binance Testnet (`POST /api/v3/order` con `symbol`, `side`,
-      `type=MARKET|LIMIT`, `quantity`).
-- [ ] La respuesta de Binance Testnet incluye `orderId` y `status=FILLED`
-      (o `PARTIALLY_FILLED`).
-- [ ] En <https://testnet.binance.vision/en/trade> (con la misma API key) la orden
-      aparece en *Trade history*.
+- [ ] *Últimas operaciones* muestra la fila: *Compra*, *BTC/USDT*, cantidad y precio, la
+      estrategia (*Demo (pulso)*) y *¿Por qué?* con la señal, la simulación y el riesgo.
+- [ ] A los 2 minutos llega la venta y la fila se cierra con su P&L.
+- [ ] La curva de *Equity* suma un punto por minuto.
 
-### 5. Trade visible en el dashboard
+### 5. Cierre y limpieza
 
-- [ ] En la tarjeta *Últimas operaciones* del dashboard aparece una fila con:
-      - Pastilla *Compra* o *Venta*.
-      - Símbolo (`BTC/USDT` o `ETH/USDT`).
-      - Cantidad y precio de entrada.
-      - Enlace *¿Por qué?* que despliega la justificación (señal + simulación + veto).
-- [ ] En la tarjeta *Equity* la curva suma un nuevo punto (requiere dos o más
-      snapshots; puede tomar un par de minutos).
-- [ ] La métrica *Equity* refleja `capital + P&L no realizado`.
-- [ ] El badge *Live* en la esquina superior derecha indica que Realtime está conectado.
-
-### 6. Cierre y limpieza
-
-- [ ] *Detener* el bot desde el dashboard: la etiqueta vuelve a *Detenido* y no se
-      envían órdenes nuevas.
-- [ ] *Paro de emergencia* cierra las posiciones abiertas y marca el bot como *Paro de
-      emergencia* (todas las posiciones vendidas a USDT en testnet).
-- [ ] `make down` detiene los contenedores pero conserva el estado del volumen de Redis.
-- [ ] `supabase stop` termina el stack de Supabase local.
+- [ ] *Detener* el bot: vuelve a *Detenido* y no se abren operaciones nuevas.
+- [ ] *Paro de emergencia* cierra las posiciones abiertas y marca el bot como detenido por
+      paro de emergencia.
+- [ ] `make dev-down` apaga todo (conserva la D1 local y Redis; `make dev-reset` los borra).
 
 ### Video de demostración
 
-- Grabar una corrida completa (recomendado: QuickTime o Loom, resolución 1280x720,
-  10-15 min) con narración breve en cada paso.
+- Grabar una corrida completa (QuickTime o Loom, 1280x720, 10-15 min) con narración breve.
 
 **Pendiente: subir video.** Reemplazar esta línea con la URL cuando esté disponible:
 
 ```
 https://<pendiente-de-subir>
 ```
-
----
-
-## Automatización local complementaria
-
-- `cd apps/web && pnpm e2e:mocked` repite los pasos 1-5 contra respuestas mockeadas
-  con `page.route()` — no necesita Supabase ni Docker; corre en el CI del PR como
-  gate rápido.
-- `cd apps/web && pnpm e2e:uat` corre la UAT contra el deploy de dev con las variables
-  `APP_URL`, `DEMO_EMAIL`, `DEMO_PASSWORD` y, opcionalmente, `API_URL`.

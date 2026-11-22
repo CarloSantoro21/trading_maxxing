@@ -6,12 +6,12 @@ import { z } from "zod";
  * Con la capa compartida (propuesta, sección 3.4) el usuario solo elige capital, nivel de
  * riesgo y metas. Siempre se operan BTCUSDT y ETHUSDT y el horizonte ya no se captura.
  *
- * Las reglas reflejan supabase/migrations/:
+ * Las reglas reflejan la validación de la API (apps/api) y los checks de D1 (apps/api/migrations):
  *   - profiles.capital >= 500 (MIN_CAPITAL)
- *   - profiles.risk_level entre 1 y 5; profiles.max_drawdown lo deriva un trigger del nivel
+ *   - profiles.risk_level entre 1 y 5; profiles.max_drawdown lo deriva la API del nivel
  *   - goals.target_return > 0 (en la UI, porcentaje)
  *   - goals.deadline es una fecha (aquí además se exige que sea futura)
- * Si cambian los checks de la base, hay que cambiar este archivo.
+ * Si cambian esas reglas, hay que cambiar este archivo.
  */
 
 /** Capital mínimo en USDT de testnet (igual que tm_agents.risk.MIN_CAPITAL). */

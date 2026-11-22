@@ -1,7 +1,9 @@
-"""Registro de fills: en memoria (pruebas y backtest) o en la tabla `trades` de Supabase.
+"""Registro de fills: en memoria (pruebas y backtest) o en la tabla `trades` (D1) vía la API.
 
-`SupabaseTradeRecorder` escribe con la service role (las políticas RLS solo dejan leer a los
-usuarios; el backend escribe). Cada operación abre una fila al llenarse la entrada y la cierra
+`WorkerApiTradeRecorder` escribe con el token de servicio del motor (`POST /internal/trades`
+y `PATCH /internal/trades/{id}` de la API en Cloudflare Workers; ver
+`docs/arquitectura/api.md`). Los usuarios solo leen sus operaciones con `/api/trades`.
+Cada operación abre una fila al llenarse la entrada y la cierra
 (`exit_price`, `closed_at`, `pnl`, `fees`) cuando el sleeve queda sin posición en el símbolo.
 La tabla no tiene columna de sleeve: se guarda en `rationale.sleeve` junto con la justificación
 completa de la decisión.
@@ -32,13 +34,13 @@ las restaura al arrancar (`open_positions`) y el BotRunner reconstruye su libro 
 from __future__ import annotations
 
 import logging
-import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
-import httpx
+from tm_shared.api_client import WorkerApiClient
 from tm_shared.contracts import DEFAULT_SLEEVE, OrderSide, TradeDecision
 
 log = logging.getLogger(__name__)
@@ -61,6 +63,8 @@ class FillRecord:
     ts: datetime
     decision: TradeDecision | None = None
     bot_id: str | None = None
+    #: Cómo se ejecutó: `None` (TradingNode en Testnet) o `"sim"` (`tm_engine.sim`).
+    execution: str | None = None
 
 
 class FillRecorder(Protocol):
@@ -128,39 +132,36 @@ class _OpenRow:
         return self.rationale
 
 
-class SupabaseTradeRecorder:
-    """Escribe las operaciones en `public.trades` vía PostgREST.
+class WorkerApiTradeRecorder:
+    """Escribe las operaciones en `trades` con `/internal/trades` (API en Workers, D1).
 
-    Lee `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` del entorno si no se pasan.
+    Args:
+        bot_id: bot de respaldo para los fills sin `bot_id` (un solo portafolio).
+        client: `WorkerApiClient`; si no se pasa, se arma con `TM_API_URL` y
+            `TM_SERVICE_TOKEN` (y los headers de Access) del entorno.
+        page: filas por página al leer las operaciones abiertas.
+
+    Los `POST` no se reintentan ante un 5xx o un *timeout* de lectura (podrían duplicar la
+    fila); los `PATCH` sí, porque son idempotentes.
     """
 
     def __init__(
         self,
         bot_id: str | None = None,
         *,
-        url: str | None = None,
-        service_key: str | None = None,
-        client: httpx.Client | None = None,
+        client: WorkerApiClient | None = None,
+        env: Mapping[str, str] | None = None,
+        page: int = 1000,
     ) -> None:
-        base = (url or os.environ.get("SUPABASE_URL", "")).rstrip("/")
-        key = service_key or os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
-        if not base or not key:
-            raise ValueError("faltan SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY")
         self.bot_id = bot_id
-        self._client = client or httpx.Client(timeout=10.0)
-        self._endpoint = f"{base}/rest/v1/trades"
-        self._headers = {
-            "apikey": key,
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-            "Prefer": "return=representation",
-        }
+        self.client = client or WorkerApiClient.from_env(env)
+        self._page = page
         self._open: dict[tuple[str, str, str], _OpenRow] = {}
 
     def on_fill(self, record: FillRecord) -> None:
         bot_id = record.bot_id or self.bot_id
         if not bot_id:
-            log.warning("fill sin bot: no se registra en Supabase (%s)", record.client_order_id)
+            log.warning("fill sin bot: no se registra en trades (%s)", record.client_order_id)
             return
         key = (bot_id, record.sleeve, record.symbol)
         if record.side is OrderSide.BUY and key in self._open:
@@ -170,7 +171,7 @@ class SupabaseTradeRecorder:
         elif key in self._open:
             self._close_trade(key, record)
         else:
-            log.warning("venta sin operación abierta en Supabase: %s", key)
+            log.warning("venta sin operación abierta en trades: %s", key)
 
     def _open_trade(self, key: tuple[str, str, str], record: FillRecord) -> None:
         decision = record.decision
@@ -178,6 +179,8 @@ class SupabaseTradeRecorder:
             decision.rationale.model_dump(mode="json") if decision is not None else {}
         )
         rationale["sleeve"] = record.sleeve
+        if record.execution:
+            rationale["execution"] = record.execution
         open_row = _OpenRow(
             id="",
             fees=record.commission,
@@ -193,15 +196,16 @@ class SupabaseTradeRecorder:
             "side": record.side.value,
             "quantity": str(record.quantity),
             "entry_price": str(record.price),
-            "stop_loss": str(decision.stop_loss) if decision else None,
-            "take_profit": str(decision.take_profit) if decision else None,
+            "stop_loss": _opt_str(decision.stop_loss if decision else None),
+            "take_profit": _opt_str(decision.take_profit if decision else None),
             "fees": str(record.commission),
             "rationale": open_row.rationale_with_position(),
             "opened_at": record.ts.isoformat(),
         }
-        response = self._client.post(self._endpoint, headers=self._headers, json=row)
-        response.raise_for_status()
-        open_row.id = response.json()[0]["id"]
+        created = self.client.post(
+            "/internal/trades", {k: v for k, v in row.items() if v is not None}
+        )
+        open_row.id = str(created["id"])
         self._open[key] = open_row
 
     def _add_to_trade(self, key: tuple[str, str, str], record: FillRecord) -> None:
@@ -253,16 +257,8 @@ class SupabaseTradeRecorder:
         Se llama una vez al arrancar el motor (antes del primer fill). Devuelve la posición de
         cada bot y sleeve para `AgenticStrategy.restore_positions`.
         """
-        params = {
-            "select": "id,bot_id,symbol,quantity,entry_price,fees,rationale",
-            "closed_at": "is.null",
-            "side": "eq.buy",
-            "order": "opened_at.asc",
-        }
-        response = self._client.get(self._endpoint, headers=self._headers, params=params)
-        response.raise_for_status()
         out: list[RestoredPosition] = []
-        for raw in response.json():
+        for raw in self._open_rows():
             try:
                 key, row, pos = _open_row_from_db(raw)
             except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
@@ -275,11 +271,24 @@ class SupabaseTradeRecorder:
             out.append(pos)
         return out
 
+    def _open_rows(self) -> list[dict[str, Any]]:
+        """Compras abiertas (`closed_at` nulo), por `opened_at` y en páginas."""
+        rows: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            params = {"open": True, "side": "buy", "limit": self._page, "offset": offset}
+            batch = self.client.get("/internal/trades", params) or []
+            rows.extend(batch)
+            if len(batch) < self._page:
+                return rows
+            offset += self._page
+
     def _patch(self, trade_id: str, patch: dict[str, Any]) -> None:
-        response = self._client.patch(
-            self._endpoint, params={"id": f"eq.{trade_id}"}, headers=self._headers, json=patch
-        )
-        response.raise_for_status()
+        self.client.patch(f"/internal/trades/{trade_id}", patch)
+
+
+def _opt_str(value: Any) -> str | None:
+    return None if value is None else str(value)
 
 
 def _open_row_from_db(

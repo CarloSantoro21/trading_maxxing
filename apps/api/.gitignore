@@ -1,0 +1,8 @@
+node_modules/
+.wrangler/
+.dev.vars
+coverage/
+reports/
+# Lo genera scripts/build-lab-reports.ts a partir de docs/estrategias/reportes.
+src/generated/
+dist/
