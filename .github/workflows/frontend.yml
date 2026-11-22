@@ -1,0 +1,310 @@
+name: Frontend
+
+# Pipeline del frontend (#45, #28). Ver docs/pipeline-y-ambientes.md.
+#
+#   PR a develop/main -> web: eslint + tsc + vitest (JUnit + cobertura) + next build (export) + check:export
+#   push a develop    -> lo anterior + deploy-dev (Pages tm-web-dev, rama develop) + smoke + UAT
+#   push a main       -> lo anterior + gate UAT + deploy-prod (Pages tm-web, rama main; environment
+#                        `prod` con required reviewers: espera aprobación manual)
+#
+# El export se construye UNA vez por commit con NEXT_PUBLIC_ENV y NEXT_PUBLIC_COMMIT_SHA y el
+# mismo out/ es el que se publica. Sin secrets de Cloudflare el deploy se salta con un aviso.
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+    # En push solo corre si cambió el front (en PR corre siempre: es check requerido).
+    paths:
+      - "apps/web/**"
+      - ".nvmrc"
+      - ".github/workflows/frontend.yml"
+      - ".github/workflows/uat.yml"
+      - ".github/workflows/uat-gate.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: frontend-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    # El nombre se conserva: es check requerido en la protección de develop.
+    name: Web (eslint + tsc + vitest)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    defaults:
+      run:
+        working-directory: apps/web
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: apps/web/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Lint
+        run: pnpm lint
+      - name: Tipos
+        run: pnpm typecheck
+
+      - name: Proveedor de cobertura de vitest
+        id: cov
+        run: |
+          if [ -d node_modules/@vitest/coverage-v8 ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            # Se instala solo en el runner (no toca el lockfile del repo) con la misma
+            # versión de vitest. Mejor: agregarlo a devDependencies de apps/web.
+            v=$(node -p "require('vitest/package.json').version")
+            if pnpm add -D "@vitest/coverage-v8@$v" --lockfile=false >/dev/null 2>&1; then
+              echo "ok=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "ok=false" >> "$GITHUB_OUTPUT"
+              echo "::warning title=Sin cobertura::No se pudo instalar @vitest/coverage-v8@$v"
+            fi
+          fi
+      - name: Pruebas (vitest, JUnit y cobertura)
+        env:
+          COV: ${{ steps.cov.outputs.ok }}
+        run: |
+          args=(--reporter=default --reporter=junit --outputFile.junit=reports/junit.xml)
+          if [ "$COV" = "true" ]; then
+            args+=(--coverage.enabled --coverage.provider=v8 --coverage.reportsDirectory=coverage
+                   "--coverage.reporter=text" "--coverage.reporter=json-summary" "--coverage.reporter=lcov"
+                   "--coverage.include=src/**" "--coverage.exclude=src/test/**" "--coverage.exclude=src/**/*.test.*")
+          fi
+          pnpm exec vitest run "${args[@]}"
+      - name: Resultados de pruebas en la pestaña Checks
+        if: ${{ !cancelled() }}
+        uses: mikepenz/action-junit-report@v5
+        with:
+          report_paths: apps/web/reports/junit.xml
+          check_name: "Pruebas Web (vitest)"
+          detailed_summary: true
+          include_passed: false
+          fail_on_failure: false
+          require_tests: false
+          annotate_only: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+      - name: Cobertura en el summary
+        if: ${{ !cancelled() }}
+        run: |
+          f=coverage/coverage-summary.json
+          if [ ! -f "$f" ]; then echo "Sin coverage-summary.json"; exit 0; fi
+          {
+            echo "### Cobertura Web (vitest + v8)"
+            echo ""
+            echo "| Métrica | % | Cubiertas / total |"
+            echo "|---|---|---|"
+            for m in lines statements functions branches; do
+              jq -r --arg m "$m" '.total[$m] | "| \($m) | \(.pct) % | \(.covered) / \(.total) |"' "$f"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Ambiente del build
+        id: buildenv
+        env:
+          REF: ${{ github.ref }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          case "$EVENT:$REF" in
+            pull_request:*)              e="pr" ;;
+            *:refs/heads/develop)        e=dev ;;
+            *:refs/heads/main)           e=prod ;;
+            *)                           e="pr" ;;
+          esac
+          echo "env=$e" >> "$GITHUB_OUTPUT"
+          echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - name: Export estático (out/)
+        env:
+          NEXT_PUBLIC_ENV: ${{ steps.buildenv.outputs.env }}
+          NEXT_PUBLIC_COMMIT_SHA: ${{ steps.buildenv.outputs.sha }}
+        run: pnpm build
+      - name: Rutas del export
+        run: pnpm check:export
+      - name: Guardar el export para el deploy
+        if: github.event_name != 'pull_request' && (steps.buildenv.outputs.env == 'dev' || steps.buildenv.outputs.env == 'prod')
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-out
+          path: apps/web/out
+          if-no-files-found: error
+          retention-days: 7
+      - name: Subir cobertura y JUnit
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-coverage-y-junit
+          path: |
+            apps/web/coverage
+            apps/web/reports/junit.xml
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------------
+  # Deploy a dev: automático en cada push a develop
+  # ---------------------------------------------------------------------------------
+  deploy-dev:
+    name: Deploy web a dev
+    needs: web
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    environment:
+      name: dev
+      url: ${{ steps.deploy.outputs.url }}
+    concurrency:
+      group: deploy-web-dev
+      cancel-in-progress: false
+    outputs:
+      deployed: ${{ steps.creds.outputs.ok }}
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+      CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+      WEB_URL: ${{ vars.WEB_URL }}
+      PAGES_PROJECT: ${{ vars.PAGES_PROJECT || 'tm-web-dev' }}
+      PAGES_BRANCH: develop
+      AMBIENTE: dev
+    steps:
+      - &creds
+        name: Revisar credenciales de Cloudflare
+        id: creds
+        run: |
+          if [ -n "$CLOUDFLARE_API_TOKEN" ] && [ -n "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            msg="Faltan CLOUDFLARE_API_TOKEN y/o CLOUDFLARE_ACCOUNT_ID en el environment $AMBIENTE: no se desplegó nada."
+            echo "::warning title=Deploy omitido::$msg"
+            {
+              echo "### Deploy omitido ($AMBIENTE)"
+              echo "$msg"
+              echo ""
+              echo "Ver docs/pipeline-y-ambientes.md (sección Secrets)."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      # El checkout trae apps/web/functions (Pages Functions con el service binding a la API).
+      - &checkout
+        uses: actions/checkout@v4
+        if: steps.creds.outputs.ok == 'true'
+      - &node
+        uses: actions/setup-node@v4
+        if: steps.creds.outputs.ok == 'true'
+        with:
+          node-version-file: .nvmrc
+      - &download
+        name: Bajar el export del job web
+        if: steps.creds.outputs.ok == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: web-out
+          path: apps/web/out
+      - &deploy
+        name: wrangler pages deploy
+        id: deploy
+        if: steps.creds.outputs.ok == 'true'
+        working-directory: apps/web
+        run: |
+          set -o pipefail
+          npx --yes wrangler@4 pages deploy out \
+            --project-name "$PAGES_PROJECT" --branch "$PAGES_BRANCH" \
+            --commit-hash "$GITHUB_SHA" --commit-message "${GITHUB_SHA::7} ($AMBIENTE)" \
+            --commit-dirty=true | tee deploy.log
+          preview="$(grep -oE 'https://[A-Za-z0-9.-]+\.pages\.dev' deploy.log | tail -1 || true)"
+          url="${WEB_URL:-https://$PAGES_PROJECT.pages.dev}"
+          echo "url=${url%/}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Front desplegado ($AMBIENTE)"
+            echo ""
+            echo "- URL: ${url}"
+            echo "- Deploy inmutable de este commit: ${preview:-ver salida de wrangler}"
+            echo "- Proyecto de Pages: \`$PAGES_PROJECT\`, rama \`$PAGES_BRANCH\`, commit \`${GITHUB_SHA::7}\`"
+            echo "- Rollback: Cloudflare → Pages → $PAGES_PROJECT → Deployments → Rollback (ver docs/pipeline-y-ambientes.md)"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - &smoke
+        name: Smoke test (página y /api/health por el service binding)
+        if: steps.creds.outputs.ok == 'true'
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          headers=()
+          if [ -n "$CF_ACCESS_CLIENT_ID" ] && [ -n "$CF_ACCESS_CLIENT_SECRET" ]; then
+            headers+=(-H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET")
+          else
+            echo "::warning title=Smoke sin service token::Sin CF_ACCESS_CLIENT_ID/SECRET, Access responderá con su login."
+          fi
+          check() {
+            local path="$1" code=000
+            for i in 1 2 3 4 5 6; do
+              code=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "${headers[@]}" "$URL$path" || echo 000)
+              [ "$code" = "200" ] && { echo "GET $URL$path → 200"; echo "- GET \`$path\` → 200" >> "$GITHUB_STEP_SUMMARY"; return 0; }
+              echo "GET $URL$path → $code (intento $i)"; sleep 10
+            done
+            echo "::error title=Smoke test::GET $URL$path respondió $code"
+            return 1
+          }
+          echo "### Smoke test ($URL)" >> "$GITHUB_STEP_SUMMARY"
+          check /
+          check /api/health
+
+  uat-dev:
+    name: UAT dev
+    needs: deploy-dev
+    if: needs.deploy-dev.outputs.deployed == 'true'
+    uses: ./.github/workflows/uat.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      checks: write
+
+  # ---------------------------------------------------------------------------------
+  # Deploy a prod: push a main, con gate de UAT y aprobación manual (environment prod)
+  # ---------------------------------------------------------------------------------
+  uat-gate:
+    name: Gate UAT
+    needs: web
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/uat-gate.yml
+    permissions:
+      contents: read
+      checks: read
+
+  deploy-prod:
+    name: Deploy web a prod
+    needs: [web, uat-gate]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: prod
+      url: ${{ steps.deploy.outputs.url }}
+    concurrency:
+      group: deploy-web-prod
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+      CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+      WEB_URL: ${{ vars.WEB_URL }}
+      PAGES_PROJECT: ${{ vars.PAGES_PROJECT || 'tm-web' }}
+      PAGES_BRANCH: main
+      AMBIENTE: prod
+    steps:
+      - *creds
+      - *checkout
+      - *node
+      - *download
+      - *deploy
+      - *smoke
