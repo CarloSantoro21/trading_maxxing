@@ -4,7 +4,7 @@
    emite la venta de cierre, el `TradingSleeveGuard` la deja pasar (es un cierre) y el motor la
    ejecuta. La posición del motor y el libro virtual del bot quedan en 0, y una entrada
    posterior de la estrategia retirada se sigue bloqueando.
-2. Reinicio del worker: el motor escribe sus fills en `trades` (PostgREST simulado en memoria)
+2. Reinicio del worker: el motor escribe sus fills en `trades` (API de Workers simulada en memoria)
    y, al arrancar de nuevo, el supervisor reconstruye el libro de cada bot desde ahí y el motor
    restaura su libro por bot y sleeve.
 """
@@ -22,7 +22,7 @@ from tm_agents.lifecycle import LifecycleMonitor, LiveStats
 from tm_agents.montecarlo.report import DistributionSummary
 from tm_agents.orchestrator.bot import BotConfig, BotProfile, BotRunner
 from tm_agents.orchestrator.shared import FrameBarsProvider, SharedSignalLayer
-from tm_agents.orchestrator.state import PostgRESTTradeStateRepository
+from tm_agents.orchestrator.state import WorkerApiTradeStateRepository
 from tm_agents.orchestrator.streams import MemorySink
 from tm_agents.orchestrator.supervisor import BotSupervisor, InMemoryBotRepository
 from tm_agents.reference import TradingSleeveGuard
@@ -33,7 +33,7 @@ from tm_agents.strategy_stats import StrategyState as S
 from tm_engine.backtest import build_engine, run_backtest
 from tm_engine.decisions import ScheduledDecisionSource
 from tm_engine.instruments import bar_type
-from tm_engine.recorder import SupabaseTradeRecorder
+from tm_engine.recorder import WorkerApiTradeRecorder
 from tm_engine.service import TradingEngineService
 from tm_engine.strategy import AgenticStrategy, AgenticStrategyConfig
 from tm_shared.contracts import DecisionEnvelope, OrderSide, Timeframe
@@ -181,7 +181,7 @@ def test_close_passes_when_the_registry_fails(make_frame, envelope):
         def find(self, name):  # type: ignore[override]
             from tm_agents.registry import RegistryError
 
-            raise RegistryError("supabase caído")
+            raise RegistryError("API caída")
 
     calls: list[str] = []
     healthy = TradingSleeveGuard(_registry())
@@ -219,7 +219,7 @@ def _first_run(frame, trades_table, live_orchestration, days: int):
     orchestration = live_orchestration(
         _layer(registry, frame), runners, start=START + timedelta(days=60)
     )
-    recorder = SupabaseTradeRecorder(url="http://db", service_key="k", client=trades_table.client())
+    recorder = WorkerApiTradeRecorder(client=trades_table.client())
     engine = build_engine({"BTCUSDT": frame.iloc[:days]}, timeframe=Timeframe.D1)
     strategy = AgenticStrategy(
         AgenticStrategyConfig(bar_types=(str(bar_type("BTCUSDT", Timeframe.D1)),)),
@@ -249,7 +249,7 @@ def test_worker_restart_keeps_each_bot_positions(trades_table, live_orchestratio
     assert any(r["closed_at"] for r in trades_table.rows), "también hay operaciones cerradas"
 
     # Reinicio: un supervisor nuevo, con los mismos bots y la tabla trades como fuente.
-    repo = PostgRESTTradeStateRepository("http://db", "k", client=trades_table.client(), page=2)
+    repo = WorkerApiTradeStateRepository(trades_table.client(), page=2)
     supervisor = BotSupervisor(
         InMemoryBotRepository(configs), MemorySink(), shadow_sink=MemorySink(), trades=repo
     )
@@ -299,7 +299,7 @@ def test_engine_restores_its_book_from_trades(trades_table, live_orchestration):
     _configs, _runners, report, _o = _first_run(
         _daily(), trades_table, live_orchestration, days=200
     )
-    recorder = SupabaseTradeRecorder(url="http://db", service_key="k", client=trades_table.client())
+    recorder = WorkerApiTradeRecorder(client=trades_table.client())
     service = TradingEngineService(credentials=None, recorder=recorder)
     service.start()
     try:
@@ -307,10 +307,12 @@ def test_engine_restores_its_book_from_trades(trades_table, live_orchestration):
         assert service.status()["restore_error"] is None
         restored = service.strategy.sleeve_report()
         for book in ("bot-a/trend", "bot-b/trend"):
-            assert restored[book]["positions"] == {
-                sym: {"quantity": p["quantity"], "avg_price": p["avg_price"]}
-                for sym, p in report[book]["positions"].items()
-            }
+            got = restored[book]["positions"]
+            assert got.keys() == report[book]["positions"].keys()
+            for sym, p in report[book]["positions"].items():
+                assert got[sym]["quantity"] == p["quantity"]
+                # D1 guarda REAL (float64): el costo promedio pierde los últimos decimales.
+                assert Decimal(got[sym]["avg_price"]) == pytest.approx(Decimal(p["avg_price"]))
     finally:
         service.stop()
     # El recorder retoma la fila abierta: el cierre después del reinicio cierra esa fila.

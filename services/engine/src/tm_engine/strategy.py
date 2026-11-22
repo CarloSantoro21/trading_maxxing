@@ -33,7 +33,7 @@ pueda leer (#89): si una estrategia se retira con posición abierta, el BotRunne
 de cierre y el motor la ejecuta en vez de dejar la posición huérfana en el exchange.
 
 `restore_positions` siembra el libro por `bot/sleeve` al arrancar (desde las operaciones
-abiertas de la tabla `trades`, ver `SupabaseTradeRecorder.open_positions`), para que un cierre
+abiertas de la tabla `trades`, ver `WorkerApiTradeRecorder.open_positions`), para que un cierre
 que llegue después de un reinicio del motor encuentre su posición.
 
 Binance Spot no acepta listas de órdenes ligadas (OCO) desde el adaptador de Nautilus, así que
