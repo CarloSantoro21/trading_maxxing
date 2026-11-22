@@ -2,7 +2,7 @@
 
 Cómo levantar trading_maxxing desde cero en una Mac o Linux limpios. La arquitectura en la nube (Cloudflare + motor en la Mac) está en [`docs/arquitectura/cloudflare.md`](../arquitectura/cloudflare.md); en local se reproduce igual: la **API** corre con `wrangler dev` sobre una **D1 local**, y el **motor** con `docker compose`. Para el estado del proyecto y los pendientes operativos lee [`docs/estado-del-proyecto.md`](../estado-del-proyecto.md).
 
-> **Transición.** Hasta que se fusionen #116 (motor contra la API) y #117 (frontend sin Supabase), `make up` todavía levanta Supabase local para el código que no se ha migrado. Cuando terminen, `services/api` y `supabase/` se borran y esta guía queda tal cual.
+> **Atajo:** `make dev` hace los pasos 3 a 5 de esta guía de un jalón (API + web + motor con la estrategia de demo y ejecución simulada) y `make e2e-local` lo prueba de punta a punta. Guía paso a paso y qué ver en cada página: [`docs/correr-local.md`](../correr-local.md). Esta página explica cada pieza por separado.
 
 ## 1. Prerrequisitos
 
@@ -16,7 +16,7 @@ Cómo levantar trading_maxxing desde cero en una Mac o Linux limpios. La arquite
 | `wrangler` | el de `apps/api/package.json` | nada global: `pnpm exec wrangler ...` dentro de `apps/api` |
 | GNU Make | cualquiera reciente | viene en macOS y Linux |
 
-Requiere al menos 8 GB de RAM libre para correr Docker y Kronos a la vez. En Mac con Apple Silicon conviene `make up-mps` para correr `forecast` nativo con Metal.
+Requiere al menos 8 GB de RAM libre para correr Docker y Kronos a la vez. Kronos es opcional (`make dev FORECAST=1`); en Mac con Apple Silicon conviene `make forecast-mps` para correrlo nativo con Metal.
 
 ## 2. Clonar y preparar el entorno
 
@@ -36,7 +36,7 @@ cd apps/api
 cp .dev.vars.example .dev.vars             # SERVICE_TOKEN para /internal/*
 pnpm db:migrate:local                      # migraciones a la D1 local (.wrangler/state)
 pnpm db:seed:local                         # usuario demo admin, perfil, bot, trades y estrategias
-pnpm dev                                   # http://localhost:8787
+pnpm exec wrangler dev --env dev --local --ip 0.0.0.0   # http://localhost:8787 (0.0.0.0: para que Docker llegue)
 ```
 
 En local la API usa `AUTH_MODE=dev`: no hay Access y el usuario es `demo@trading-maxxing.local` (o el del header `X-Dev-User`). Pruebas rápidas:
@@ -52,35 +52,34 @@ Detalle de comandos, ambientes y pruebas en [`apps/api/README.md`](../../apps/ap
 ## 4. Configurar el `.env` del motor
 
 ```bash
-cp .env.example .env   # lo hace también `make up` la primera vez
+cp .env.example .env   # opcional: sin .env todo corre con los valores por omisión
 ```
 
 - **Conexión con la API** (mismos nombres en agents y engine):
   - `TM_API_URL=http://host.docker.internal:8787` en local (en la nube, `https://tm-api-dev.<subdominio>.workers.dev`, sin `/internal`).
   - `TM_SERVICE_TOKEN` igual al `SERVICE_TOKEN` de `apps/api/.dev.vars`; se manda como `X-Service-Token`.
   - `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET`: vacíos en local; en la nube salen de los outputs `motor_service_token_client_id/secret` del Terraform y se mandan como `CF-Access-Client-Id` / `CF-Access-Client-Secret`.
-- **Binance Testnet.** `BINANCE_TESTNET_API_KEY` y `BINANCE_TESTNET_API_SECRET`, de https://testnet.binance.vision. Sin ellas se puede correr backtest y ver el dashboard, pero el motor no opera en vivo.
+- **Binance Testnet.** `BINANCE_TESTNET_API_KEY` y `BINANCE_TESTNET_API_SECRET`, de https://testnet.binance.vision. Sin ellas el engine usa la **ejecución simulada** (`ENGINE_EXECUTION=auto` → `sim`): llena cada decisión al precio público de Binance con 0.1 % de comisión y la registra igual que el modo real.
 - **LLM y noticias: apagados por defecto** (`NEWS_ENABLED=false`, `EXPLAINER_ENABLED=false`, `LLM_PROVIDER=none`). Para probarlos: `NEWS_SOURCE=rss` (gratis) o `CRYPTOPANIC_TOKEN`, y `LLM_PROVIDER` en `workers-ai` (`CF_ACCOUNT_ID`, `CF_AI_API_TOKEN`), `groq` (`GROQ_API_KEY`) o un endpoint compatible con OpenAI. Ver [`.env.example`](../../.env.example).
 
 **Nunca commitear `.env` ni `.dev.vars`.** Están en `.gitignore`.
 
 ## 5. Levantar el motor
 
-### Opción A — todo en contenedores (más simple)
+### Opción A — todo junto (recomendada)
 
 ```bash
-make up          # Redis + agents + engine + forecast (CPU)
-make ps          # estado y health
-make web         # frontend con hot reload en http://localhost:3000
+make dev         # API + web + redis/agents/engine; con FORECAST=1 también Kronos (CPU)
+make dev-status  # estado y latido
+make dev-down    # apaga todo
 ```
 
-### Opción B — forecast nativo con MPS (Mac Apple Silicon)
+### Opción B — por piezas
 
 ```bash
-make up-mps      # forecast se conecta a host.docker.internal:8001
-# en otra terminal:
-make forecast-mps
-make web
+make motor-local # redis + agents + engine (build local) contra la API en :8787
+make web         # frontend con hot reload en http://localhost:3000
+make forecast-mps   # opcional: Kronos nativo con Metal; FORECAST_URL=http://host.docker.internal:8001 en .env
 ```
 
 Forecast con MPS reduce la latencia de Kronos aproximadamente a la mitad vs. CPU (≈ 0.6 s vs. 1.1 s por trayectoria en una Mac M5).
@@ -90,10 +89,12 @@ Forecast con MPS reduce la latencia de Kronos aproximadamente a la mitad vs. CPU
 Es lo que corre en la Mac contra la API de la nube; Watchtower actualiza los contenedores cuando el CI publica una imagen nueva del canal.
 
 ```bash
-export DOCKERHUB_USERNAME=<usuario> TM_TAG=develop   # o el canal de prod
+export DOCKERHUB_NAMESPACE=<usuario> TM_ENV=dev   # o prod
 docker compose -f docker-compose.yml -f docker-compose.hub.yml pull
 docker compose -f docker-compose.yml -f docker-compose.hub.yml up -d
 ```
+
+Contra la API de la nube (con Watchtower) se usa `docker-compose.runner.yml` y `make runner-up`: [`docs/arquitectura/motor-en-la-mac.md`](../arquitectura/motor-en-la-mac.md).
 
 ## 6. Verificar que todo está vivo
 
@@ -101,14 +102,14 @@ docker compose -f docker-compose.yml -f docker-compose.hub.yml up -d
 |---|---|
 | web | http://localhost:3000 |
 | API (Worker local) | http://localhost:8787/api/health |
-| forecast | http://localhost:8001/health |
+| forecast (solo con `FORECAST=1`) | http://localhost:8001/health |
 | Redis | `docker compose exec redis redis-cli ping` → `PONG` |
 | Motor conectado | `curl localhost:8787/api/engine/status` → `online: true` (latido cada 30 s) |
 
 En el navegador:
 
 1. http://localhost:3000: en local no hay pantalla de Access; la API entra como el usuario demo.
-2. El dashboard carga perfil, bot, trades y equity del seed.
+2. El dashboard carga perfil, bot (detenido), trades y equity del seed. Con **Arrancar**, la estrategia de demo `demo_pulse` abre la primera operación en 2 a 4 minutos.
 3. En la pestaña de estrategias, el demo (admin) puede promover `kronos` de `shadow` a `active`.
 
 Para dar de alta a más personas, como admin: `POST /api/admin/users` (en la nube, además hay que agregar el correo a la allowlist de Access).
@@ -131,11 +132,12 @@ Para dar de alta a más personas, como admin: `POST /api/admin/users` (en la nub
 ## 8. Comandos útiles
 
 ```bash
-make test                                  # pytest con cobertura + vitest de la web
-(cd apps/api && pnpm typecheck && pnpm test:coverage)   # API
-make lint                                  # ruff + eslint
-make logs                                  # docker compose logs -f --tail=100
-make down                                  # detiene contenedores (conserva volúmenes)
+make test                                  # pytest con cobertura + vitest de la API y de la web
+make lint                                  # ruff + tsc + eslint
+make e2e-local                             # Playwright contra el stack local real
+make dev-logs                              # logs del motor en vivo
+make dev-down                              # detiene todo (conserva la D1 local y Redis)
+make dev-reset                             # borra la D1 local y Redis (se recarga el seed)
 ```
 
 Más atajos en [`Makefile`](../../Makefile) (o `make help`).
@@ -144,7 +146,7 @@ Más atajos en [`Makefile`](../../Makefile) (o `make help`).
 
 - **El motor responde 401 o 403 de la API.** Revisa que `TM_SERVICE_TOKEN` sea igual al `SERVICE_TOKEN` del Worker. En la nube, si la respuesta es una página HTML de Access, faltan o están mal `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET`.
 - **El motor no llega a la API local.** Desde los contenedores, `localhost` es el contenedor: usa `http://host.docker.internal:8787`.
-- **La web dice "motor desconectado".** No llegan latidos: revisa `make logs` del `agents` y del `engine`.
+- **La web dice "motor desconectado".** No llegan latidos: revisa `make dev-logs` del `agents` y del `engine`.
 - **El motor no abre posiciones.** Comprueba `tm:decisions` (`docker compose exec redis redis-cli XLEN tm:decisions`) y el estado del sleeve: solo las estrategias en `active` o `probation` abren posición.
 - **Binance responde 451 o 403.** Binance bloquea IPs de EE. UU.; corre el motor desde México o con un egreso fuera de EE. UU.
-- **El forecast tarda demasiado.** La primera llamada descarga el modelo (~110 MB a `~/.cache/huggingface`). Usa `make up-mps` en Mac.
+- **El forecast tarda demasiado.** La primera llamada descarga el modelo (~110 MB a `~/.cache/huggingface`). Usa `make forecast-mps` en Mac.

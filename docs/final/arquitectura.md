@@ -33,7 +33,7 @@ Vista de alto nivel del sistema completo. Para el diseño conceptual, lee la [pr
 └────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Transición.** Mientras se fusionan #116 (motor contra la API) y #117 (frontend sin Supabase), el código del motor y de la web todavía puede hablar con Supabase local; `services/api` (FastAPI) y `supabase/` se borran al terminar. El estado vivo está en [`docs/estado-del-proyecto.md`](../estado-del-proyecto.md).
+Para correr todo esto en local de punta a punta: `make dev` ([`docs/correr-local.md`](../correr-local.md)). El estado vivo está en [`docs/estado-del-proyecto.md`](../estado-del-proyecto.md).
 
 Las responsabilidades por servicio están en sus READMEs:
 

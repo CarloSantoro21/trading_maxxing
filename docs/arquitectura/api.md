@@ -1,13 +1,13 @@
 # Contrato de la API (Cloudflare Workers + D1)
 
-Issue #115. La API vive en `apps/api` (Hono + TypeScript) y reemplaza a `services/api`
-(FastAPI) y a Supabase (Postgres, Auth, PostgREST, RLS y Realtime).
+Issue #115. La API vive en `apps/api` (Hono + TypeScript). Reemplazó a la API de FastAPI y a
+Supabase (Postgres, Auth, PostgREST, RLS y Realtime), que ya se borraron del repo.
 
 ```
 Navegador ──(Cloudflare Access: OTP por correo)──▶ Pages (Next.js estático)
      │                                                │ fetch /api/* con la cookie de Access
      ▼                                                ▼
-                 Worker "trading-maxxing-api"  ──▶  D1 (dev o prod)
+            Worker "tm-api-dev" / "tm-api"  ──▶  D1 "tm-dev" / "tm-prod"
                         ▲  /internal/* (X-Service-Token)
                         │  solo conexiones SALIENTES desde la Mac
          Mac de Carlo: agents · engine (NautilusTrader) · forecast (Kronos) · Redis

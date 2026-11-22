@@ -141,7 +141,7 @@ Para que el service token pase el login de Access en la URL de Pages (smoke y UA
 | **D1** | Las migraciones solo avanzan. Para deshacer una, se escribe otra migración que revierta el cambio y se despliega por el pipeline. Para recuperar datos: `wrangler d1 time-travel restore tm-prod --timestamp <ISO>` (Time Travel, 7 días en el plan gratuito). |
 | **Front (Pages)** | Panel: Workers & Pages → `tm-web` → *Deployments* → en el deploy bueno, *⋯ → Rollback to this deployment*. Cada deploy tiene URL inmutable (`https://<hash>.tm-web.pages.dev`, queda en el summary) para comprobarlo antes. Alternativa por pipeline: *Actions → Frontend → Run workflow* sobre `main` después de revertir el commit. |
 | **Por git** | `git revert <sha>` en una rama, PR a `develop` → dev → PR a `main` → aprobar prod. Es el camino "limpio": deja historia y pasa por la UAT. |
-| **Motor (imágenes)** | En la Mac, fijar el tag anterior: `TM_TAG=sha-<7 chars> docker compose -f docker-compose.hub.yml up -d` (los tags `sha-*` nunca se sobrescriben). Para volver a mover `prod`: `docker buildx imagetools create -t <usuario>/trading-maxxing-engine:prod <usuario>/trading-maxxing-engine:sha-<anterior>`. |
+| **Motor (imágenes)** | En la Mac, fijar el tag anterior: `TM_ENV=sha-<7 chars>` en `.env.runner` y `make runner-up` (los tags `sha-*` nunca se sobrescriben). Para volver a mover `prod`: `docker buildx imagetools create -t <usuario>/trading-maxxing-engine:prod <usuario>/trading-maxxing-engine:sha-<anterior>`. |
 
 ## Guion de la demo (rúbrica: Pipeline, Ambientes, Cambio en dev, Post aprobar a producción, Cambio en producción)
 

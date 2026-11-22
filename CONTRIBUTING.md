@@ -31,7 +31,7 @@ Tipos: `feat`, `fix`, `test`, `ci`, `docs`, `refactor`, `chore`, `perf`. Ejemplo
 1. Crea la rama desde `develop` con el número del issue.
 2. Usa la plantilla del PR y enlaza el issue (`Closes #N`).
 3. El título del PR sigue Conventional Commits, porque se usa como mensaje del squash merge.
-4. El CI debe pasar (workflows `Backend` y `Frontend`): lint, tipos, pruebas y cobertura ≥ 70 % en Python y en la API.
+4. El CI debe pasar (workflows `Backend` y `Frontend`): lint, tipos, pruebas y cobertura ≥ 70 % en Python y en la API, y el E2E con la API mockeada (`pnpm e2e:mocked`). En local: `make lint test`; si tocaste el flujo bot → motor → dashboard, corre también `make e2e-local` ([docs/correr-local.md](docs/correr-local.md)).
 5. Merge con **squash** a `develop`.
 
 ## Versiones
