@@ -25,7 +25,6 @@ from tm_agents.orchestrator.exposure import (
 )
 from tm_agents.orchestrator.runtime import OrchestratorWorker, memory_sinks
 from tm_agents.orchestrator.streams import (
-    COMMANDS_STREAM,
     DECISIONS_STREAM,
     MemorySink,
     RedisStreamSink,
@@ -33,9 +32,10 @@ from tm_agents.orchestrator.streams import (
 )
 from tm_agents.orchestrator.supervisor import (
     BotSupervisor,
-    CommandListener,
     InMemoryBotRepository,
-    PostgRESTBotRepository,
+    InMemoryCommandSource,
+    WorkerApiBotRepository,
+    WorkerApiCommandListener,
     bot_from_row,
 )
 from tm_agents.registry import StrategyRecord
@@ -49,6 +49,7 @@ from tm_agents.signals import (
 )
 from tm_agents.strategy_stats import StrategyState
 from tm_shared.contracts import DecisionEnvelope
+from tm_shared.fake_api import FakeWorkerApi
 
 NOW = datetime(2024, 3, 1, 0, 0, 10, tzinfo=UTC)
 
@@ -134,7 +135,7 @@ def test_supervisor_commands(make_event):
 def test_supervisor_survives_repository_and_runner_errors(make_event):
     class Broken:
         def running(self):
-            raise httpx.ConnectError("supabase caído")
+            raise httpx.ConnectError("API caída")
 
         def get(self, bot_id):
             return None
@@ -146,49 +147,83 @@ def test_supervisor_survives_repository_and_runner_errors(make_event):
     assert sup.on_event(make_event(1.0)) == []
 
 
-def test_postgrest_repository_reads_running_bots():
-    row = {
-        "id": "7f0c",
-        "name": "Bot de Ana",
-        "status": "running",
-        "strategy_config": {"kronos": {"enabled": False}},
-        "profile": {
-            "risk_level": 2,
-            "capital": "750.5",
-            "max_drawdown": 0.15,
-            "horizon": "long",
-            "instruments": ["BTCUSDT"],
-        },
-    }
-    bad = {"id": "roto", "status": "running", "profile": {"risk_level": 9}}
-    seen = []
+BOT_ID = "7f0c4c1e-5a4b-4f3e-9a51-0d9b1b2c3d4e"
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(request)
-        return httpx.Response(200, json=[row, bad])
 
-    client = httpx.Client(transport=httpx.MockTransport(handler))
-    repo = PostgRESTBotRepository("http://supabase", "eyJ.key", client=client)
+def test_api_repository_reads_running_bots():
+    api = FakeWorkerApi()
+    row = api.add_bot(
+        BOT_ID,
+        name="Bot de Ana",
+        strategy_config={"kronos": {"enabled": False}},
+        profile={"risk_level": 2, "capital": "750.5", "max_drawdown": 0.15, "horizon": "long",
+                 "instruments": ["BTCUSDT"]},
+    )  # fmt: skip
+    api.bots["roto"] = {"id": "roto", "status": "running", "profile": {"risk_level": 9}}
+    api.add_bot(status="stopped")
+    repo = WorkerApiBotRepository(api.client())
     (bot,) = repo.running()
-    assert bot.bot_id == "7f0c" and bot.profile.capital == Decimal("750.5")
+    assert bot.bot_id == BOT_ID and bot.profile.capital == Decimal("750.5")
     assert bot.profile.instruments == ("BTCUSDT",) and not bot.enabled("kronos")
-    assert seen[0].url.params["status"] == "eq.running"
-    assert seen[0].headers["Authorization"] == "Bearer eyJ.key"
-    assert repo.get("7f0c").bot_id == "7f0c"
-    assert "eq.7f0c" in str(seen[-1].url)
-    with pytest.raises(ValueError):
-        PostgRESTBotRepository.from_env({})
+    (get,) = api.calls("GET", "/internal/bots")
+    assert get.url.params["status"] == "running"
+    assert get.headers["X-Service-Token"] == api.token
+    assert repo.get(BOT_ID).bot_id == BOT_ID
+    assert repo.get("nadie") is None  # 404
+    api.fail[("GET", "/internal/bots/x")] = [httpx.Response(422, json={"detail": []})]
+    assert repo.get("x") is None  # id que no es UUID
+    api.fail[("GET", "/internal/bots/y")] = [httpx.Response(401, json={"detail": "no"})]
+    with pytest.raises(Exception, match="401"):
+        repo.get("y")
+    with pytest.raises(ValueError, match="TM_API_URL"):
+        WorkerApiBotRepository.from_env({})
     assert bot_from_row({**row, "strategy_config": None}).strategy_config == {}
 
 
-def test_command_listener_parses_and_skips_invalid():
-    client = fakeredis.FakeRedis()
-    listener = CommandListener(client)
-    client.xadd(COMMANDS_STREAM, {"type": "kill", "bot_id": "a", "reason": "x"})
-    client.xadd(COMMANDS_STREAM, {"type": "explode", "bot_id": "a"})
-    client.xadd(COMMANDS_STREAM, {"bot_id": "a"})
+def test_command_listener_polls_acks_and_skips_invalid():
+    api = FakeWorkerApi()
+    now = [0.0]
+    listener = WorkerApiCommandListener(api.client(retries=0), interval=5, clock=lambda: now[0])
+    kill = api.add_command("kill", "a", reason="x", payload={"close_positions": True})
+    bad = api.add_command("explode", "a")
     (cmd,) = listener.poll()
-    assert cmd.type is CommandType.KILL and cmd.bot_id == "a" and cmd.id
+    assert cmd.type is CommandType.KILL and cmd.bot_id == "a" and cmd.id == kill["id"]
+    assert cmd.seq == kill["seq"] and cmd.payload == {"close_positions": True}
+    assert cmd.reason == "x"
+    assert listener.last_seq == bad["seq"]
+    # el inválido se confirma como fallido para que no vuelva
+    assert bad["ack_status"] == "failed" and "inválido" in bad["ack_error"]
+    listener.ack(cmd)
+    assert kill["ack_status"] == "done"
+    assert listener.poll() == []  # todavía no toca (interval)
+    now[0] = 10
+    api.add_command("stop", "b")
+    (stop,) = listener.poll()
+    assert api.calls("GET", "/internal/commands")[-1].url.params["after"] == str(bad["seq"])
+    # un ack que falla se reintenta en el siguiente poll, sin volver a aplicar el comando
+    api.fail[("POST", f"/internal/commands/{stop.id}/ack")] = [httpx.Response(503, json={})]
+    listener.ack(stop, "boom")
+    assert listener._unacked == {stop.id: "boom"}
+    now[0] = 20
+    assert listener.poll() == []
+    assert listener._unacked == {}
+    assert api.commands[-1]["ack_status"] == "failed"
+    # un comando que ya no existe (bot borrado) cuenta como confirmado
+    listener.ack_id("no-existe")
+    assert "no-existe" not in listener._unacked
+    # si la API falla al listar, no se cae
+    now[0] = 30
+    api.fail[("GET", "/internal/commands")] = [httpx.Response(500, json={"detail": "x"})]
+    assert listener.poll() == []
+
+
+def test_in_memory_command_source():
+    source = InMemoryCommandSource()
+    command = BotCommand(CommandType.STOP, "a")
+    source.push(command)
+    assert source.poll() == [command] and source.poll() == []
+    source.ack(command, "x")
+    assert source.acked == [(command, "x")]
 
 
 # --- worker --------------------------------------------------------------------------------
@@ -204,10 +239,9 @@ class FakeShared:
 def test_worker_tick_runs_both_layers(make_event):
     clock = {"now": NOW}
     shared = FakeShared()
-    client = fakeredis.FakeRedis()
     sup = BotSupervisor(InMemoryBotRepository([config("a")]), MemorySink())
     signals = ListSignalSource([make_event(1.0)])
-    commands = CommandListener(client)
+    commands = InMemoryCommandSource()
     w = OrchestratorWorker(
         shared, sup, signals, commands, clock=lambda: clock["now"], max_catch_up=3
     )
@@ -218,10 +252,33 @@ def test_worker_tick_runs_both_layers(make_event):
     assert len(shared.closes) == 1
 
     clock["now"] = NOW + timedelta(minutes=10)
-    client.xadd(COMMANDS_STREAM, {"type": "kill", "bot_id": "a"})
+    kill = BotCommand(CommandType.KILL, "a")
+    commands.push(kill)
     stats = w.tick()
     assert len(shared.closes) == 4  # recupera como máximo 3 minutos
     assert stats["commands"] == 1 and stats["decisions"] == 1
+    assert commands.acked == [(kill, None)]
+
+
+def test_worker_acks_failed_commands_and_reports_equity(make_event):
+    class Boom(BotSupervisor):
+        def handle_command(self, command, now):
+            raise RuntimeError("roto")
+
+    class Equity:
+        calls = 0
+
+        def maybe_report(self, now):
+            Equity.calls += 1
+
+    commands = InMemoryCommandSource()
+    sup = Boom(InMemoryBotRepository([]), MemorySink())
+    w = OrchestratorWorker(None, sup, ListSignalSource([]), commands, equity=Equity())
+    cmd = BotCommand(CommandType.STOP, "a")
+    commands.push(cmd)
+    assert w.tick()["commands"] == 1
+    assert commands.acked == [(cmd, "RuntimeError: roto")]
+    assert Equity.calls == 1
 
 
 def test_build_worker_without_redis_returns_none():
@@ -237,8 +294,24 @@ def test_build_worker_with_fake_redis(monkeypatch):
     )
     assert isinstance(w, OrchestratorWorker)
     assert w.shared.symbols == ("BTCUSDT",)
-    assert w.commands is not None
+    assert w.commands is None  # sin API no hay cola de comandos
     w.tick()
+
+    with_api = worker_main.build_worker(
+        {
+            "REDIS_URL": "redis://x",
+            "TM_API_URL": "https://tm-api.test",
+            "TM_SERVICE_TOKEN": "t",
+            "SETTINGS_SOURCE": "env",  # sin red: los ajustes no se leen de la API
+        }
+    )
+    try:
+        assert isinstance(with_api.commands, WorkerApiCommandListener)
+        assert isinstance(with_api.supervisor.repository, WorkerApiBotRepository)
+        assert with_api.equity is not None and with_api.explain_loop.running
+        assert type(with_api.supervisor.sink).__name__ == "FanoutSink"
+    finally:
+        with_api.explain_loop.stop()
 
     only_shared = worker_main.build_worker(
         {"REDIS_URL": "redis://x", "ORCHESTRATOR_BOTS": "0", "ORCHESTRATOR_SHARED": "off"}

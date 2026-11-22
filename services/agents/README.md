@@ -6,7 +6,39 @@ Worker con la biblioteca de estrategias (KronosAgent, TrendAgent, IntradayMoment
 uv run --package tm-agents python -m tm_agents
 ```
 
-El worker corre en el mismo proceso la capa compartida del orquestador (publica `tm:signals`), los BotRunner (leen `tm:signals`, publican `tm:decisions`) y el `ReferenceService` (lee `tm:signals` con su propio cursor). Cada pieza se apaga con `ORCHESTRATOR_SHARED=0`, `ORCHESTRATOR_BOTS=0` o `REFERENCE_SERVICE=0`; todas necesitan `REDIS_URL` y el `ReferenceService` además `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY`. Sin `REDIS_URL` solo escribe el heartbeat. Ver `.env.example` y `docs/arquitectura/orquestador.md`.
+El worker corre en el mismo proceso la capa compartida del orquestador (publica `tm:signals`), los BotRunner (leen `tm:signals`, publican `tm:decisions`) y el `ReferenceService` (lee `tm:signals` con su propio cursor). Cada pieza se apaga con `ORCHESTRATOR_SHARED=0`, `ORCHESTRATOR_BOTS=0` o `REFERENCE_SERVICE=0`; todas necesitan `REDIS_URL` y el `ReferenceService` además la API (`TM_API_URL` y `TM_SERVICE_TOKEN`). Sin `REDIS_URL` solo escribe el heartbeat. Ver `.env.example` y `docs/arquitectura/orquestador.md`.
+
+## Conexión con la API en Cloudflare Workers (#116)
+
+El worker corre en la Mac (`make runner-up`, ver [`docs/arquitectura/motor-en-la-mac.md`](../../docs/arquitectura/motor-en-la-mac.md)) y **no tiene base de datos propia**: todo lo persistente está en D1 detrás de la API (`apps/api`, contrato en [`docs/arquitectura/api.md`](../../docs/arquitectura/api.md)). Solo hace conexiones salientes a `/internal/*` con el cliente común `tm_shared.api_client.WorkerApiClient`:
+
+| Variable | Uso |
+|---|---|
+| `TM_API_URL` | Base del Worker **sin** `/internal` (`https://tm-api.<subdominio>.workers.dev`; en desarrollo `http://host.docker.internal:8787`, `wrangler dev`). |
+| `TM_SERVICE_TOKEN` | Secreto `SERVICE_TOKEN` del Worker; va en el header `X-Service-Token`. |
+| `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET` | Opcionales: service token de Cloudflare Access (headers `CF-Access-Client-Id` / `CF-Access-Client-Secret`). |
+| `TM_API_TIMEOUT_SECONDS`, `TM_API_RETRIES` | Timeout por petición (10 s) y reintentos (3) con backoff exponencial (0.5, 1, 2… s, tope 8 s). |
+
+Los `GET`/`PUT`/`PATCH` se reintentan ante red caída, `429` y `5xx`; un `POST` solo si la conexión ni siquiera se abrió o con `429` (no se duplica una operación). Cada falla queda en el log con método, ruta, estado y el `code` del contrato.
+
+| Pieza | Endpoint | Antes |
+|---|---|---|
+| `registry.WorkerApiBackend` | `/internal/strategies[/{name}[/transitions]]` | `PostgRESTBackend` |
+| `orchestrator.supervisor.WorkerApiBotRepository` | `GET /internal/bots?status=running`, `/internal/bots/{id}` | `PostgRESTBotRepository` |
+| `orchestrator.supervisor.WorkerApiCommandListener` | `GET /internal/commands?after=<seq>` cada `COMMANDS_POLL_SECONDS` (5 s) y `POST /internal/commands/{id}/ack` (`done` o `failed` con el error) | stream `tm:commands` |
+| `orchestrator.state.WorkerApiTradeStateRepository` | `GET /internal/trades?bot_id=` por páginas | `PostgRESTTradeStateRepository` |
+| `reference.WorkerApiReferenceStore` | `POST /internal/reference/trades`, `PUT /internal/reference/equity` (lotes de 500) | `PostgRESTReferenceStore` |
+| `orchestrator.streams.WorkerApiDecisionSink` | `POST /internal/decisions` (`kind` = `decision` / `shadow`; `DECISIONS_AUDIT=0` lo apaga) | — |
+| `orchestrator.equity.EquitySnapshotReporter` | `POST /internal/equity-snapshots` cada `EQUITY_SNAPSHOT_SECONDS` (300 s) | — |
+| `explainer_runtime.WorkerApiExplanationSink` | `POST /internal/decisions` con `kind = "explanation"` | — (no corría en vivo) |
+| `orchestrator.settings.WorkerApiSettingsProvider` | `GET /internal/settings` | `WORKER_API_URL` + Bearer |
+| `tm_shared.api_client.HeartbeatReporter` | `POST /internal/heartbeat` (componente `agents`) cada `TM_HEARTBEAT_SECONDS` (30 s) | — |
+
+Los backends en memoria (`InMemoryBackend`, `InMemoryBotRepository`, `InMemoryCommandSource`, `InMemoryTradeStateRepository`, `InMemoryReferenceStore`) siguen para pruebas y backtests. Las pruebas usan `respx` y `tm_shared.fake_api.FakeWorkerApi` (la API simulada en memoria con las mismas respuestas y códigos de error que el Worker), sin red. Sin `TM_API_URL`, el orquestador corre con registro y bots en memoria (desarrollo).
+
+**Comandos de bots.** El frontend llama `POST /api/bots/{id}/start|stop|kill`; la API escribe el estado del bot y el comando en el mismo batch. El listener empieza en `after=0` al arrancar, así que los comandos que llegaron con la Mac apagada se aplican al volver; cada uno se confirma con `ack` (si el `ack` falla se reintenta en la siguiente consulta, sin volver a aplicarlo). El `sync()` periódico con `/internal/bots?status=running` es la red de seguridad si un comando se pierde.
+
+**ExplainerAgent en vivo.** El worker es síncrono (un bucle con `time.sleep`), así que antes el `asyncio.create_task` del BotRunner no tenía event loop y las explicaciones nunca se generaban en vivo. Ahora `explainer_runtime.ExplainerLoop` corre un event loop en un hilo *daemon*; el BotRunner le entrega la corrutina (`explain_executor`) y sigue sin esperar al LLM (tope de 100 explicaciones en vuelo). La explicación se guarda con `POST /internal/decisions` (`kind = "explanation"`, `payload = {envelope_id, text}`); `envelope_id` es el `id` del `DecisionEnvelope` que también se audita con `kind = "decision"`, así que el frontend puede unirlas. La tabla `trades` no tiene columna de explicación.
 
 ## MonteCarloService (laboratorio)
 
@@ -53,8 +85,7 @@ Para tomar el límite de drawdown del perfil: `ApprovalCriteria.for_profile(prof
 | `CRYPTOPANIC_TOKEN`, `CRYPTOPANIC_PLAN` | —, `developer` | | Solo con `NEWS_SOURCE=cryptopanic`. |
 | `NEWS_REFRESH_SECONDS` | `300` | | Cada cuánto corre el NewsAgent en el worker. |
 | `NEWS_VETO_HIGH_HOURS`, `NEWS_VETO_CRITICAL_HOURS` | `4`, `24` | | Duración de los vetos. |
-| `SETTINGS_SOURCE` | `env` | `env`, `worker-api` | De dónde salen los interruptores en caliente (abajo). |
-| `WORKER_API_URL`, `WORKER_SERVICE_TOKEN` | — | | Solo con `SETTINGS_SOURCE=worker-api`. |
+| `SETTINGS_SOURCE` | `worker-api` si hay `TM_API_URL` y `TM_SERVICE_TOKEN`; si no, `env` | `env`, `worker-api` | De dónde salen los interruptores en caliente (abajo). |
 | `SETTINGS_REFRESH_SECONDS` | `300` | | Caché de los interruptores remotos. |
 
 Combinaciones típicas:
@@ -73,8 +104,8 @@ Si el proveedor elegido no tiene sus llaves, el worker lo registra y sigue **sin
 
 El worker consulta un `SettingsProvider` (`get_bool("news_enabled")`, `get_bool("explainer_enabled")`) en cada ciclo:
 
-- `EnvSettingsProvider` (default): lee `NEWS_ENABLED` y `EXPLAINER_ENABLED`.
-- `WorkerApiSettingsProvider` (`SETTINGS_SOURCE=worker-api`): **hook** para el interruptor del admin. Hace `GET {WORKER_API_URL}/internal/settings` con `Authorization: Bearer {WORKER_SERVICE_TOKEN}` contra la API en Cloudflare Workers, que lee la tabla `settings` de D1. Acepta `{"news_enabled": true}`, `{"settings": {...}}` o filas `[{"key": "news_enabled", "value": "true"}]`. Guarda la respuesta `SETTINGS_REFRESH_SECONDS`; si la API falla usa los últimos valores conocidos y, si nunca respondió, los del entorno. El endpoint lo implementa la API.
+- `EnvSettingsProvider` (`SETTINGS_SOURCE=env`, o sin API): lee `NEWS_ENABLED` y `EXPLAINER_ENABLED`.
+- `WorkerApiSettingsProvider` (`SETTINGS_SOURCE=worker-api`, el default con API): el interruptor del admin (`PUT /api/admin/settings`). Hace `GET {TM_API_URL}/internal/settings` con el cliente común (`X-Service-Token` y, si existen, los headers de Access), que responde `{"news_enabled": bool, "explainer_enabled": bool}` desde la tabla `settings` de D1. Guarda la respuesta `SETTINGS_REFRESH_SECONDS` y no reintenta (el ciclo no se cuelga); si la API falla usa los últimos valores conocidos y, si nunca respondió, los del entorno.
 
 `NewsService` (`tm_agents.news.service`) aplica el interruptor: apagado, no arma el NewsAgent y deja `news=None`; prendido, lo arma la primera vez, lo conecta a la capa compartida y corre `refresh` cada `NEWS_REFRESH_SECONDS`. El ExplainerAgent revisa su interruptor en cada explicación.
 
@@ -212,13 +243,13 @@ de 120 s).
 
 ## StrategyRegistry (ciclo de vida)
 
-`tm_agents.registry.StrategyRegistry` guarda el estado de cada estrategia (`research → lab → shadow → active → probation → retired`, con revalidación `retired → lab`) y su historial, sobre las tablas `strategies` y `strategy_transitions` de Supabase (ver `supabase/README.md`).
+`tm_agents.registry.StrategyRegistry` guarda el estado de cada estrategia (`research → lab → shadow → active → probation → retired`, con revalidación `retired → lab`) y su historial, sobre las tablas `strategies` y `strategy_transitions` de D1, detrás de la API (`/internal/strategies`, migración `apps/api/migrations/0002_strategies.sql`).
 
 ```python
-from tm_agents.registry import SYSTEM_ACTOR, InMemoryBackend, PostgRESTBackend, StrategyRegistry
+from tm_agents.registry import SYSTEM_ACTOR, InMemoryBackend, StrategyRegistry, WorkerApiBackend
 from tm_agents.strategy_stats import StrategyState
 
-registry = StrategyRegistry(PostgRESTBackend.from_env())  # o StrategyRegistry(InMemoryBackend())
+registry = StrategyRegistry(WorkerApiBackend.from_env())  # o StrategyRegistry(InMemoryBackend())
 registry.ensure("trend", {"lookbacks": [20, 50, 100]})  # nace en research
 registry.transition("trend", StrategyState.LAB, SYSTEM_ACTOR, "entra al laboratorio")
 registry.record_lab_report("trend", {"sharpe_oos": 0.8, "max_drawdown_p95": 0.22})
@@ -229,22 +260,22 @@ registry.history("trend")  # [StrategyTransition(from_state, to_state, actor, ..
 ```
 
 - `transition(name, to, actor, reason)` solo acepta las transiciones de `ALLOWED_TRANSITIONS` y lanza `TransitionError` en cualquier otra. Las promociones `shadow → active` y `probation → active` exigen un actor humano (el `user_id`, UUID); con `SYSTEM_ACTOR` fallan. Las degradaciones y los retiros pueden ser automáticos o manuales. La razón es obligatoria.
-- Si el estado cambió entre la lectura y la escritura (otro proceso llegó antes), se lanza `StaleStateError`; la base exige que `from_state` sea el estado actual.
-- La base vuelve a validar todo (checks y triggers), así que las reglas se respetan aunque otro servicio escriba directo con la llave `service_role`.
-- `PostgRESTBackend.from_env()` lee `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` (la llave `service_role` en JWT o la nueva `sb_secret_...`; ambas salen de `supabase status -o env`). Las pruebas usan `InMemoryBackend` y `respx`, sin red.
+- Si el estado cambió entre la lectura y la escritura (otro proceso llegó antes), la API responde `409 stale_state` y se lanza `StaleStateError`; la base exige que `from_state` sea el estado actual.
+- La base vuelve a validar todo (checks y triggers de D1), así que las reglas se respetan aunque otra pieza llame a la API directo. Los `code` del contrato se traducen: `strategy_exists` → `StrategyExistsError`, `transition_not_allowed`/`check_violation` → `TransitionError`, `not_found` → `StrategyNotFoundError`.
+- `WorkerApiBackend.from_env()` lee `TM_API_URL`, `TM_SERVICE_TOKEN` y los headers de Access. Las pruebas usan `InMemoryBackend`, `respx` y `FakeWorkerApi`, sin red.
 
 ## Portafolio de referencia y modo shadow (`tm_agents.reference`)
 
 Cada estrategia en `shadow`, `active` o `probation` tiene un **ledger de referencia** a nivel app (capa compartida, propuesta, sección 3.4). Corre a tamaño completo (100 % del sleeve, 100,000 USDT nominales repartidos por igual entre BTCUSDT y ETHUSDT) con las mismas señales que reciben los bots. El LifecycleMonitor juzga a la estrategia con este portafolio y no con el P&L de ningún usuario.
 
 ```python
-from tm_agents.reference import REFERENCE_CHECKPOINT, PostgRESTReferenceStore, ReferenceService
-from tm_agents.registry import PostgRESTBackend, StrategyRegistry
+from tm_agents.reference import REFERENCE_CHECKPOINT, ReferenceService, WorkerApiReferenceStore
+from tm_agents.registry import StrategyRegistry, WorkerApiBackend
 from tm_agents.signals import RedisSignalSource
 
 svc = ReferenceService(
-    StrategyRegistry(PostgRESTBackend.from_env()),
-    PostgRESTReferenceStore.from_env(),
+    StrategyRegistry(WorkerApiBackend.from_env()),
+    WorkerApiReferenceStore.from_env(),
     RedisSignalSource(redis_client, checkpoint_key=REFERENCE_CHECKPOINT),
 )
 svc.run_once()  # el worker `python -m tm_agents` lo llama cada HEARTBEAT_INTERVAL (REFERENCE_SERVICE=0 lo apaga)
@@ -255,5 +286,5 @@ svc.run_once()  # el worker `python -m tm_agents` lo llama cada HEARTBEAT_INTERV
 - **Métricas** (comparables con las del laboratorio): equity, drawdown actual y máximo, retorno, CAGR (desde 30 días), Sharpe diario anualizado con 365 días, trades, win rate, comisiones y Sharpe de los últimos 30 trades. Junto a ellas van el Sharpe OOS y el p95/p99 del drawdown del laboratorio (`lab.drawdown_vs_p95`). Se guardan en `strategies.live_metrics` con el estado del ledger (`ledger`), para retomarlo tras un reinicio.
 - **LifecycleMonitor cableado**: `check` corre cada vez que se cierra un trade de referencia y una vez al día. Si propone una transición, se aplica con `StrategyRegistry.transition(..., actor="system")` y queda en el log (`LifecycleMonitor: 'trend' active -> probation (actor=system): ...`). Las promociones nunca son automáticas. La banda del Monte Carlo sale de `lab_report`, en el formato del walk-forward (`montecarlo.max_drawdown.p95/p99`) o en el plano (`max_drawdown_p95/p99`).
 - **Persistencia** (`store.py`): `reference_trades` (trades cerrados) y `reference_equity` (un punto por día UTC), con escrituras idempotentes. Si la base falla, los datos quedan pendientes y se reintentan en el siguiente ciclo; el checkpoint del stream no avanza hasta que todo se guardó.
-- **Días en shadow sin fallas** (página #58): `live_metrics.shadow` trae `started_at` (entrada a shadow, cuando empieza la corrida), `clean_since`, `days_clean`, `min_days` (7), `eligible_for_promotion`, `failures` y la última falla. Una falla es una señal que no se pudo aplicar (de un símbolo que el ledger no opera o un error al aplicarla) o un silencio de más de 3 velas de su timeframe. En la base, `GET /strategies?select=*,shadow_days_clean` lo calcula al momento.
+- **Días en shadow sin fallas** (página #58): `live_metrics.shadow` trae `started_at` (entrada a shadow, cuando empieza la corrida), `clean_since`, `days_clean`, `min_days` (7), `eligible_for_promotion`, `failures` y la última falla. Una falla es una señal que no se pudo aplicar (de un símbolo que el ledger no opera o un error al aplicarla) o un silencio de más de 3 velas de su timeframe. La API lo devuelve como `shadow_days_clean` en `GET /api/strategies`.
 - **Shadow nunca envía órdenes**: este servicio no tiene cliente del exchange ni escribe en `tm:decisions`. Además, `TradingSleeveGuard` (`guard.py`) se le pasa a `AgenticStrategy` del motor: solo generan órdenes los sleeves cuya estrategia está en `active` o `probation`, y cualquier otro (shadow, desconocido o con el registro inaccesible) se rechaza. Hay pruebas de las dos cosas (`test_reference_service.py` y `services/engine/tests/test_shadow_guard.py`).

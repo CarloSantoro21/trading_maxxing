@@ -12,7 +12,7 @@ laboratorio (propuesta, sección 3.3) y propone la degradación correspondiente:
 
 ``check`` es determinista y no tiene efectos: no lee reloj ni base de datos. El instante de
 evaluación viene en ``LiveStats.as_of``. Solo propone una transición por llamada y no depende
-de la tabla ``strategies`` de Supabase.
+de la tabla ``strategies`` (D1, vía la API).
 """
 
 from __future__ import annotations

@@ -1,8 +1,8 @@
 """Contratos compartidos entre estrategias, orquestador, riesgo y motor.
 
 Todos los modelos son Pydantic, inmutables y serializables a JSON, para viajar por Redis
-y guardarse en Supabase (`trades.rationale`). Los valores de los enums coinciden con los
-tipos de la base de datos (ver `supabase/migrations`).
+y guardarse en D1 vía la API (`trades.rationale`). Los valores de los enums coinciden con los
+`CHECK` de la base de datos (ver `apps/api/migrations`).
 """
 
 from __future__ import annotations

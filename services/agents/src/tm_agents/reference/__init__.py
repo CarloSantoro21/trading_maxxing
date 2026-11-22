@@ -28,9 +28,9 @@ from tm_agents.reference.service import (
 from tm_agents.reference.store import (
     EquityPoint,
     InMemoryReferenceStore,
-    PostgRESTReferenceStore,
     ReferenceStore,
     ReferenceStoreError,
+    WorkerApiReferenceStore,
 )
 
 __all__ = [
@@ -42,7 +42,6 @@ __all__ = [
     "DrawdownBand",
     "EquityPoint",
     "InMemoryReferenceStore",
-    "PostgRESTReferenceStore",
     "ReferenceFill",
     "ReferenceLedger",
     "ReferenceService",
@@ -50,6 +49,7 @@ __all__ = [
     "ReferenceStoreError",
     "ReferenceTrade",
     "TradingSleeveGuard",
+    "WorkerApiReferenceStore",
     "can_send_orders",
     "shadow_status",
 ]

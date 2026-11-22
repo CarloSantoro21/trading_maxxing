@@ -1,4 +1,4 @@
-"""Persistencia del ledger de referencia (#57): memoria y PostgREST simulado con respx."""
+"""Persistencia del ledger de referencia (#57): memoria y API de Workers simulada (respx)."""
 
 from __future__ import annotations
 
@@ -13,13 +13,14 @@ from tm_agents.reference.ledger import ReferenceTrade
 from tm_agents.reference.store import (
     EquityPoint,
     InMemoryReferenceStore,
-    PostgRESTReferenceStore,
     ReferenceStoreError,
+    WorkerApiReferenceStore,
     trade_row,
 )
 from tm_agents.strategy_stats import StrategyState
+from tm_shared.api_client import WorkerApiClient
 
-URL = "http://supabase.test"
+URL = "https://tm-api.test"
 SID = uuid4()
 T0 = datetime(2026, 11, 1, tzinfo=UTC)
 
@@ -51,46 +52,66 @@ def test_in_memory_store_is_idempotent():
     assert [r["equity"] for r in store.equity_for(SID)] == [2.0]
 
 
+def _store(**kw) -> WorkerApiReferenceStore:
+    return WorkerApiReferenceStore(WorkerApiClient(URL, "tok", sleep=lambda _s: None), **kw)
+
+
 @respx.mock
-def test_postgrest_store_posts_with_conflict_resolution():
-    trades = respx.post(f"{URL}/rest/v1/reference_trades").mock(return_value=httpx.Response(201))
-    equity = respx.post(f"{URL}/rest/v1/reference_equity").mock(return_value=httpx.Response(201))
-    store = PostgRESTReferenceStore(URL, "eyJservice")
+def test_api_store_posts_trades_and_puts_equity():
+    trades = respx.post(f"{URL}/internal/reference/trades").mock(
+        return_value=httpx.Response(201, json={"received": 1, "inserted": 1})
+    )
+    equity = respx.put(f"{URL}/internal/reference/equity").mock(
+        return_value=httpx.Response(200, json={"upserted": 1})
+    )
+    store = _store()
     store.save_trades([trade_row(SID, T0, StrategyState.SHADOW, a_trade())])
     store.upsert_equity([a_point()])
     store.save_trades([])  # sin filas no llama
     store.upsert_equity([])
     req = trades.calls.last.request
-    assert req.url.params["on_conflict"] == "strategy_id,symbol,closed_at"
-    assert req.headers["Prefer"] == "resolution=ignore-duplicates,return=minimal"
-    assert req.headers["Authorization"] == "Bearer eyJservice"
-    assert json.loads(req.content)[0]["symbol"] == "BTCUSDT"
-    req = equity.calls.last.request
-    assert req.url.params["on_conflict"] == "strategy_id,day"
-    assert "merge-duplicates" in req.headers["Prefer"]
+    assert req.headers["X-Service-Token"] == "tok"
+    assert json.loads(req.content)["rows"][0]["symbol"] == "BTCUSDT"
+    assert json.loads(equity.calls.last.request.content)["points"][0]["day"] == "2026-11-01"
     assert trades.call_count == equity.call_count == 1
     store.close()
 
 
 @respx.mock
-def test_postgrest_store_errors():
-    respx.post(f"{URL}/rest/v1/reference_equity").mock(
-        return_value=httpx.Response(403, json={"message": "permission denied"})
+def test_api_store_chunks_and_retries_idempotent_writes():
+    trades = respx.post(f"{URL}/internal/reference/trades").mock(
+        side_effect=[
+            httpx.Response(503, json={"detail": "D1 ocupado"}),
+            httpx.Response(201, json={}),
+            httpx.Response(201, json={}),
+        ]
     )
-    respx.post(f"{URL}/rest/v1/reference_trades").mock(side_effect=httpx.ConnectError("down"))
-    store = PostgRESTReferenceStore(URL, "sb_secret_x")
-    with pytest.raises(ReferenceStoreError, match="403"):
+    store = _store(chunk=2)
+    rows = [
+        trade_row(SID, T0, StrategyState.SHADOW, a_trade(datetime(2026, 11, d, tzinfo=UTC)))
+        for d in (1, 2, 3)
+    ]
+    store.save_trades(rows)
+    # 503 se reintenta (ignora duplicados): 2 lotes = 3 llamadas
+    assert trades.call_count == 3
+    assert len(json.loads(trades.calls.last.request.content)["rows"]) == 1
+
+
+@respx.mock
+def test_api_store_errors():
+    respx.put(f"{URL}/internal/reference/equity").mock(
+        return_value=httpx.Response(422, json={"detail": "check", "code": "check_violation"})
+    )
+    respx.post(f"{URL}/internal/reference/trades").mock(side_effect=httpx.ConnectError("down"))
+    store = WorkerApiReferenceStore(WorkerApiClient(URL, "t", retries=0))
+    with pytest.raises(ReferenceStoreError, match="422"):
         store.upsert_equity([a_point()])
     with pytest.raises(ReferenceStoreError, match="no se pudo llamar"):
         store.save_trades([trade_row(SID, T0, StrategyState.SHADOW, a_trade())])
 
 
-def test_postgrest_store_from_env_and_validation():
-    store = PostgRESTReferenceStore.from_env(
-        {"SUPABASE_URL": URL, "SUPABASE_SERVICE_ROLE_KEY": "sb_secret_x"}
-    )
-    assert "Authorization" not in store._headers
-    with pytest.raises(ValueError, match="URL"):
-        PostgRESTReferenceStore("", "k")
-    with pytest.raises(ValueError, match="llave"):
-        PostgRESTReferenceStore(URL, "")
+def test_api_store_from_env_and_validation():
+    store = WorkerApiReferenceStore.from_env({"TM_API_URL": URL, "TM_SERVICE_TOKEN": "t"})
+    assert store.client.base_url == URL
+    with pytest.raises(ValueError, match="TM_API_URL"):
+        WorkerApiReferenceStore.from_env({})

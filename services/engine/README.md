@@ -17,7 +17,8 @@ uv run --package tm-engine python -m tm_engine --once   # imprime su estado y te
 | `backtest.py` | `build_engine` / `run_backtest`: `BacktestEngine` con un venue simulado de Binance Spot. |
 | `decisions.py` | Sobre `DecisionEnvelope` y fuentes de decisiones (Redis, programada para backtest). |
 | `sleeves.py` | `SleeveLedger`: posición, costo promedio y P&L por estrategia (sleeve). |
-| `recorder.py` | Registro de fills: en memoria o en la tabla `trades` de Supabase. |
+| `recorder.py` | Registro de fills: en memoria o en la tabla `trades` (D1) vía la API (`WorkerApiTradeRecorder`). |
+| `backtest_jobs.py` | `BacktestJobRunner`: backtests encolados desde el frontend (`/internal/backtests`). |
 | `instruments.py` | `CurrencyPair` de BTCUSDT y ETHUSDT y conversión de velas de `tm_marketdata`. |
 
 ## Órdenes (spot)
@@ -72,16 +73,41 @@ en cada vela. Si Redis no está disponible sigue funcionando con `submit()`.
 | `BINANCE_TESTNET_API_KEY`, `BINANCE_TESTNET_API_SECRET` | Llaves de https://testnet.binance.vision. Si falta alguna, el motor arranca en modo `offline` (sin conexión). |
 | `REDIS_URL` | Stream de decisiones. |
 | `ENGINE_SYMBOLS` (`BTCUSDT`), `ENGINE_TIMEFRAME` (`1m`), `ENGINE_PROFILE` (`default`) | Perfil de ejecución. |
-| `ENGINE_BOT_ID` + `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` | Si están, cada operación se guarda en `public.trades` (con `rationale.sleeve`). |
+| `TM_API_URL` + `TM_SERVICE_TOKEN` (+ `CF_ACCESS_CLIENT_ID`/`CF_ACCESS_CLIENT_SECRET`) | API en Cloudflare Workers: fills en `trades`, guardia de sleeves, latido y backtests (abajo). Sin ellas los fills solo quedan en memoria. |
+| `ENGINE_BOT_ID` | Bot de respaldo para fills sin `bot_id` (opcional; cada decisión ya trae su bot). |
 | `HEARTBEAT_FILE` (`/tmp/heartbeat`), `HEARTBEAT_INTERVAL` (`10`) | Heartbeat del contenedor. |
 
 El heartbeat es un JSON con el estado:
 `{"ts": ..., "mode": "testnet" | "offline", "connected": false, "error": "faltan ...", ...}`.
-Los logs salen por stdout en **JSON estructurado** — Azure App Service recoge cada línea del
-contenedor y la envía a Log Analytics / Application Insights (la wiring completa de APM con
-`azure-monitor-opentelemetry` / `configure_azure_monitor()` vive en #29). Los de Nautilus van
+Los logs salen por stdout en **JSON estructurado** (en la Mac: `make runner-logs`; Docker los
+rota con `max-size: 10m`). El APM del proyecto es Workers Observability del lado de la API;
+del motor, la API guarda el latido (`/api/engine/status`). Los de Nautilus van
 sin colores por el mismo stream. Cada línea trae `ts`, `level`, `service`, `logger`, `message`
 y los campos extra que pase quien loguea (`symbols`, `timeframe`, etc.).
+
+## Conexión con la API en Cloudflare Workers (#116)
+
+El motor corre en la Mac (`make runner-up`, guía en
+[`docs/arquitectura/motor-en-la-mac.md`](../../docs/arquitectura/motor-en-la-mac.md)) y solo hace
+conexiones **salientes**: a Binance Spot Testnet y a `/internal/*` de la API
+([`docs/arquitectura/api.md`](../../docs/arquitectura/api.md)) con el cliente común
+`tm_shared.api_client.WorkerApiClient` (`X-Service-Token`, headers de Access opcionales,
+timeouts y reintentos con backoff). Ya no usa Supabase.
+
+| Pieza | Endpoint |
+| --- | --- |
+| `WorkerApiTradeRecorder` (`recorder.py`) | `POST /internal/trades` al llenarse la entrada, `PATCH /internal/trades/{id}` en cada fill posterior y al cerrar; al arrancar, `GET /internal/trades?open=true&side=buy` restaura las posiciones (#89). |
+| `TradingSleeveGuard` (de `tm_agents.reference`) | `GET /internal/strategies/{name}`: solo los sleeves en `active`/`probation` mandan órdenes. |
+| `HeartbeatReporter` | `POST /internal/heartbeat` (componente `engine`, con el estado del heartbeat en `details`) cada `TM_HEARTBEAT_SECONDS` (30 s); `stopping` al apagarse. Lo muestra `GET /api/engine/status`. |
+| `BacktestJobRunner` (`backtest_jobs.py`) | `GET /internal/backtests?status=queued` cada `BACKTEST_POLL_SECONDS` (60 s), `PATCH` a `running` y luego a `done` (con `report`) o `failed` (con `error`). Corre en su propio hilo para no frenar el latido. `BACKTEST_JOBS=0` lo apaga. |
+
+Un `POST /internal/trades` que falla con `5xx` o *timeout* de lectura **no se reintenta**
+(podría duplicar la fila); los `PATCH` sí. El reporte de un backtest usa el simulador
+vectorizado del laboratorio (`tm_engine.lab.simulator`) con los parámetros por defecto de
+cada estrategia (`strategies`, por defecto `trend`), velas de `tm_marketdata` y compara contra
+comprar y mantener: `metrics` (retorno, CAGR, Sharpe, volatilidad, drawdown), `benchmark`,
+`trades`, `by_strategy` y la `equity` diaria (máximo ~400 puntos). D1 guarda los números
+como REAL (float64): el costo promedio restaurado puede diferir en los últimos decimales.
 
 ### Correr contra el testnet real
 
@@ -101,8 +127,11 @@ y los campos extra que pase quien loguea (`symbols`, `timeframe`, etc.).
 3. Arranca el motor (contenedor o directo):
 
    ```bash
-   # Con Docker Compose (recomendado: trae Redis para el stream de decisiones)
-   docker compose up engine
+   # Motor completo en la Mac con las imágenes de Docker Hub (ver motor-en-la-mac.md)
+   make runner-up
+
+   # Desarrollo: build local contra wrangler dev (cd apps/api && pnpm dev)
+   make motor-local
 
    # Directo (necesita Rust para compilar nautilus-trader en algunas plataformas)
    uv run --package tm-engine python -m tm_engine

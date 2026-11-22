@@ -1,12 +1,15 @@
 """Ejecución de las dos capas: en vivo (worker con Redis) y en backtest (todo en memoria).
 
-En vivo, el worker ``agents`` corre las dos capas en el mismo proceso, comunicadas por Redis:
+En vivo, el worker ``agents`` corre las dos capas en el mismo proceso, comunicadas por Redis
+(los comandos de bots llegan de la API, ``GET /internal/commands``):
 
 1. al cerrar cada minuto, la capa compartida evalúa las estrategias cuyo timeframe cerró y
    publica en ``tm:signals``;
-2. el supervisor lee ``tm:signals`` (como cualquier otro consumidor) y ``tm:commands`` y
-   publica en ``tm:decisions`` y ``tm:shadow``;
-3. cada ``sync_every`` segundos concilia los bots con la tabla ``bots``;
+2. el supervisor lee ``tm:signals`` (como cualquier otro consumidor) y la cola de comandos
+   (y confirma cada uno con ``ack``) y publica en ``tm:decisions`` y ``tm:shadow``;
+3. cada ``sync_every`` segundos concilia los bots con la tabla ``bots``; con ``equity``
+   (:class:`~tm_agents.orchestrator.equity.EquitySnapshotReporter`) manda además la equity de
+   cada bot a la API cada pocos minutos;
 4. si hay ``news`` (:class:`~tm_agents.news.service.NewsService`), le da un ciclo antes de la
    capa compartida: con las noticias apagadas no hace nada y la capa queda con ``news=None``.
 
@@ -30,7 +33,7 @@ from tm_shared.contracts import DecisionEnvelope
 from tm_agents.orchestrator.bot import BotCommand, BotRunner
 from tm_agents.orchestrator.shared import SharedSignalLayer, bar_close_instants
 from tm_agents.orchestrator.streams import MemorySink
-from tm_agents.orchestrator.supervisor import BotSupervisor, CommandListener
+from tm_agents.orchestrator.supervisor import BotSupervisor, CommandSource
 from tm_agents.signals import SignalEvent, SignalSource
 
 log = logging.getLogger(__name__)
@@ -82,9 +85,11 @@ class OrchestratorWorker:
         shared: SharedSignalLayer | None,
         supervisor: BotSupervisor,
         signals: SignalSource,
-        commands: CommandListener | None = None,
+        commands: CommandSource | None = None,
         *,
         news: Any | None = None,
+        equity: Any | None = None,
+        explain_loop: Any | None = None,
         sync_every: float = 60.0,
         settle_seconds: float = 5.0,
         max_catch_up: int = 60,
@@ -95,6 +100,10 @@ class OrchestratorWorker:
         self.signals = signals
         self.commands = commands
         self.news = news
+        #: ``EquitySnapshotReporter``: equity de cada bot a ``/internal/equity-snapshots``.
+        self.equity = equity
+        #: ``ExplainerLoop`` donde corre el ExplainerAgent (se detiene al apagar el worker).
+        self.explain_loop = explain_loop
         self.sync_every = sync_every
         self.settle = pd.Timedelta(seconds=settle_seconds)
         self.max_catch_up = max_catch_up
@@ -121,12 +130,19 @@ class OrchestratorWorker:
         if self.commands is not None:
             for command in self.commands.poll():
                 stats["commands"] += 1
-                stats["decisions"] += len(
-                    self.supervisor.handle_command(command, now.to_pydatetime())
-                )
+                try:
+                    out = self.supervisor.handle_command(command, now.to_pydatetime())
+                except Exception as exc:  # un comando roto no detiene a los demás
+                    log.exception("falló el comando %s del bot %s", command.type, command.bot_id)
+                    self.commands.ack(command, f"{type(exc).__name__}: {exc}")
+                    continue
+                stats["decisions"] += len(out)
+                self.commands.ack(command)
         for event in self.signals.poll(now.to_pydatetime()):
             stats["events_consumed"] += 1
             stats["decisions"] += len(self.supervisor.on_event(event))
+        if self.equity is not None:
+            self.equity.maybe_report(now.to_pydatetime())
         return stats
 
     def _pending_closes(self, minute: pd.Timestamp) -> list[datetime]:

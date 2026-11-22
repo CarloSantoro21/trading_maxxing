@@ -1,41 +1,38 @@
 """ReferenceService (#57): ledger por estrategia, LifecycleMonitor cableado y shadow sin órdenes.
 
-Sin red: registro en memoria o PostgREST simulado con ``httpx.MockTransport``, y Redis con
-fakeredis.
+Sin red: registro en memoria o la API de Workers simulada (``tm_shared.fake_api``), y Redis
+con fakeredis.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import parse_qs
-from uuid import uuid4
 
 import fakeredis
-import httpx
 import pytest
 from tm_agents.lifecycle import LifecycleMonitor
 from tm_agents.reference import (
     REFERENCE_CHECKPOINT,
     InMemoryReferenceStore,
-    PostgRESTReferenceStore,
     ReferenceService,
     ReferenceStoreError,
     TradingSleeveGuard,
+    WorkerApiReferenceStore,
     can_send_orders,
 )
 from tm_agents.reference.service import DrawdownBand
 from tm_agents.registry import (
-    PostgRESTBackend,
     RegistryError,
     StaleStateError,
     StrategyRegistry,
+    WorkerApiBackend,
 )
 from tm_agents.signals import ListSignalSource, RedisSignalSource, SignalEvent, publish_signal
 from tm_agents.strategy_stats import StrategyState as S
 from tm_shared.contracts import Direction, Horizon, Signal, Timeframe
+from tm_shared.fake_api import FakeWorkerApi
 
 HUMAN = "11111111-1111-1111-1111-111111111111"
 #: p95 bajo (5 %) y p99 alto (50 %): una caída de 10 % degrada pero no retira de inmediato.
@@ -527,86 +524,40 @@ def test_drawdown_band_formats():
 
 
 # ---------------------------------------------------------------------------------------
-# PostgREST simulado: registro y tablas de referencia por HTTP
+# API de Workers simulada: registro y tablas de referencia por HTTP (/internal/*)
 # ---------------------------------------------------------------------------------------
-class FakePostgREST:
-    """Lo mínimo de PostgREST para ``strategies``, transiciones y las tablas de referencia."""
-
-    def __init__(self, entered_at: datetime) -> None:
-        ts = entered_at.isoformat()
-        self.strategy = {
-            "id": str(uuid4()),
-            "name": "trend",
-            "state": "active",
-            "params": {},
-            "lab_report": LAB,
-            "live_metrics": {},
-            "state_changed_at": ts,
-            "created_at": ts,
-            "updated_at": ts,
-        }
-        self.transitions = [
-            {"id": 1, "from_state": "lab", "to_state": "shadow", "actor": "system",
-             "reason": "pasa criterios", "created_at": ts},
-            {"id": 2, "from_state": "shadow", "to_state": "active", "actor": HUMAN,
-             "reason": "7 días", "created_at": ts},
-        ]  # fmt: skip
-        self.tables: dict[str, list[dict[str, Any]]] = {
-            "reference_trades": [],
-            "reference_equity": [],
-        }
-        self.requests: list[httpx.Request] = []
-
-    def __call__(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(request)
-        path = request.url.path.removeprefix("/rest/v1/")
-        params = {k: v[0] for k, v in parse_qs(request.url.query.decode()).items()}
-        body = json.loads(request.content) if request.content else None
-        if path == "strategies" and request.method == "GET":
-            want = params.get("state", "")
-            ok = not want or self.strategy["state"] in want.removeprefix("in.(").rstrip(")")
-            ok = ok and params.get("name", f"eq.{self.strategy['name']}") == "eq.trend"
-            return httpx.Response(200, json=[self.strategy] if ok else [])
-        if path == "strategies" and request.method == "PATCH":
-            self.strategy.update(body)
-            return httpx.Response(200, json=[self.strategy])
-        if path == "strategy_transitions" and request.method == "GET":
-            return httpx.Response(200, json=self.transitions)
-        if path == "strategy_transitions" and request.method == "POST":
-            if body["from_state"] != self.strategy["state"]:
-                return httpx.Response(409, json={"code": "40001", "message": "stale"})
-            now = datetime.now(UTC).isoformat()
-            row = {**body, "id": len(self.transitions) + 1, "created_at": now}
-            self.transitions.append(row)
-            self.strategy["state"] = body["to_state"]
-            self.strategy["state_changed_at"] = row["created_at"]
-            return httpx.Response(201, json=[row])
-        if path in self.tables and request.method == "POST":
-            self.tables[path].extend(body)
-            return httpx.Response(201)
-        return httpx.Response(404, json={"message": f"ruta no simulada: {path}"})
-
-
-def test_end_to_end_with_simulated_postgrest(base):
-    fake = FakePostgREST(base)
-    client = httpx.Client(transport=httpx.MockTransport(fake))
-    registry = StrategyRegistry(PostgRESTBackend("http://sb.test", "eyJx", client=client))
-    store = PostgRESTReferenceStore("http://sb.test", "eyJx", client=client)
+def test_end_to_end_with_simulated_worker_api(base):
+    fake = FakeWorkerApi()
+    ts = base.isoformat()
+    row = fake.add_strategy("trend", "active", lab_report=LAB, state_changed_at=ts)
+    fake.transitions += [
+        {"id": 1, "strategy_id": row["id"], "from_state": "lab", "to_state": "shadow",
+         "actor": "system", "reason": "pasa criterios", "created_at": ts},
+        {"id": 2, "strategy_id": row["id"], "from_state": "shadow", "to_state": "active",
+         "actor": HUMAN, "reason": "7 días", "created_at": ts},
+    ]  # fmt: skip
+    fake._transition_id = 2
+    client = fake.client()
+    registry = StrategyRegistry(WorkerApiBackend(client))
+    store = WorkerApiReferenceStore(client)
     source = ListSignalSource()
     svc = make_service(registry, store, source, sizing={"trend": "full"})
     source.push(sig("trend", base + timedelta(hours=1), 100.0, timeframe=Timeframe.D1))
     source.push(sig("trend", base + timedelta(hours=2), 85.0, Direction.FLAT))
     svc.run_once(base + timedelta(hours=3))
 
-    assert fake.strategy["state"] == "probation"
+    strategy = fake.strategies["trend"]
+    assert strategy["state"] == "probation"
     assert fake.transitions[-1]["actor"] == "system"
     assert fake.transitions[-1]["from_state"] == "active"
-    (trade,) = fake.tables["reference_trades"]
+    (trade,) = fake.reference_trades.values()
     assert trade["state"] == "active" and trade["pnl"] < 0
     day = (base + timedelta(hours=3)).date().isoformat()
-    assert fake.tables["reference_equity"][0]["day"] == day
-    metrics = fake.strategy["live_metrics"]
+    (point,) = fake.reference_equity.values()
+    assert point["day"] == day
+    metrics = strategy["live_metrics"]
     assert metrics["state"] == "probation" and metrics["trades"] == 1
     assert metrics["ledger"]["started_at"] == base.isoformat()
-    # ninguna llamada fuera de Supabase
-    assert {r.url.host for r in fake.requests} == {"sb.test"}
+    # solo /internal/* con el token de servicio
+    assert all(r.url.path.startswith("/internal/") for r in fake.requests)
+    assert {r.headers["X-Service-Token"] for r in fake.requests} == {fake.token}

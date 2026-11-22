@@ -3,7 +3,7 @@
 Es la vista que necesita el `PortfolioAllocator` de cada estrategia: en qué estado del ciclo
 de vida está (propuesta, sección 3.3) y qué midió el laboratorio (volatilidad, Sharpe
 out-of-sample y, opcionalmente, sus retornos y el drawdown p95 del Monte Carlo). Todavía no
-depende de la tabla `strategies` de Supabase; el repositorio que la lea solo tendrá que
+depende de la tabla `strategies` (D1, vía la API); el repositorio que la lea solo tendrá que
 construir estos objetos.
 """
 
