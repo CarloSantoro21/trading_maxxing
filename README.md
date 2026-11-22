@@ -8,19 +8,30 @@ Plataforma multiestrategia de trading de criptomonedas: un comité de agentes co
 - **Documentación final (arquitectura, setup, pipeline, decisiones, demo):** [docs/final/README.md](docs/final/README.md)
 - Propuesta: [docs/propuesta/Propuesta-trading_maxxing.md](docs/propuesta/Propuesta-trading_maxxing.md) ([PDF](docs/propuesta/Propuesta-trading_maxxing.pdf))
 - Plan de trabajo: [Project Board](https://github.com/users/CarloSantoro21/projects/2) e [Issues](https://github.com/CarloSantoro21/trading_maxxing/issues)
-- Stack: Next.js, FastAPI, Supabase, Redis, Docker y Docker Hub, GitHub Actions, Terraform, Azure App Service + Application Insights, Cloudflare Pages
+- **Wiki:** https://github.com/CarloSantoro21/trading_maxxing/wiki (fuente en [`docs/wiki/`](docs/wiki/))
+
+## Arquitectura
+
+Todo lo público vive en **Cloudflare, plan gratuito** (0 USD); el motor corre en una Mac con Docker. Detalle en [docs/arquitectura/cloudflare.md](docs/arquitectura/cloudflare.md) y diagrama en [docs/propuesta/img/infra.png](docs/propuesta/img/infra.png).
+
+- **Frontend:** Next.js 15 (export estático) en **Cloudflare Pages** (`tm-web-dev` / `tm-web`), detrás de **Cloudflare Access** (login por correo).
+- **API:** **Cloudflare Workers** con Hono + TypeScript ([`apps/api`](apps/api/README.md), Workers `tm-api-dev` / `tm-api`); Pages le reenvía `/api/*` por service binding. Contrato: [docs/arquitectura/api.md](docs/arquitectura/api.md).
+- **Base:** **D1** (`tm-dev` / `tm-prod`). APM y métricas con **Workers Observability**.
+- **Motor:** agents, engine (NautilusTrader), forecast (Kronos) y Redis con `docker compose` en la Mac, imágenes de **Docker Hub** actualizadas por **Watchtower**. Solo hace conexiones salientes a Binance Spot Testnet y a `/internal/*` de la API.
+- **LLM:** opcional y apagado por defecto (`NEWS_ENABLED`, `EXPLAINER_ENABLED`, `LLM_PROVIDER`).
+- **CI/CD e IaC:** GitHub Actions con dev y prod ([docs/final/pipeline.md](docs/final/pipeline.md)); Terraform de Cloudflare en [trading_maxxing-infra](https://github.com/CarloSantoro21/trading_maxxing-infra).
 
 ## Estructura
 
 ```
 apps/web            Frontend (Next.js 15, TypeScript, Tailwind)
-services/api        API REST (FastAPI)
+apps/api            API en Cloudflare Workers (Hono + TypeScript + D1)
 services/agents     Estrategias, orquestador, simulación y riesgo
 services/forecast   Servicio de pronóstico con Kronos (FastAPI)
 services/engine     Ejecución y backtest con NautilusTrader
 packages/shared     Contratos compartidos (Pydantic)
-docs/               Propuesta y diagramas
-scripts/            Utilidades (board de GitHub)
+docs/               Propuesta, arquitectura, wiki y diagramas
+scripts/            Utilidades (board de GitHub, publicar la Wiki)
 ```
 
 ## Desarrollo local
@@ -34,12 +45,15 @@ uv run ruff check . && uv run ruff format --check .
 
 cd apps/web && pnpm install
 pnpm test && pnpm lint && pnpm dev
+
+cd apps/api && pnpm install          # API: ver apps/api/README.md
+pnpm db:migrate:local && pnpm db:seed:local && pnpm dev   # http://localhost:8787
 ```
 
 ## Levantar todo en local
 
 ```bash
-make up          # Supabase (CLI) + Redis + api + agents + engine + forecast (CPU)
+make up          # motor: Redis + agents + engine + forecast (CPU)
 make up-mps      # igual, con forecast nativo en la Mac (Metal); luego `make forecast-mps`
 make web         # frontend con hot reload
 make ps          # estado y health
@@ -49,18 +63,17 @@ make down        # detener
 | Servicio | URL |
 |---|---|
 | web | http://localhost:3000 |
-| api | http://localhost:8000/health |
+| API (Worker local) | http://localhost:8787/api/health |
 | forecast | http://localhost:8001/health |
 | Redis | localhost:6379 |
-| Supabase (API / Studio) | http://localhost:54321 · http://localhost:54323 |
 
 Copia `.env.example` a `.env` (`make up` lo hace la primera vez) y llena las llaves.
 
-Base de datos: Supabase local con su CLI (`supabase start`, `supabase db reset`, `supabase test db`). Detalles, usuario demo y esquema en [supabase/README.md](supabase/README.md).
+Base de datos: D1 local de `wrangler` (`pnpm db:migrate:local`, `pnpm db:seed:local` en `apps/api`). Guía completa en [docs/final/setup-local.md](docs/final/setup-local.md). Mientras se fusionan #116 y #117, `make up` todavía levanta Supabase local para el código que no se ha migrado.
 
 ## Imágenes en Docker Hub
 
-El workflow `.github/workflows/docker-publish.yml` construye (linux/amd64 y linux/arm64) y publica `trading-maxxing-{web,api,agents,forecast,engine}`. En push a `develop` publica `sha-<commit>` y `develop`; en un tag `vX.Y.Z` publica `X.Y.Z` y `latest`. Sin los secrets solo construye y lo avisa en el resumen del job (no falla).
+El workflow `.github/workflows/docker-publish.yml` construye (linux/amd64 y linux/arm64) y publica las imágenes del motor (`trading-maxxing-{agents,forecast,engine}`, entre otras). En push a `develop` publica `sha-<commit>` y `develop`; en un tag `vX.Y.Z` publica `X.Y.Z` y `latest`. Sin los secrets solo construye y lo avisa en el resumen del job (no falla).
 
 Configurar los secrets:
 

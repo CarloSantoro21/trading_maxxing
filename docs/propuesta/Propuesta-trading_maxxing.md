@@ -172,62 +172,68 @@ investigación → laboratorio → shadow → activa → en observación → ret
 
 ## 4. Stack tecnológico
 
-- Frontend: Next.js 15 (App Router), TypeScript, Tailwind, shadcn/ui y Recharts; se publica como sitio estático en Cloudflare Pages (plan gratuito).
-- Backend: FastAPI con Pydantic sobre Python 3.12.
-- Estrategias y agentes: worker en Python 3.12 con numpy y pandas. LLM vía Groq (gpt-oss-20b) detrás de una interfaz LLMClient, y noticias de CryptoPanic.
-- Pronóstico: Kronos-small con PyTorch en CPU, servido con FastAPI.
-- Motor de trading: NautilusTrader.
-- Base de datos y autenticación: Supabase (Postgres, Auth, Realtime y Row Level Security), local con su CLI durante el desarrollo y en el plan gratuito para la entrega.
-- Mensajería y cache: Redis (Azure Cache for Redis Basic C0 en la nube, contenedor en local).
-- Contenedores: Docker y Docker Compose, con las imágenes publicadas en Docker Hub.
-- Infraestructura como código: Terraform con el provider `azurerm` y módulos por recurso (repo separado `trading_maxxing-infra`, ver #26).
-- CI/CD: GitHub Actions, con autenticación a Azure por OIDC (sin llaves de larga duración) y a Cloudflare por API Token.
-- Nube: Azure App Service Plan Linux B1 con dos Web Apps de contenedor (`tm-api-<env>` y `tm-agents-<env>`), Application Insights + Log Analytics Workspace y Azure Cache for Redis (Basic C0). El frontend se publica en Cloudflare Pages.
-- Calidad: pytest y pytest-cov, Vitest y React Testing Library, ruff, ESLint y Prettier.
+> **Versión 3 (21 de noviembre de 2026).** Arquitectura final: todo lo público en **Cloudflare, plan gratuito**, sin Supabase, y el **motor en la Mac**. Sustituye a la versión con Azure App Service (17 de noviembre) y a la original con AWS ECS. Detalle en [`docs/arquitectura/cloudflare.md`](../arquitectura/cloudflare.md).
 
-Por qué Azure App Service y no Kubernetes. Son dos Web Apps de contenedor (api y agents) sin requisitos de orquestación avanzada. AKS cobra la administración del plano de control y agrega complejidad operativa; App Service en plan Linux B1 cubre lo que necesitamos con menos costo y menos piezas, y permite ver CPU y memoria del plan directamente desde el portal de Azure (lo que evalúa la rúbrica).
+- Frontend: Next.js 15 (App Router), TypeScript, Tailwind, shadcn/ui y Recharts; export estático en Cloudflare Pages (`tm-web-dev` y `tm-web`).
+- API: Cloudflare Workers con Hono + TypeScript (`apps/api`, Workers `tm-api-dev` y `tm-api`). Pages reenvía `/api/*` al Worker por un service binding (`API`), así que web y API comparten origen.
+- Base de datos: Cloudflare D1 (`tm-dev` y `tm-prod`); el aislamiento por usuario lo hace la API.
+- Login: Cloudflare Access (Zero Trust) con allowlist de correos y One-time PIN; roles `admin` y `member` en D1.
+- Estrategias y agentes: Python 3.12 con numpy y pandas.
+- Pronóstico: Kronos-small con PyTorch (CPU, o Metal/MPS nativo en la Mac).
+- Motor de trading: NautilusTrader contra Binance Spot Testnet.
+- Mensajería: Redis en un contenedor de la Mac.
+- LLM y noticias: opcionales y **apagados por defecto** (`NEWS_ENABLED`, `EXPLAINER_ENABLED`, `LLM_PROVIDER`: none, Workers AI, Groq u OpenAI-compatible; noticias por RSS).
+- Contenedores: Docker y Docker Compose; imágenes del motor en Docker Hub y **Watchtower** en la Mac para actualizarlas.
+- Infraestructura como código: Terraform con el provider `cloudflare/cloudflare` en el repo separado `trading_maxxing-infra` (D1, Pages y Access por ambiente).
+- CI/CD: GitHub Actions + `wrangler`, con environments `dev` y `prod` (prod con aprobación).
+- APM y métricas: Workers Observability (logs, trazas, errores, requests y CPU time).
+- Calidad: pytest y pytest-cov, Vitest (también dentro del runtime de Workers), React Testing Library, Playwright, ruff y ESLint.
 
-Por qué Terraform. Toda la infraestructura queda versionada y revisada por pull request. El CI corre `terraform plan` en cada PR que toca `infra/`, y staging se puede destruir y recrear para ahorrar costos.
+Por qué Cloudflare. La rúbrica acepta Azure Portal o Cloudflare. Cloudflare cubre frontend, API, base de datos, login, APM y métricas en el plan gratuito, sin tarjeta ni créditos que se acaben, y `wrangler` despliega y hace rollback en segundos.
+
+Por qué el motor corre en la Mac. Python en Workers corre sobre Pyodide y no carga paquetes nativos como NautilusTrader o PyTorch; Workers no tiene procesos permanentes (el `TradingNode` necesita websockets abiertos todo el día) y el plan gratuito da 128 MB de memoria y 10 ms de CPU por invocación. Cuando paguemos Workers Paid (5 USD al mes), el motor se puede mover a **Cloudflare Containers** con las mismas imágenes, un Durable Object supervisor, Redis en contenedor o Queues y métricas de CPU y memoria por contenedor; hay que cuidar la región, porque Binance bloquea IPs de EE. UU.
+
+Por qué Terraform. Toda la infraestructura queda versionada y revisada por pull request, y los ambientes se pueden destruir y recrear.
 
 ## 5. Recursos que se van a crear
 
-### 5.0 Local primero
+### 5.0 Dónde corre cada cosa
 
-Hasta demostrar que el sistema es funcional y rentable, **todo corre en localhost** (una Mac con Apple M5 y 16 GB): `docker compose` levanta api, agents, engine y Redis; Supabase corre con su CLI local; el frontend con `pnpm dev`; y el servicio forecast puede correr nativo para usar la aceleración Metal (MPS) de PyTorch. El paper trading continuo contra Binance Testnet se hace desde ahí.
+- **Cloudflare (plan gratuito):** Pages, Workers, D1, Access y Observability, con un ambiente dev y uno prod.
+- **Mac de Carlo:** `docker compose` con agents, engine, forecast y Redis, más Watchtower. El motor **solo hace conexiones salientes**: a Binance Spot Testnet y a `/internal/*` del Worker (header `X-Service-Token` y service token de Access). No abre puertos ni usa túneles.
+- **Desarrollo local:** `wrangler dev` (API con D1 local), `pnpm dev` (web) y `docker compose` (motor).
 
-La nube solo se usa para la entrega final o si la validación go/no-go da **go** (criterios: ≥ 5 días de paper trading sin caídas, estrategias aprobadas por walk-forward y Monte Carlo, y P&L neto positivo con drawdown dentro del límite). Los issues de despliegue llevan la etiqueta `deploy-diferido`.
-
-Costo estimado del despliegue en Azure (region cercana, dos App Service Plan B1 ~13 USD/mes cada uno + Azure Cache for Redis Basic C0): del orden de 30-45 USD al mes con los dos ambientes encendidos. La cuenta es **Azure for Students** (correo del ITESO, 100 USD de crédito, sin tarjeta); el ambiente de dev se puede destruir fuera de ventanas de demo. El frontend (Cloudflare Pages) y Supabase (plan gratuito) cuestan 0.
-
+El deploy ya no depende de la validación go/no-go (#44): la rúbrica lo exige. **Costo en la nube: 0 USD.**
 
 ![Diagrama de infraestructura](https://raw.githubusercontent.com/CarloSantoro21/trading_maxxing/main/docs/propuesta/img/infra.png)
 
-| Recurso | Tipo | Propósito |
-|---|---|---|
-| `rg-tm-<env>` | Azure Resource Group | Aísla los recursos de dev y prod |
-| `asp-tm-<env>` | App Service Plan Linux B1 | Soporta las dos Web Apps del ambiente |
-| `tm-api-<env>` | Web App (Linux Container) | FastAPI; URL `https://tm-api-<env>.azurewebsites.net` |
-| `tm-agents-<env>` | Web App (Linux Container) | Orquestador, engine y forecast en el mismo contenedor |
-| `appi-tm-<env>` | Application Insights | APM: traces, errores y requests para la demo |
-| `log-tm-<env>` | Log Analytics Workspace | Backend de App Insights y logs de App Service |
-| `redis-tm-<env>` | Azure Cache for Redis Basic C0 | Canal de decisiones y cola de jobs |
-| App settings / Key Vault | Variables marcadas `sensitive` | Claves de Binance Testnet, Supabase, Groq y la API de noticias |
-| GitHub Environment `dev` y `prod` | Secrets + OIDC federation | Deploy desde GitHub Actions sin llaves (ver #39) |
-| Proyecto de Supabase (dev y prod) | SaaS | Postgres, Auth, Realtime y RLS |
-| `tm-web-dev` y `tm-web` | Cloudflare Pages | Frontend Next.js estático |
-| trading-maxxing-web, -api, -agents, -forecast, -engine | Repositorios en Docker Hub | Imágenes versionadas |
+Fuente: [infra.py](infra.py).
 
-Todo lo de Azure se define en el repo separado `trading_maxxing-infra` con Terraform (provider `azurerm`), un módulo por recurso y un entorno por carpeta (`envs/dev` y `envs/prod`). En local, `docker-compose.yml` levanta los 5 servicios y Redis, conectados a un proyecto de Supabase de desarrollo.
+| Recurso | Tipo | dev | prod |
+|---|---|---|---|
+| Frontend | Cloudflare Pages | `tm-web-dev` (rama `develop`) | `tm-web` (rama `main`) |
+| API | Cloudflare Worker (Hono + TypeScript) | `tm-api-dev` | `tm-api` |
+| Base de datos | Cloudflare D1 | `tm-dev` | `tm-prod` |
+| Login | Access app delante de Pages (allowlist + OTP) | sí | sí |
+| Acceso del motor | Access app sobre `/internal/*` con service token | sí | sí |
+| APM | Workers Observability | sí | sí |
+| GitHub Environments | Secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `DOCKERHUB_*` | `dev` | `prod` (required reviewers) |
+| Imágenes | Docker Hub `trading-maxxing-{agents,engine,forecast}` | canal dev | canal prod |
+| Motor | Mac: docker compose + Watchtower | `TM_API_URL` → `tm-api-dev` | `TM_API_URL` → `tm-api` |
+
+D1, Pages y Access se definen con Terraform en el repo `trading_maxxing-infra` (`envs/dev` y `envs/prod`); el código del Worker y sus migraciones los despliega `wrangler` desde el pipeline.
 
 ### 5.1 Diagrama de deployment
 
 ![Diagrama de deployment](https://raw.githubusercontent.com/CarloSantoro21/trading_maxxing/main/docs/propuesta/img/deploy.png)
 
+Fuente: [deploy.py](deploy.py).
+
 El pipeline corre en GitHub Actions:
 
-- En cada pull request a develop o main: lint (ruff y ESLint), pruebas de Python con pytest (cobertura mínima de 70 %) y pruebas del frontend con Vitest en paralelo, y build de las 5 imágenes sin publicarlas. Si el PR toca `infra/`, también corre `terraform fmt`, `validate` y `plan`.
-- Al hacer merge a develop: lo anterior, más el push de las imágenes a Docker Hub con los tags develop y `sha-<commit>`. No hay deploy automático mientras el proyecto esté en modo local.
-- Al crear un tag vX.Y.Z en main: push a Docker Hub con los tags X.Y.Z y latest, y deploy a Azure App Service y Cloudflare Pages en el environment `prod`, con aprobación manual (GitHub Environments → *required reviewers*).
+- En cada pull request a develop o main: lint (ruff, ESLint y tsc), pruebas de Python con pytest (cobertura mínima de 70 %), pruebas de `apps/api` y `apps/web` con Vitest y build de las imágenes y del export estático, sin publicar.
+- Al hacer merge a develop: migraciones de D1 y `wrangler deploy --env dev` del Worker, `wrangler pages deploy` a `tm-web-dev`, push de las imágenes del motor a Docker Hub (Watchtower las baja en la Mac) y UAT con Playwright contra dev.
+- Al hacer merge a main: el environment `prod` espera la aprobación de un revisor (*required reviewers*) y después despliega el Worker y D1 de producción y `tm-web`.
 
 #### Pruebas unitarias
 
@@ -237,9 +243,9 @@ El pipeline corre en GitHub Actions:
 - RiskAgent: tamaño de posición por nivel de riesgo, stop-loss y take-profit, y bloqueo por drawdown (pytest).
 - AgentOrchestrator y PortfolioAllocator: capital por sleeve, límites de portafolio y sleeves en shadow sin órdenes (pytest con mocks).
 - LifecycleMonitor y StrategyRegistry: transiciones automáticas por p95 y p99 del Monte Carlo, y promociones solo manuales (pytest).
-- NewsAgent: clasificación con un LLM simulado (pytest y respx).
+- NewsAgent: clasificación con un LLM simulado (pytest y respx); en producción el LLM está apagado por defecto.
 - AgenticStrategy y BacktestService: órdenes correctas y reporte reproducible con BacktestEngine y datos de prueba (pytest y Nautilus).
-- API: validación de perfiles, endpoints y autenticación (pytest y TestClient).
+- API (`apps/api`): validación, endpoints, auth con Access y filtros por usuario (Vitest dentro del runtime de Workers con D1 local).
 - Web: formulario de perfil y componentes del dashboard (Vitest y React Testing Library).
 
 Ningún pull request se fusiona con pruebas fallidas o con cobertura de Python menor a 70 %.
@@ -247,7 +253,8 @@ Ningún pull request se fusiona con pruebas fallidas o con cobertura de Python m
 #### Docker Hub
 
 - Una imagen por servicio: trading-maxxing-web, trading-maxxing-api, trading-maxxing-agents, trading-maxxing-forecast y trading-maxxing-engine.
-- Tags: `sha-<commit>` para trazabilidad, develop para staging, y X.Y.Z y latest para producción.
+- Las imágenes que se despliegan son las del motor (agents, engine y forecast): la API va en Workers y el frontend en Pages.
+- Tags: `sha-<commit>` para trazabilidad y un tag por canal (dev y prod) que sigue Watchtower en la Mac.
 - Builds multi-stage. La imagen engine parte de la imagen oficial de NautilusTrader y la imagen forecast descarga los pesos de Kronos durante el build para arrancar rápido.
 - Las credenciales viven en GitHub Secrets (DOCKERHUB_USERNAME y DOCKERHUB_TOKEN).
 
@@ -269,11 +276,11 @@ Los commits siguen Conventional Commits (feat:, fix:, test:, ci:, docs:), cada p
 
 El plan está en el GitHub Project Board del repositorio (https://github.com/users/CarloSantoro21/projects/2), con columnas Backlog, To Do, In Progress, In Review y Done. Cada issue tiene descripción, criterios de aceptación, etiquetas por área (frontend, backend, agents, ml, trading-engine, devops, testing, docs, database) y milestone. El calendario se ajustó en la versión 2:
 
-- M1, Fundaciones e infraestructura (hasta el 11 de noviembre): ramas protegidas, estructura del monorepo, Docker Compose, CI básico, Supabase y Wiki.
+- M1, Fundaciones e infraestructura (hasta el 11 de noviembre): ramas protegidas, estructura del monorepo, Docker Compose, CI básico, base de datos y Wiki.
 - M2, Motor, pronóstico y estrategias (hasta el 18 de noviembre): datos de mercado, servicio de Kronos, integración con Nautilus, TrendAgent, IntradayMomentumAgent y laboratorio de backtest con Monte Carlo.
 - M3, Agentes, simulación y API (hasta el 24 de noviembre): KronosAgent, NewsAgent, SimulationGate, RiskAgent, orquestador con sleeves, PortfolioAllocator, ciclo de vida de estrategias (registro, shadow y monitor) y API REST.
 - M4, Frontend y validación local (hasta el 1 de diciembre): dashboard, onboarding, backtests en la interfaz, pruebas end-to-end en local y validación go/no-go con paper trading continuo.
-- M5, Entrega: deploy y demo (hasta el 6 de diciembre): Terraform de Azure, CD del backend a Azure App Service (dev y prod con aprobación), frontend en Cloudflare Pages (dev y prod), Application Insights conectado, documentación y demo final.
+- M5, Entrega: deploy y demo (hasta el 6 de diciembre): Terraform de Cloudflare (D1, Pages y Access), API en Workers con D1 (dev y prod con aprobación), frontend en Cloudflare Pages (dev y prod), motor en la Mac con Docker Hub y Watchtower, Workers Observability, documentación y demo final.
 
 Issues: https://github.com/CarloSantoro21/trading_maxxing/issues
 
@@ -285,8 +292,9 @@ Issues: https://github.com/CarloSantoro21/trading_maxxing/issues
 - Contaminación de Kronos: sus datos de preentrenamiento llegan a junio de 2024, así que solo se evalúa de julio de 2024 en adelante.
 - Comisiones: en Binance Spot cada operación cuesta ~0.1 % por lado. Una estrategia que opera a diario puede perder buena parte de su ventaja en comisiones; el laboratorio las incluye siempre y compara cada estrategia contra comprar y mantener.
 - Señales malas pueden generar pérdidas: operamos solo en testnet, la SimulationGate bloquea operaciones con valor esperado negativo y el RiskAgent aplica el drawdown máximo y un botón de paro.
-- Costos en la nube: la cuenta es Azure for Students (100 USD de crédito, sin tarjeta). Dos planes App Service B1 (~13 USD/mes cada uno) y Azure Cache for Redis Basic C0; `terraform destroy` del ambiente de dev fuera de ventanas de demo.
-- Límites de las APIs de noticias y del LLM: cache en Redis, llamadas solo al cierre de vela y una interfaz LLMClient para cambiar de proveedor.
+- Costos en la nube: todo cabe en el plan gratuito de Cloudflare (0 USD). El motor corre en la Mac; para moverlo a la nube, Cloudflare Containers con Workers Paid (5 USD/mes).
+- La Mac apagada o dormida detiene el motor: `caffeinate`, reinicio automático de los contenedores y un heartbeat que la web muestra como "motor en línea / desconectado".
+- Límites de las APIs de noticias y del LLM: apagados por defecto, noticias por RSS gratis, cache en Redis, llamadas solo al cierre de vela y una interfaz LLMClient para cambiar de proveedor.
 - Calendario ajustado: las estrategias deterministas se implementan antes que las dependientes de modelos, y el ExplainerAgent y la proyección de metas son opcionales si falta tiempo.
 
 trading_maxxing es un proyecto académico. Opera solo en entornos de prueba y no constituye asesoría financiera.

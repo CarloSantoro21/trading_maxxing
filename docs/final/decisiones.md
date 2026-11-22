@@ -14,7 +14,9 @@ Bitácora corta de las decisiones importantes del proyecto. No sustituye los PRs
 
 Referencias: propuesta sección 2.2; [`services/engine/README.md`](../../services/engine/README.md).
 
-## 2. Supabase para Postgres, Auth y Realtime
+## 2. ~~Supabase para Postgres, Auth y Realtime~~ (superada por la #12)
+
+> **Superada el 21-nov-2026 por la ADR #12** (todo en Cloudflare: D1, Access y polling en lugar de Postgres, Supabase Auth y Realtime). Se conserva por trazabilidad.
 
 - **Contexto.** Necesitamos Postgres, login, un canal de eventos para el dashboard y RLS para aislar usuarios. Alternativas: Firebase, Postgres crudo + custom auth + WebSocket propio, Hasura.
 - **Decisión.** Supabase local con su CLI durante desarrollo (sin límites del plan gratuito ni pausas) y plan gratuito para la entrega. Row Level Security en todas las tablas, dos roles (`admin`, `member`), registro público apagado.
@@ -41,7 +43,7 @@ Referencias: propuesta secciones 2.1 y 2.2; [`services/forecast/README.md`](../.
 
 ## 4. ~~Local primero, nube diferida hasta go/no-go~~ (superada por la #11)
 
-> **Superada el 17-nov-2026 por la ADR #11** (Azure App Service + Cloudflare Pages, deploy obligatorio). Se conserva por trazabilidad.
+> **Superada el 17-nov-2026 por la ADR #11** (deploy obligatorio), que a su vez quedó superada por la **ADR #12** (Cloudflare + motor en la Mac). Se conserva por trazabilidad.
 
 - **Contexto (antes del 17-nov-2026).** El proyecto es académico con presupuesto limitado. AWS incluso en Fargate ARM cuesta ~100–120 USD/mes; sin validación del sistema, ese dinero no aporta.
 - **Decisión (antes).** Todo corre en localhost durante el desarrollo (Mac M5 con 16 GB RAM). La nube solo se activa para la entrega o si la validación **go/no-go** da `go`, con criterios previos (≥ 5 días de paper trading sin caídas, estrategias aprobadas y P&L neto positivo con drawdown dentro del límite).
@@ -94,13 +96,13 @@ Referencias: PRs #78, #83, #86; [`supabase/README.md`](../../supabase/README.md)
 ## 8. Export estático del frontend en Cloudflare Pages
 
 - **Contexto.** Hostear Next.js con SSR implica correr Node; el plan gratuito de Cloudflare Pages solo sirve archivos estáticos.
-- **Decisión.** Configurar `next.config.ts` con `output: "export"`. Todo lo dinámico (sesión, lecturas y escrituras a Supabase) se hace en el navegador contra la API y Supabase Realtime.
+- **Decisión.** Configurar `next.config.ts` con `output: "export"`. Todo lo dinámico se hace en el navegador contra `/api/*` del mismo dominio (desde la ADR #12; antes, contra la API y Supabase Realtime).
 - **Consecuencias.**
   - No hay route handlers, middleware ni server actions.
   - `next/image` corre con `images.unoptimized`.
   - `scripts/check-export.mjs` valida el export en CI.
   - La imagen Docker sirve el export con `nginxinc/nginx-unprivileged` (`apps/web/nginx.conf` imita a Cloudflare Pages, con reescritura de `/login`).
-  - Variables `NEXT_PUBLIC_*` se incrustan al build: cada entorno requiere su propio build.
+  - Con la ADR #12 la web llama a `/api/*` relativo y Pages lo reenvía al Worker por service binding: el mismo build sirve para dev y prod salvo el indicador de ambiente y SHA.
 
 Referencias: PR #77; [`apps/web/README.md`](../../apps/web/README.md).
 
@@ -118,7 +120,9 @@ Referencias: PR #77; [`apps/web/README.md`](../../apps/web/README.md).
 - **Decisión.** Git Flow simplificado (ver [`CONTRIBUTING.md`](../../CONTRIBUTING.md)), Conventional Commits, CI obligatorio en PR, `develop` y `main` protegidas. Squash a `develop`, merge commit a `main`, tag `vX.Y.Z` tras cada release.
 - **Consecuencias.** `main` recibe solo releases; `develop` siempre está desplegable; los PRs son unidades revisables. Como `develop` no es la rama por defecto, `Closes #N` no cierra issues automáticamente y se hace a mano al fusionar.
 
-## 11. Migración a Azure App Service + Cloudflare Pages (supersede #4)
+## 11. ~~Migración a Azure App Service + Cloudflare Pages (supersede #4)~~ (superada por la #12)
+
+> **Superada el 21-nov-2026 por la ADR #12.** Nunca se aplicó: se cambió antes de crear recursos en Azure. Se conserva por trazabilidad.
 
 - **Fecha.** 2026-11-17.
 - **Contexto.** Llegó la rúbrica oficial del curso (ver [`docs/rubrica.md`](../rubrica.md), PR #104). Solo acepta **Azure Portal o Cloudflare** como nube, pide **dos ambientes (dev y prod)** en el repo del backend y en el del frontend, evalúa **APM** y **métricas del App Service Plan** (CPU, memoria, requests) y exige un **repo separado de Terraform**. El deploy ya no depende del go/no-go: cuenta como entregable.
@@ -136,10 +140,41 @@ Referencias: PR #77; [`apps/web/README.md`](../../apps/web/README.md).
   - Riesgo: la cuenta **Azure for Students** (100 USD de crédito) basta para un plan B1 por ambiente durante la demo; después hay que destruir con Terraform para no gastar el crédito.
 - **Alternativas descartadas.** Mantener AWS (no cumple la rúbrica); mover todo a Cloudflare Workers (no soporta los contenedores del backend); Azure Container Apps (más caro y con escalado innecesario para la demo).
 
-Referencias: [`docs/rubrica.md`](../rubrica.md); [`arquitectura.md §Despliegue`](arquitectura.md#despliegue-azure-app-service--cloudflare-pages); [`pipeline.md`](pipeline.md); issues [#26](https://github.com/CarloSantoro21/trading_maxxing/issues/26), [#27](https://github.com/CarloSantoro21/trading_maxxing/issues/27), [#29](https://github.com/CarloSantoro21/trading_maxxing/issues/29), [#39](https://github.com/CarloSantoro21/trading_maxxing/issues/39), [#44](https://github.com/CarloSantoro21/trading_maxxing/issues/44), [#45](https://github.com/CarloSantoro21/trading_maxxing/issues/45).
+Referencias: [`docs/rubrica.md`](../rubrica.md); issues [#26](https://github.com/CarloSantoro21/trading_maxxing/issues/26), [#27](https://github.com/CarloSantoro21/trading_maxxing/issues/27), [#29](https://github.com/CarloSantoro21/trading_maxxing/issues/29), [#39](https://github.com/CarloSantoro21/trading_maxxing/issues/39), [#44](https://github.com/CarloSantoro21/trading_maxxing/issues/44), [#45](https://github.com/CarloSantoro21/trading_maxxing/issues/45).
+
+## 12. Todo en Cloudflare (plan gratuito) + motor en la Mac (supersede #2 y #11)
+
+- **Fecha.** 2026-11-21.
+- **Contexto.** Azure for Students tiene crédito limitado y el App Service Plan B1 por ambiente, más Redis y Key Vault, se lo come en semanas; además había que sostener Supabase aparte. La rúbrica acepta **Cloudflare** como nube, y Cloudflare cubre frontend, API, base, login, APM y métricas en el **plan gratuito**.
+- **Decisión.**
+  - **Frontend**: Cloudflare **Pages**, proyectos `tm-web-dev` (rama de producción `develop`) y `tm-web` (`main`).
+  - **API**: Cloudflare **Workers** con **Hono + TypeScript** (`apps/api`, PR #120), Workers `tm-api-dev` y `tm-api`. Reemplaza a `services/api` (FastAPI) y a PostgREST. Contrato en [`docs/arquitectura/api.md`](../arquitectura/api.md).
+  - **Base**: **D1** (`tm-dev`, `tm-prod`), port de las migraciones de Supabase a SQLite; RLS pasa a filtros por usuario en la API.
+  - **Login**: Cloudflare **Access** (allowlist + One-time PIN) delante de Pages. Pages reenvía `/api/*` al Worker por el **service binding `API`**: un solo origen, la cookie de Access funciona sin CORS.
+  - **APM y métricas**: **Workers Observability** (logs, trazas, errores) y el panel del Worker (requests, CPU time).
+  - **Motor**: agents, engine (NautilusTrader), forecast (Kronos) y Redis en la **Mac de Carlo** con `docker compose`, imágenes de Docker Hub y **Watchtower**. Solo conexiones salientes a Binance Spot Testnet y a `/internal/*` (service token de Access + `X-Service-Token`).
+  - **IaC**: Terraform `cloudflare/cloudflare` en [`trading_maxxing-infra`](https://github.com/CarloSantoro21/trading_maxxing-infra) (D1, Pages, Access).
+- **Consecuencias.**
+  - Costo en la nube: **0 USD**. No hay que destruir nada después de la demo.
+  - El motor no puede ir en Workers: Python corre en Pyodide sin paquetes nativos (NautilusTrader, PyTorch), no hay procesos permanentes, 128 MB de memoria y 10 ms de CPU por invocación en el plan gratuito. Ver [`cloudflare.md` §4](../arquitectura/cloudflare.md).
+  - Workers no reporta memoria: el criterio de métricas se cubre con requests y CPU time del Worker más `docker stats` de la Mac (riesgo a confirmar con el profesor).
+  - Realtime desaparece: el dashboard hace *polling*. Los comandos `start` / `stop` / `kill` y los backtests en cola pasan de Redis a tablas de D1 que el motor lee con *polling*.
+  - Si la Mac se apaga, el motor se detiene; la web lo muestra como "motor desconectado" por el latido.
+  - **Cuando haya presupuesto**: Cloudflare Containers (Workers Paid, 5 USD al mes) con las mismas imágenes, un Durable Object supervisor, Redis en contenedor o Queues, service binding interno y métricas de CPU y memoria por contenedor; cuidando la región por el bloqueo de Binance a IPs de EE. UU. Ver [`cloudflare.md` §5](../arquitectura/cloudflare.md).
+- **Alternativas descartadas.** Seguir con Azure (crédito insuficiente, Supabase aparte); Cloudflare Containers desde ya (requiere plan de pago); túnel de Cloudflare hacia la Mac para exponer la API (innecesario: el motor solo sale).
+
+Referencias: [`docs/arquitectura/cloudflare.md`](../arquitectura/cloudflare.md); [`arquitectura.md §Despliegue`](arquitectura.md#despliegue-cloudflare--motor-en-la-mac); [`pipeline.md`](pipeline.md); issues #115, #116, #117, #26, #27, #29, #45.
+
+## 13. LLM y noticias opcionales, apagados por defecto
+
+- **Fecha.** 2026-11-20 (issue #118, PR #119).
+- **Contexto.** Depender de Groq o de otro proveedor de LLM agrega costo, llaves y un punto de falla que no aporta a la rúbrica ni a la decisión de trading.
+- **Decisión.** `NewsAgent` y `ExplainerAgent` quedan apagados por defecto (`NEWS_ENABLED=false`, `EXPLAINER_ENABLED=false`, `LLM_PROVIDER=none`). Si se prenden, las noticias vienen de RSS gratis (o CryptoPanic) y el LLM puede ser Workers AI, Groq o un endpoint compatible con OpenAI. Un admin los prende en caliente con `PUT /api/admin/settings`.
+- **Consecuencias.** Ninguna estrategia, ni el riesgo, ni la SimulationGate dependen del LLM; el sistema corre completo sin llaves de terceros salvo Binance Testnet.
 
 ## Decisiones aplazadas
 
-- **ExplainerAgent (LLM)**: queda fuera del camino de decisión, depende de Groq. Issue [#37](https://github.com/CarloSantoro21/trading_maxxing/issues/37).
+- **ExplainerAgent (LLM)**: opcional y apagado por defecto (ADR #13). Issue [#37](https://github.com/CarloSantoro21/trading_maxxing/issues/37).
+- **Motor en Cloudflare Containers**: cuando haya plan de pago (ADR #12).
 - **Caché de KV para Kronos**: opcional. Issue [#62](https://github.com/CarloSantoro21/trading_maxxing/issues/62).
 - **Skill `nueva-estrategia` para Claude Code**: opcional. Issue [#59](https://github.com/CarloSantoro21/trading_maxxing/issues/59).

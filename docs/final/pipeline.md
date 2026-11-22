@@ -2,138 +2,119 @@
 
 Estado de los pipelines. Las fuentes son los workflows en [`.github/workflows/`](../../.github/workflows), la guía de contribución en [`CONTRIBUTING.md`](../../CONTRIBUTING.md) y la [rúbrica oficial del curso](../rubrica.md).
 
-> **Nota (17-nov-2026).** La rúbrica exige **dos ambientes** por repo (dev y prod), despliegue a **Azure App Service** (backend) y **Cloudflare Pages** (frontend), **UAT** (Playwright) y **cobertura** en el pipeline del backend, y un **repo separado de Terraform** (`trading_maxxing-infra`). El estado actual de cada criterio está en [`docs/estado-del-proyecto.md`](../estado-del-proyecto.md).
+> **Arquitectura final (21-nov-2026).** Todo lo público va a **Cloudflare, plan gratuito**: el backend es el Worker `tm-api-dev` / `tm-api` (Hono + D1) y el frontend, Pages `tm-web-dev` / `tm-web`. El motor (agents, engine, forecast) se publica a **Docker Hub** y lo actualiza **Watchtower** en la Mac. La rúbrica pide **dos ambientes** (dev y prod), **UAT** y **cobertura** en el pipeline del backend, **aprobación** antes de prod y un **repo separado de Terraform** (`trading_maxxing-infra`). El estado de cada criterio está en [`docs/rubrica.md`](../rubrica.md) §4; los deploys a Cloudflare son los issues #27 y #45.
 
 ## Resumen
 
 | Evento | Workflow | Qué hace |
 |---|---|---|
-| PR a `develop` o `main` | [`ci.yml`](../../.github/workflows/ci.yml) | Lint, tipos, pruebas unitarias con **cobertura ≥ 70 %**, build (sin publicar) de las 5 imágenes. |
-| PR que toca `supabase/` | [`db.yml`](../../.github/workflows/db.yml) | `supabase db start` + `supabase test db` (pgTAP). |
-| PR que toca `infra/` | [`terraform.yml`](../../.github/workflows/terraform.yml) | `fmt`, `init -backend=false`, `validate`, `tflint`. *(Se retira cuando la infra viva solo en `trading_maxxing-infra`.)* |
-| Push a `develop` | `ci.yml` + `docker-publish.yml` + deploy dev | CI completo + build multi-arch y push a Docker Hub (`develop`, `sha-<commit>`) + **deploy automático al ambiente dev** (backend en Azure App Service, frontend en Cloudflare Pages) + **UAT** con Playwright. |
-| Push a `main` | `docker-publish.yml` + deploy prod | Build multi-arch y push a Docker Hub (`X.Y.Z`, `latest`) + **deploy a prod con aprobación manual** (environment `prod`, *required reviewer*). |
-| Manual | [`deploy-web.yml`](../../.github/workflows/deploy-web.yml) | Deploy del frontend a Cloudflare Pages con elección de ambiente (dev o prod). |
+| PR a `develop` o `main` | [`ci.yml`](../../.github/workflows/ci.yml) | Python (`ruff`, `pytest --cov` ≥ 70 %), API Worker (`tsc`, `vitest --coverage` ≥ 70 % con JUnit, `wrangler deploy --dry-run`), Web (`eslint`, `tsc`, `vitest`, export estático) y build sin publicar de las imágenes. |
+| Push a `develop` | `ci.yml` + `docker-publish.yml` + deploy dev | CI completo + imágenes del motor a Docker Hub + **deploy automático a dev** (migraciones de D1 y `wrangler deploy --env dev`; `wrangler pages deploy` a `tm-web-dev`) + **UAT** con Playwright ([`uat.yml`](../../.github/workflows/uat.yml)). |
+| Push a `main` | deploy prod | **Espera la aprobación** del environment `prod` (*required reviewer*) y despliega Worker `tm-api` + D1 `tm-prod` y Pages `tm-web`; imágenes del canal prod a Docker Hub. |
+| Manual | [`deploy-web.yml`](../../.github/workflows/deploy-web.yml) | Deploy del frontend a Pages eligiendo ambiente. |
 | Semanal / manual | [`cleanup-branches.yml`](../../.github/workflows/cleanup-branches.yml) | Limpia ramas ya fusionadas. |
 
-Los workflows están diseñados para **fallar en verde** cuando faltan credenciales externas (Docker Hub, Cloudflare, Azure): dejan un aviso en el *job summary* y terminan `success`, en vez de bloquear PRs mientras no haya cuenta.
+Los workflows **fallan en verde** cuando faltan credenciales externas (Docker Hub, Cloudflare): dejan un aviso en el *job summary* y terminan `success`, en vez de bloquear PRs mientras no haya cuenta.
 
 ## CI principal (`ci.yml`)
 
-Corre en cada PR y en cada push a `develop` y `main`. Tres jobs en paralelo:
+Corre en cada PR y en cada push a `develop` y `main`. Jobs en paralelo:
 
-### Python
+### Python (motor)
 
 - `uv sync --all-packages --locked` instala el workspace.
-- `uv run ruff check .` y `uv run ruff format --check .` como lint y formato.
-- `uv run pytest --cov --cov-report=term --cov-report=xml` con **cobertura mínima de 70 %** (configurada en `pyproject.toml`). El archivo `coverage.xml` se sube como artefacto. **La rúbrica pide cobertura visible en el run** (10 pts para "UAT y cobertura" en el pipeline del backend).
+- `uv run ruff check .` y `uv run ruff format --check .`.
+- `uv run pytest --cov` con **cobertura mínima de 70 %** (`pyproject.toml`); `coverage.xml` como artefacto.
 
-### Web
+### API Worker (`apps/api`)
 
-- `pnpm install --frozen-lockfile`.
-- `pnpm lint` (ESLint), `pnpm typecheck` (`tsc --noEmit`), `pnpm test` (Vitest).
-- `pnpm build` genera el export estático en `apps/web/out/` y `pnpm check:export` verifica que todas las rutas de `src/app` tengan su HTML (y que no haya route handlers o segmentos dinámicos sin `generateStaticParams`).
+- `pnpm typecheck` (tsc estricto).
+- `pnpm test:coverage`: vitest **dentro del runtime de Workers con D1 local** (`@cloudflare/vitest-plugin`), cobertura istanbul ≥ 70 % y `reports/junit.xml`. Es lo que se enseña en la demo como "resultado de las pruebas unitarias".
+- `pnpm build` = `wrangler deploy --dry-run`: empaqueta el Worker sin publicarlo.
+
+### Web (`apps/web`)
+
+- `pnpm lint`, `pnpm typecheck`, `pnpm test` (Vitest).
+- `pnpm build` genera el export estático en `apps/web/out/` y `pnpm check:export` verifica que todas las rutas tengan su HTML.
 
 ### Docker
 
-Matriz con las 5 imágenes (`api`, `agents`, `forecast`, `engine`, `web`): `docker build` multi-stage sin publicar, con cache de GHA. Mantiene paridad con el build de producción del workflow `docker-publish`.
+Matriz con las imágenes, `docker build` multi-stage sin publicar y cache de GHA. Mantiene paridad con `docker-publish`.
 
-## Base de datos (`db.yml`)
+## Deploy del backend — Worker + D1 (#27)
 
-Solo corre si cambia algo en `supabase/`. Levanta Postgres con la CLI de Supabase (misma versión que en local, `2.117.0`), aplica migraciones + seed y corre las pruebas pgTAP de `supabase/tests/`:
+| Trigger | Ambiente | Qué se despliega | Aprobación |
+|---|---|---|---|
+| Push a `develop` | `dev` | `wrangler d1 migrations apply DB --env dev --remote` + `wrangler deploy --env dev` → `tm-api-dev` | automática |
+| Push a `main` | `prod` | mismas migraciones contra `tm-prod` + `wrangler deploy` → `tm-api` | **required reviewer** en el environment `prod` |
 
-- Schema, enums, RLS activada, triggers, índices y publicación Realtime.
-- Constraints: ranges, símbolos soportados, SL/TP del lado correcto, etc.
-- RLS con dos usuarios: A no ve ni modifica lo de B; `anon` no ve nada.
-- Ciclo de vida de `strategies`: transiciones permitidas y prohibidas, promociones solo humanas.
+Pasos:
+
+1. `CLOUDFLARE_API_TOKEN` y `CLOUDFLARE_ACCOUNT_ID` del environment (la "service connection" de la rúbrica). Si faltan, aviso y verde.
+2. Migraciones de D1 antes del deploy (son idempotentes y versionadas en `apps/api/migrations/`).
+3. `wrangler deploy` y verificación de `GET /api/health`.
+4. **UAT con Playwright** contra la URL de dev (issue [#28](https://github.com/CarloSantoro21/trading_maxxing/issues/28)).
+5. Rollback: `wrangler rollback` del Worker.
+
+## Motor — Docker Hub + Watchtower
+
+- `docker-publish.yml` construye **multi-arch** (`linux/amd64` + `linux/arm64`) `trading-maxxing-{agents,engine,forecast}`.
+- Tags: push a `develop` → `develop` + `sha-<commit>`; release a `main` → `X.Y.Z` + `latest`.
+- En la Mac, **Watchtower** vigila el canal configurado y reinicia solo el servicio cuya imagen cambió. El "deploy" del motor es, entonces, publicar la imagen.
+- Sin `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` el job construye sin publicar y lo avisa.
+- Rollback: fijar `TM_TAG` al tag anterior en la Mac.
+
+## Deploy del frontend — Cloudflare Pages (#45)
+
+| Trigger | Proyecto | Aprobación |
+|---|---|---|
+| Push a `develop` | `tm-web-dev` (rama de producción `develop`) | automática |
+| Push a `main` | `tm-web` (rama de producción `main`) | **required reviewer** en el environment `prod` |
+| Manual (`workflow_dispatch`) | el que se elija | según ambiente |
+
+- `pnpm check:export` corre antes del deploy: si falta alguna ruta, aborta.
+- `wrangler pages deploy out/ --project-name <proyecto> --branch <rama>`.
+- La web llama a `/api/*` relativo; Pages lo reenvía al Worker por el **service binding `API`**. No hay URLs del backend ni llaves en el bundle; solo el ambiente y el SHA para el indicador del header.
 
 ## Infraestructura — `trading_maxxing-infra`
 
-El Terraform vive en un **repo separado**, [`trading_maxxing-infra`](https://github.com/CarloSantoro21/trading_maxxing-infra), con provider **`azurerm`** (ver issues [#26](https://github.com/CarloSantoro21/trading_maxxing/issues/26) y [#39](https://github.com/CarloSantoro21/trading_maxxing/issues/39)). Dos stacks (`envs/dev` y `envs/prod`) crean:
+El Terraform vive en un **repo separado**, [`trading_maxxing-infra`](https://github.com/CarloSantoro21/trading_maxxing-infra), con provider **`cloudflare/cloudflare`** (issues [#26](https://github.com/CarloSantoro21/trading_maxxing/issues/26), [#39](https://github.com/CarloSantoro21/trading_maxxing/issues/39) y [#109](https://github.com/CarloSantoro21/trading_maxxing/issues/109)). Dos stacks (`envs/dev` y `envs/prod`) crean:
 
-- Resource Group por ambiente.
-- App Service Plan **B1** compartido para `api` y `agents` (Linux, contenedores).
-- Web Apps (`api`, `agents`) con imagen desde Docker Hub.
-- Application Insights + Log Analytics Workspace.
-- Azure Key Vault con los secretos (Supabase, Binance Testnet, Groq, CryptoPanic).
-- Azure Cache for Redis Basic C0.
+- La base **D1** (`tm-dev` / `tm-prod`).
+- El proyecto de **Pages** (`tm-web-dev` / `tm-web`) con el service binding `API` al Worker.
+- **Access**: la app web (allowlist + One-time PIN) y la app de `/internal/*` con el *service token* del motor.
 
-El workflow del repo de infra corre `terraform fmt`, `validate`, `plan` en cada PR (con OIDC federado hacia Azure) y `apply` al mergear a `main`. El `terraform.yml` que todavía queda en el monorepo (para el Terraform de AWS en `infra/`) se retira en cuanto la migración termine.
-
-## Docker Hub (`docker-publish.yml`)
-
-- Matriz con las 5 imágenes, build **multi-arch** (`linux/amd64` + `linux/arm64`) con QEMU y buildx.
-- Tags por evento:
-  - Push a `develop`: `develop` + `sha-<commit>`.
-  - Tag `vX.Y.Z` en `main`: `X.Y.Z` + `latest`.
-  - PR que toca el propio workflow: solo construye.
-- Sin `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` el job construye sin publicar y lo avisa en el *job summary*.
-
-Las imágenes publicadas se consumen desde **Azure App Service** (backend) y se pueden usar en local con `docker-compose.hub.yml` (ver [`setup-local.md`](setup-local.md) §5, opción C).
-
-## Deploy del backend — Azure App Service (`deploy-api.yml`, `deploy-agents.yml`)
-
-Dos ambientes, **dev** y **prod**, materializados como *GitHub Environments*:
-
-| Trigger | Ambiente | Imagen desplegada | Aprobación |
-|---|---|---|---|
-| Push a `develop` | `dev` | `trading-maxxing-api:sha-<commit>`, `trading-maxxing-agents:sha-<commit>` | automática |
-| Push a `main` | `prod` | `trading-maxxing-api:X.Y.Z`, `trading-maxxing-agents:X.Y.Z` | **required reviewer** en el environment `prod` |
-
-Pasos del job:
-
-1. Login a Azure con **OIDC federado** (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`).
-2. `az webapp config container set --docker-custom-image-name <imagen>` para cada Web App.
-3. `az webapp restart` y espera a que el `/health` responda 200.
-4. **UAT con Playwright** sobre la URL del ambiente (solo en dev, bloquea el merge a `main` si falla). La suite cubre el flujo login → onboarding → bot → trade → dashboard (issue [#28](https://github.com/CarloSantoro21/trading_maxxing/issues/28)).
-5. Smoke tests contra la API desplegada (`/health`, `/docs`, un `GET /strategies` autenticado).
-
-El job falla en verde si faltan credenciales de Azure (mismo patrón que Cloudflare).
-
-## Deploy del frontend — Cloudflare Pages (`deploy-web.yml`)
-
-Dos ambientes, **dev** y **prod**, como proyectos de Cloudflare Pages separados:
-
-| Trigger | Proyecto | Branch en Cloudflare | Aprobación |
-|---|---|---|---|
-| Push a `develop` | `trading-maxxing-dev` | `develop` | automática |
-| Push a `main` | `trading-maxxing-prod` | `main` | **required reviewer** en el environment `prod` |
-| Manual (`workflow_dispatch`) | el que se elija | el que se elija | según ambiente |
-
-- Verifica `CLOUDFLARE_API_TOKEN` y `CLOUDFLARE_ACCOUNT_ID`; si faltan, deja aviso y termina en verde.
-- Variables del build (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_API_URL`) se incrustan en el bundle: **cada ambiente requiere un build propio** (apunta a su backend en Azure).
-- `pnpm check:export` corre antes del push: si falta alguna ruta el deploy aborta.
-- `wrangler pages deploy out/ --project-name <proyecto> --branch <rama>`.
+Outputs: `d1_database_id`, `pages_project_name`, `access_team_domain`, `access_web_aud`, `motor_service_token_client_id` / `motor_service_token_client_secret`. El Worker en sí lo publica `wrangler` desde este repo, no Terraform. El `terraform.yml` del monorepo (Terraform de AWS en `infra/`) es histórico y se retira.
 
 ## Flujo de releases
 
-El flujo de ramas (ver [`CONTRIBUTING.md`](../../CONTRIBUTING.md)) es Git Flow simplificado:
-
 ```
-feature/<issue>-<descripcion>   ──(squash)──► develop   ──(release/X.Y.Z + merge)──► main ──(tag vX.Y.Z)──►
-                                     │                                                    │
-                                     ▼                                                    ▼
-                               deploy dev auto                                     deploy prod (aprobación)
-                           + UAT en Azure dev + web dev                        + Azure prod + web prod
+feature/<issue>-<descripcion> ──(squash)──► develop ──(PR)──► main
+                                               │                │
+                                               ▼                ▼
+                                    deploy dev automático   aprobación environment prod
+                                    tm-api-dev + tm-web-dev  ──► tm-api + tm-web
+                                    + imágenes develop       + imágenes X.Y.Z
+                                    + UAT (Playwright)
 ```
 
-1. **Feature** sale de `develop` con el número del issue (`feature/30-docs-final`).
-2. Se abre PR a `develop` con el **CI en verde** (ruff, pytest ≥ 70 %, eslint, tsc, vitest, build de las 5 imágenes). Si toca `supabase/` también corre `db.yml`. El PR se fusiona con **squash merge**.
-3. Al mergear a `develop`, el pipeline publica a Docker Hub (`sha-<commit>` y `develop`) y **despliega automáticamente al ambiente dev** (Azure App Service dev + Cloudflare Pages dev). Después corre la **UAT (Playwright)** contra la URL dev.
-4. Para una entrega se abre `release/X.Y.Z` desde `develop` para estabilizar. Se mergea a `main` con **merge commit** y a `develop` para no perder los parches.
-5. En `main` se crea el tag `vX.Y.Z`. El pipeline publica `X.Y.Z`/`latest` a Docker Hub y **espera aprobación** del *environment* `prod` para desplegar a Azure App Service prod y a Cloudflare Pages prod.
-6. **Hotfixes** urgentes: `hotfix/<descripcion>` sale de `main`, regresa a `main` y a `develop`.
+1. **Feature** sale de `develop` con el número del issue (`feature/7-wiki-cloudflare`).
+2. PR a `develop` con el **CI en verde**. Se fusiona con **squash merge**.
+3. Al mergear a `develop`, el pipeline publica las imágenes y **despliega a dev**; después corre la **UAT** contra la URL de dev.
+4. Para una entrega se abre PR `develop` → `main`. Al mergear, el job de prod **espera la aprobación** del environment `prod`.
+5. **Hotfixes** urgentes: `hotfix/<descripcion>` sale de `main`, regresa a `main` y a `develop`.
 
 Como `develop` no es la rama por defecto del repo, `Closes #N` no cierra los issues automáticamente. Se cierran a mano al fusionar.
 
 ### Tests y cobertura
 
-- **Python**: `pytest` con **cobertura mínima 70 %** (configurada en `pyproject.toml`). Suite completa: `uv run pytest --cov`. La cobertura cuenta para la rúbrica (criterio "pipeline del backend", 10 pts: UAT **y** cobertura).
-- **Web**: Vitest + React Testing Library para formularios y componentes del dashboard. Comando: `pnpm test` dentro de `apps/web/`.
-- **Base de datos**: pgTAP en `supabase/tests/`, correlo con `supabase test db`.
-- **UAT (E2E)**: Playwright sobre la URL del ambiente dev después del deploy (issue [#28](https://github.com/CarloSantoro21/trading_maxxing/issues/28)). Flujo: login → onboarding → bot → trade → dashboard. La UAT también cuenta para los 10 pts del criterio "pipeline del backend".
+- **Python**: `pytest` con **cobertura mínima 70 %**. Suite completa: `uv run pytest --cov`.
+- **API**: vitest en el runtime de Workers con D1 local, cobertura ≥ 70 % y JUnit: `cd apps/api && pnpm test:coverage`.
+- **Web**: Vitest + React Testing Library: `cd apps/web && pnpm test`.
+- **UAT (E2E)**: Playwright contra la URL de dev después del deploy (issue [#28](https://github.com/CarloSantoro21/trading_maxxing/issues/28)). Con la cobertura, cuenta para los 10 pts del criterio "pipeline del backend".
 
 ### Qué **no** corre automáticamente
 
-- Terraform `apply`: lo hace el workflow del repo [`trading_maxxing-infra`](https://github.com/CarloSantoro21/trading_maxxing-infra), al mergear a `main` de ese repo.
+- `terraform apply`: lo hace el repo [`trading_maxxing-infra`](https://github.com/CarloSantoro21/trading_maxxing-infra).
+- Alta de usuarios: un admin con `POST /api/admin/users` y su correo en la allowlist de Access.
 - Ensayo de la demo: actividad del equipo, fuera del pipeline.

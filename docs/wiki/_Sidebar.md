@@ -4,7 +4,7 @@
 - [Arquitectura](Arquitectura)
   - [Diagrama de clases](Diagrama-de-clases)
   - [Stack tecnológico](Stack-tecnologico)
-  - [Infraestructura (Azure + Cloudflare)](Infraestructura)
+  - [Infraestructura (Cloudflare + Mac)](Infraestructura)
   - [Deployment y CI/CD](Deployment)
   - [Estrategia de ramas](Estrategia-de-ramas)
 - [Project Board](Project-Board)

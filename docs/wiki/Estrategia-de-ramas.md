@@ -44,8 +44,8 @@ gitGraph
 
 | Rama | Uso | Sale de | Regresa a | Ambiente |
 |---|---|---|---|---|
-| `main` | Producción. Cada merge lleva un tag `vX.Y.Z` | — | — | **prod** (App Service `tm-api-prod` y Cloudflare Pages `tm-web`) |
-| `develop` | Integración | `main` | — | **dev** (App Service `tm-api-dev` y Cloudflare Pages `tm-web-dev`) |
+| `main` | Producción. Cada merge lleva un tag `vX.Y.Z` | — | — | **prod** (Worker `tm-api` + D1 `tm-prod` y Pages `tm-web`) |
+| `develop` | Integración | `main` | — | **dev** (Worker `tm-api-dev` + D1 `tm-dev` y Pages `tm-web-dev`) |
 | `feature/<issue>-<descripcion>` | Funcionalidades | `develop` | `develop` (squash merge) | CI en PR |
 | `release/X.Y.Z` | Estabilización antes de liberar | `develop` | `main` y `develop` | CI en PR |
 | `hotfix/<descripcion>` | Correcciones urgentes en producción | `main` | `main` y `develop` | CI en PR |
@@ -60,11 +60,11 @@ gitGraph
 ## Mapa con los ambientes
 
 ```
-feature/*  ──PR──▶  develop  ──auto──▶  App Service dev   +  Cloudflare Pages dev
+feature/*  ──PR──▶  develop  ──auto──▶  Worker dev        +  Cloudflare Pages dev
                       │                 (tm-api-dev)         (tm-web-dev)
                       │
                       │  release/X.Y.Z  o  merge directo
                       ▼
-                     main   ──aprobación──▶  App Service prod  +  Cloudflare Pages prod
-                                              (tm-api-prod)       (tm-web)
+                     main   ──aprobación──▶  Worker prod       +  Cloudflare Pages prod
+                                              (tm-api)            (tm-web)
 ```

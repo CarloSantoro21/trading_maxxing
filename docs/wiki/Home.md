@@ -12,6 +12,8 @@ Infraestructura para el Desarrollo Continuo · ITESO · Otoño 2026
 
 Versión 2 (7 de noviembre de 2026). Cambios contra la versión 1: se agregan una biblioteca de estrategias con evidencia publicada en cripto, una fase de validación (backtest in-sample y out-of-sample, y Monte Carlo) y una simulación antes de cada operación. La infraestructura se define con Terraform y se ajusta el calendario.
 
+Versión 3 (21 de noviembre de 2026): arquitectura final en **Cloudflare, plan gratuito** (Pages, Workers + Hono, D1, Access y Workers Observability), sin Supabase, con el **motor en la Mac** (docker compose, Docker Hub y Watchtower) y el LLM opcional y apagado por defecto. Ver [Infraestructura](Infraestructura) y [Deployment](Deployment).
+
 ## 1. Título
 
 trading_maxxing: plataforma multiestrategia de trading de criptomonedas. Un comité de agentes combina pronósticos de series de tiempo (Kronos) con estrategias cuantitativas validadas, simula cada operación antes de ejecutarla y opera sobre un motor event-driven (NautilusTrader).
@@ -67,29 +69,29 @@ Para el detalle de la arquitectura y los diagramas, ver la página **[Arquitectu
 | Componente | Responsabilidad | Motor | Métodos principales |
 |---|---|---|---|
 | web (Next.js) | Onboarding, perfil, dashboard, backtests | — | /onboarding, /dashboard, /strategies, /backtests, /trades |
-| api (FastAPI) | API REST, validación, disparo de jobs | — | POST /profiles, GET /portfolio, POST /backtests, POST /bots/{id}/start, POST /bots/{id}/stop, GET /trades |
+| api (Cloudflare Worker, Hono + TypeScript) | API REST, login con Access, validación, comandos para el motor | D1 | POST /profiles, GET /portfolio, POST /backtests, POST /bots/{id}/start, POST /bots/{id}/stop, GET /trades |
 | InvestmentProfile | Capital, nivel de riesgo (1 a 5) y metas del usuario | Python | validate(), to_risk_limits() |
 | InvestmentGoal | Metas de rendimiento | Python | progress(equity), probability(sim) |
 | BaseAgent (abstracta) | Contrato común de las estrategias | — | analyze(ctx) -> Signal |
 | KronosAgent | Señal y trayectorias a partir de Kronos | Kronos-small | analyze(ctx), trajectories(ctx) |
 | TrendAgent | Trend following con canales Donchian | Python | analyze(ctx) |
 | IntradayMomentumAgent | Momentum de la primera a la última media hora | Python | analyze(ctx) |
-| NewsAgent | Veto ante noticias de alto impacto | LLM (Groq) | fetch_news(symbol), classify(articles), veto(ctx) |
+| NewsAgent | Veto ante noticias de alto impacto (opcional, apagado por defecto) | Palabras clave o LLM opcional | fetch_news(symbol), classify(articles), veto(ctx) |
 | AgentOrchestrator | Ciclo por vela: corre cada sleeve activo y en shadow | Python | run_cycle(profile), run_sleeve(sleeve, ctx) |
 | PortfolioAllocator | Pesos globales por estrategia (validación y correlación) y exposición por usuario según su nivel de riesgo | Python | weights(strategies), allocate(profile, weights) -> dict[str, Decimal] |
-| StrategyRegistry | Estado del ciclo de vida de cada estrategia (tabla `strategies`) | Python + Supabase | get(name), transition(name, to, reason), active(), shadow() |
+| StrategyRegistry | Estado del ciclo de vida de cada estrategia (tabla `strategies`) | Python + API (D1) | get(name), transition(name, to, reason), active(), shadow() |
 | LifecycleMonitor | Detecta deterioro en vivo y degrada estrategias | Python | check(strategy, live_stats, mc_report) -> Transition |
 | SimulationGate | Monte Carlo antes de cada operación | numpy | simulate(decision, paths) -> SimResult, approve(sim) |
 | RiskAgent | Tamaño de posición y límites | Python | evaluate(decision, portfolio), position_size(signal, equity), check_drawdown(portfolio) |
 | ExplainerAgent | Justificación en lenguaje natural (fuera del camino de la decisión) | LLM | explain(decision) -> str |
-| LLMClient | Interfaz común para proveedores de LLM | Groq | complete_json(prompt, schema) |
+| LLMClient | Interfaz común para proveedores de LLM (opcional) | none, Workers AI, Groq u OpenAI-compatible | complete_json(prompt, schema) |
 | KronosForecastService | Inferencia de Kronos | Kronos | load_model(name), predict(ohlcv, pred_len, samples) |
 | MarketDataService | Velas históricas y en tiempo real | Python | get_bars(symbol, tf, start, end), stream_bars(symbol, tf) |
 | TradingEngineService | Envuelve el TradingNode de Nautilus | Nautilus | start(profile), stop(), submit(decision), get_positions() |
 | AgenticStrategy (Strategy de Nautilus) | Convierte decisiones en órdenes | Nautilus | on_start(), on_bar(bar), on_signal(decision), on_order_filled(event), on_stop() |
 | BacktestService | Backtests in-sample y out-of-sample | Nautilus | run(config) -> BacktestReport, walk_forward(config) |
 | MonteCarloService | Remuestreo de operaciones y proyección de metas | numpy | reshuffle(trades, n), goal_probability(stats, goal) |
-| TradeRepository | Persistencia en Supabase | Python | save_trade(trade), list_trades(user_id), save_equity_snapshot(snap) |
+| TradeRepository | Persistencia en D1 a través de `/internal/*` de la API | Python | save_trade(trade), list_trades(user_id), save_equity_snapshot(snap) |
 
 Solo el NewsAgent y el ExplainerAgent usan un LLM. Las estrategias, el orquestador, la simulación y el riesgo son deterministas por tres razones:
 
@@ -97,7 +99,7 @@ Solo el NewsAgent y el ExplainerAgent usan un LLM. Las estrategias, el orquestad
 - Un LLM conoce precios históricos, lo que contaminaría el backtest con información del futuro.
 - El control de riesgo no puede depender de un modelo probabilístico.
 
-LLMClient permite cambiar de proveedor por configuración; por ejemplo, para comparar Groq con modelos de decisión como Jev.
+Los dos están **apagados por defecto** (`NEWS_ENABLED=false`, `EXPLAINER_ENABLED=false`, `LLM_PROVIDER=none`, #118). LLMClient permite prenderlos y cambiar de proveedor por configuración (Workers AI, Groq o un endpoint compatible con OpenAI).
 
 ### 3.1 Flujo de una operación
 
@@ -119,7 +121,7 @@ Fase 2, producción (en cada cierre de vela):
 5. SimulationGate calcula, con los SL y TP propuestos, la probabilidad de llegar al objetivo antes que al stop con 10,000 trayectorias históricas reconstruidas por bootstrap.
 6. RiskAgent calcula el tamaño de la posición dentro del capital del sleeve y con la exposición del nivel de riesgo del usuario.
 7. La decisión se publica en Redis. AgenticStrategy envía una orden bracket a Binance Testnet.
-8. La operación se guarda en Supabase, el ExplainerAgent redacta la justificación y el dashboard se actualiza con Supabase Realtime.
+8. La operación se guarda en D1 a través de la API (`/internal/*`), el ExplainerAgent (si está prendido) redacta la justificación y el dashboard se actualiza con polling a `/api/*`.
 9. Mientras la posición está abierta, el SL y el TP la cierran automáticamente. Si se rebasa el drawdown máximo, el kill switch cierra todo y detiene el bot.
 
 ### 3.2 Qué es de la app y qué es de cada usuario
@@ -131,7 +133,7 @@ Fase 2, producción (en cada cierre de vela):
 | Señales de cada estrategia, pronósticos de Kronos, SimulationGate | Metas (retorno y fecha) |
 | Noticias y vetos | Bot encendido, apagado y paro de emergencia |
 | Estado de cada estrategia (shadow, activa, retirada) | Tamaño de cada sleeve y límites del RiskAgent (derivados de su nivel) |
-| Pesos globales por estrategia | Órdenes, posiciones, P&L y dashboard (aislados por RLS) |
+| Pesos globales por estrategia | Órdenes, posiciones, P&L y dashboard (aislados por usuario en la API) |
 | Cuenta de Binance Testnet, usuarios y roles | |
 
 Niveles de riesgo:
@@ -163,32 +165,34 @@ investigación → laboratorio → shadow → activa → en observación → ret
 
 ## 4. Stack tecnológico
 
-- Frontend: Next.js 15 (App Router), TypeScript, Tailwind, shadcn/ui y Recharts; se publica como sitio estático en Cloudflare Pages (plan gratuito).
-- Backend: FastAPI con Pydantic sobre Python 3.12.
-- Estrategias y agentes: worker en Python 3.12 con numpy y pandas. LLM vía Groq (gpt-oss-20b) detrás de una interfaz LLMClient, y noticias de CryptoPanic.
-- Pronóstico: Kronos-small con PyTorch en CPU, servido con FastAPI.
-- Motor de trading: NautilusTrader.
-- Base de datos y autenticación: Supabase (Postgres, Auth, Realtime y Row Level Security).
-- Mensajería y cache: Redis (Azure Cache for Redis Basic C0 en la nube, contenedor en local).
-- Contenedores: Docker y Docker Compose, con las imágenes publicadas en Docker Hub.
-- Infraestructura como código: Terraform con el provider `azurerm` y módulos por recurso (repo separado `trading_maxxing-infra`).
-- CI/CD: GitHub Actions, con autenticación a Azure por OIDC (sin llaves de larga duración) y a Cloudflare por API Token.
-- Nube: Azure App Service Plan Linux B1 con dos Web Apps de contenedor (`tm-api-<env>` y `tm-agents-<env>`), Application Insights + Log Analytics y Azure Cache for Redis (Basic C0). El frontend se publica en Cloudflare Pages.
-- Calidad: pytest y pytest-cov, Vitest y React Testing Library, ruff, ESLint y Prettier.
+Arquitectura final (21 de noviembre de 2026): **Cloudflare, plan gratuito**, y el **motor en la Mac**. Detalle en [Stack tecnológico](Stack-tecnologico) e [Infraestructura](Infraestructura).
+
+- Frontend: Next.js 15 (App Router), TypeScript, Tailwind, shadcn/ui y Recharts; export estático en Cloudflare Pages (`tm-web-dev` y `tm-web`).
+- API: Cloudflare Workers con Hono + TypeScript (`tm-api-dev` y `tm-api`); Pages le reenvía `/api/*` por service binding.
+- Base de datos: Cloudflare D1 (`tm-dev` y `tm-prod`). Login: Cloudflare Access (allowlist y OTP por correo).
+- Estrategias y agentes: Python 3.12 con numpy y pandas. LLM y noticias opcionales y apagados por defecto.
+- Pronóstico: Kronos-small con PyTorch (CPU o Metal en la Mac).
+- Motor de trading: NautilusTrader contra Binance Spot Testnet.
+- Mensajería: Redis en un contenedor de la Mac.
+- Contenedores: Docker y Docker Compose; imágenes del motor en Docker Hub y Watchtower en la Mac.
+- Infraestructura como código: Terraform con el provider `cloudflare/cloudflare` (repo separado `trading_maxxing-infra`).
+- CI/CD: GitHub Actions + `wrangler`, con environments `dev` y `prod` (aprobación).
+- APM y métricas: Workers Observability.
+- Calidad: pytest y pytest-cov, Vitest, React Testing Library, Playwright, ruff y ESLint.
 
 ## 5. Plan de trabajo
 
 El plan está en el [GitHub Project Board](https://github.com/users/CarloSantoro21/projects/2) del repositorio, con columnas Backlog, To Do, In Progress, In Review y Done.
 
-- M1, Fundaciones e infraestructura (hasta el 11 de noviembre): ramas protegidas, estructura del monorepo, Docker Compose, CI básico, Supabase y Wiki.
+- M1, Fundaciones e infraestructura (hasta el 11 de noviembre): ramas protegidas, estructura del monorepo, Docker Compose, CI básico, base de datos y Wiki.
 - M2, Motor, pronóstico y estrategias (hasta el 18 de noviembre): datos de mercado, servicio de Kronos, integración con Nautilus, TrendAgent, IntradayMomentumAgent y laboratorio de backtest con Monte Carlo.
 - M3, Agentes, simulación y API (hasta el 24 de noviembre): KronosAgent, NewsAgent, SimulationGate, RiskAgent, orquestador con sleeves, PortfolioAllocator, ciclo de vida de estrategias y API REST.
 - M4, Frontend y validación local (hasta el 1 de diciembre): dashboard, onboarding, backtests en la interfaz, pruebas end-to-end en local y validación go/no-go con paper trading continuo.
-- M5, Entrega: deploy y demo (hasta el 6 de diciembre): Terraform de Azure, CD del backend a Azure App Service (dev y prod con aprobación), frontend en Cloudflare Pages (dev y prod), Application Insights conectado, documentación y demo final.
+- M5, Entrega: deploy y demo (hasta el 6 de diciembre): Terraform de Cloudflare (D1, Pages y Access), API en Workers con D1 (dev y prod con aprobación), frontend en Cloudflare Pages (dev y prod), motor en la Mac con Docker Hub y Watchtower, Workers Observability, documentación y demo final.
 
 Issues: https://github.com/CarloSantoro21/trading_maxxing/issues
 
-Para el estado actual del proyecto (quedan 15 issues abiertos de 53), ver [`docs/estado-del-proyecto.md`](https://github.com/CarloSantoro21/trading_maxxing/blob/main/docs/estado-del-proyecto.md).
+Para el estado actual del proyecto, ver [`docs/estado-del-proyecto.md`](https://github.com/CarloSantoro21/trading_maxxing/blob/main/docs/estado-del-proyecto.md).
 
 ## 6. Equipo
 
@@ -202,8 +206,9 @@ Proyecto del curso **Infraestructura para el Desarrollo Continuo** (ITESO, otoñ
 - Contaminación de Kronos: sus datos de preentrenamiento llegan a junio de 2024, así que solo se evalúa de julio de 2024 en adelante.
 - Comisiones: en Binance Spot cada operación cuesta ~0.1 % por lado. El laboratorio las incluye siempre y compara cada estrategia contra comprar y mantener.
 - Señales malas pueden generar pérdidas: operamos solo en testnet, la SimulationGate bloquea operaciones con valor esperado negativo y el RiskAgent aplica el drawdown máximo y un botón de paro.
-- Costos en la nube: la cuenta es **Azure for Students** (100 USD de crédito, sin tarjeta). Dos planes App Service B1 (~13 USD al mes cada uno) y Azure Cache for Redis Basic C0; `terraform destroy` del ambiente de dev fuera de ventanas de demo.
-- Límites de las APIs de noticias y del LLM: cache en Redis, llamadas solo al cierre de vela y una interfaz LLMClient para cambiar de proveedor.
+- Costos en la nube: todo cabe en el **plan gratuito de Cloudflare** (0 USD). El motor corre en la Mac; para moverlo a la nube, Cloudflare Containers con Workers Paid (5 USD al mes).
+- La Mac apagada o dormida detiene el motor: `caffeinate`, reinicio automático de los contenedores y un heartbeat que la web muestra como "motor en línea / desconectado".
+- Límites de las APIs de noticias y del LLM: apagados por defecto, noticias por RSS gratis, llamadas solo al cierre de vela y una interfaz LLMClient para cambiar de proveedor.
 - Calendario ajustado: las estrategias deterministas se implementan antes que las dependientes de modelos, y el ExplainerAgent y la proyección de metas son opcionales si falta tiempo.
 
 ---
