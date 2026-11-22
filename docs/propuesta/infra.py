@@ -1,59 +1,89 @@
-# trading_maxxing - diagrama de infraestructura (Azure + Cloudflare).
+# trading_maxxing - diagrama de infraestructura (arquitectura final, 21-nov-2026).
 #
-# Pendiente (#7): este script reemplaza al anterior, que dibujaba AWS. Para
-# regenerar la PNG:
-#     pip install diagrams  (requiere Graphviz)
+# Todo lo público vive en Cloudflare, plan gratuito: Pages (frontend), Workers +
+# Hono (API), D1 (base), Access (login Zero Trust) y Workers Observability (APM).
+# El motor (agents, engine con NautilusTrader, forecast con Kronos y Redis) corre
+# en la Mac de Carlo con docker compose, imágenes de Docker Hub y Watchtower, y
+# solo hace conexiones SALIENTES.
+#
+# La librería `diagrams` no trae íconos por producto de Cloudflare: se usa el
+# ícono genérico de Cloudflare con etiquetas claras, y genéricos/onprem para el
+# resto. Para regenerar las PNG (requiere Graphviz: `brew install graphviz`):
+#     pip install diagrams
 #     cd docs/propuesta && python infra.py
-#
-# Iconos: https://learn.microsoft.com/azure/architecture/icons/
-from diagrams import Diagram, Cluster, Edge
-from diagrams.azure.compute import AppServices
-from diagrams.azure.database import CacheForRedis
-from diagrams.azure.devops import ApplicationInsights
-from diagrams.azure.analytics import LogAnalyticsWorkspaces
+#     cp img/infra.png ../wiki/img/infra.png
+from diagrams import Cluster, Diagram, Edge
+from diagrams.generic.database import SQL
 from diagrams.onprem.client import Users
-from diagrams.onprem.database import Postgresql
 from diagrams.onprem.container import Docker
-from diagrams.onprem.network import Cloudflare, Internet
-from diagrams.programming.framework import Nextjs, Fastapi
-from diagrams.programming.language import Python
+from diagrams.onprem.iac import Terraform
+from diagrams.onprem.inmemory import Redis
+from diagrams.onprem.network import Internet
+from diagrams.programming.framework import Nextjs
+from diagrams.programming.language import Python, Typescript
+from diagrams.saas.cdn import Cloudflare
 
-ga = {"fontsize": "20", "pad": "0.4", "splines": "spline", "nodesep": "0.7", "ranksep": "1.1"}
+ga = {
+    "fontsize": "22",
+    "pad": "0.5",
+    "splines": "spline",
+    "nodesep": "0.8",
+    "ranksep": "1.1",
+}
+na = {"fontsize": "13"}
+ea = {"fontsize": "12"}
+
 with Diagram(
-    "trading_maxxing - Infraestructura (Azure + Cloudflare)",
+    "trading_maxxing - Infraestructura (Cloudflare plan gratuito + motor en la Mac)",
     filename="img/infra",
     show=False,
     direction="TB",
     graph_attr=ga,
+    node_attr=na,
+    edge_attr=ea,
 ):
-    users = Users("Inversionistas")
-    cf = Cloudflare("Cloudflare Pages\n(tm-web-dev, tm-web)")
-    web = Nextjs("Next.js\nexport estatico")
-    hub = Docker("Docker Hub\n(imagenes)")
+    users = Users("Equipo (< 10 personas)\nnavegador")
 
-    with Cluster("Azure - Resource Group rg-tm-<env>"):
-        with Cluster("App Service Plan Linux B1"):
-            api = Fastapi("tm-api-<env>\nFastAPI")
-            agents = Python("tm-agents-<env>\norquestador + engine\n+ forecast")
-        redis = CacheForRedis("Azure Cache for Redis\nBasic C0")
-        appi = ApplicationInsights("Application Insights")
-        logs = LogAnalyticsWorkspaces("Log Analytics")
+    with Cluster("Cloudflare - cuenta del proyecto (plan gratuito), por ambiente dev / prod"):
+        access = Cloudflare("Cloudflare Access\n(Zero Trust: allowlist\n+ OTP por correo)")
+        with Cluster("Pages: tm-web-dev (develop) / tm-web (main)"):
+            pages = Nextjs("Next.js export estático\n/* -> archivos\n/api/* -> env.API")
+        with Cluster("Workers: tm-api-dev / tm-api"):
+            worker = Typescript("API Hono + TypeScript\n/api/* (usuarios)\n/internal/* (motor)")
+        d1 = SQL("D1 (SQLite)\ntm-dev / tm-prod")
+        obs = Cloudflare("Workers Observability\nlogs, trazas, errores,\nrequests y CPU time")
+        svc = Cloudflare("Access app del motor\n(service token\nCF-Access-Client-Id/Secret)")
 
-    with Cluster("Servicios externos"):
-        supa = Postgresql("Supabase Cloud\nPostgres + Auth + Realtime")
-        ext = Internet("Binance Testnet /\nNews API / LLM API")
+    with Cluster("Mac de Carlo - docker compose (solo conexiones salientes)"):
+        with Cluster("motor"):
+            agents = Python("agents\norquestador, estrategias,\nSimulationGate, RiskAgent")
+            engine = Python("engine\nNautilusTrader\nTradingNode")
+            forecast = Python("forecast\nKronos-small\n(PyTorch)")
+            redis = Redis("Redis\ntm:signals / tm:decisions")
+        watchtower = Docker("Watchtower\n(actualiza imágenes)")
 
-    users >> cf >> web
-    web >> Edge(label="NEXT_PUBLIC_API_URL") >> api
-    api >> Edge(style="dashed", label="Auth/RLS") >> supa
-    api >> Edge(label="jobs") >> redis
-    redis >> agents
-    agents >> Edge(label="decisiones") >> redis
-    agents >> Edge(label="ordenes / datos") >> ext
-    agents >> Edge(label="noticias / LLM") >> ext
-    agents >> supa
-    api >> Edge(style="dotted", label="traces") >> appi
-    agents >> Edge(style="dotted", label="traces") >> appi
-    appi >> logs
-    hub >> Edge(style="dotted", label="pull imagen") >> api
-    hub >> Edge(style="dotted", label="pull imagen") >> agents
+    hub = Docker("Docker Hub\ntrading-maxxing-\n{agents,engine,forecast}")
+    binance = Internet("Binance Spot Testnet\n(órdenes y velas)")
+    llm = Internet("Noticias RSS / LLM\n(opcional, apagado\npor defecto)")
+    tf = Terraform("trading_maxxing-infra\nTerraform cloudflare/cloudflare\nD1, Pages, Access")
+
+    users >> Edge(label="HTTPS") >> access >> Edge(label="cookie CF_Authorization") >> pages
+    pages >> Edge(label="service binding API\n(mismo origen)") >> worker
+    worker >> Edge(label="SQL") >> d1
+    worker >> Edge(style="dotted", label="logs y trazas") >> obs
+
+    agents >> Edge(label="HTTPS saliente\nX-Service-Token\n+ service token") >> svc
+    engine >> Edge(label="trades, equity,\nheartbeat") >> svc
+    svc >> Edge(label="/internal/*") >> worker
+
+    agents >> Edge(label="señales") >> redis
+    redis >> Edge(label="decisiones") >> engine
+    agents >> Edge(label="/predict") >> forecast
+    engine >> Edge(label="órdenes bracket") >> binance
+    agents >> Edge(style="dashed", label="NEWS_ENABLED /\nLLM_PROVIDER") >> llm
+
+    hub >> Edge(style="dotted", label="pull") >> watchtower
+    watchtower >> Edge(style="dotted", label="reinicia") >> agents
+
+    tf >> Edge(style="dashed", label="crea") >> access
+    tf >> Edge(style="dashed", label="crea") >> d1
