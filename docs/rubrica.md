@@ -2,7 +2,7 @@
 
 Rúbrica oficial del curso (Infraestructura para el Desarrollo Continuo, ITESO). **Todo issue y todo PR de la recta final debe servir a algún punto de esta lista.** Entrega y demo: **6 de diciembre de 2026**.
 
-> **Consecuencia principal:** la rúbrica solo acepta **Azure Portal o Cloudflare** como nube y evalúa las métricas del **App Service Plan**. Por eso, desde el 17 de noviembre de 2026, el backend va en **Azure App Service** (con Application Insights para el APM) y el frontend en **Cloudflare Pages**. El Terraform de AWS que está en `infra/` (PR #79) queda obsoleto. El deploy ya **no** depende del go/no-go (#44): es obligatorio.
+> **Consecuencia principal:** la rúbrica solo acepta **Azure Portal o Cloudflare** como nube. Desde el 21 de noviembre de 2026 la arquitectura final es **todo en Cloudflare, plan gratuito** (Pages, Workers + Hono, D1, Access y Workers Observability), sin Supabase, con el **motor en la Mac de Carlo** (docker compose, Docker Hub y Watchtower). Sustituye a la de Azure App Service del 17 de noviembre; el Terraform de AWS en `infra/` (PR #79) queda obsoleto. El deploy **no** depende del go/no-go (#44): es obligatorio. Detalle en [`docs/arquitectura/cloudflare.md`](arquitectura/cloudflare.md).
 
 ## 1. Qué hay que entregar
 
@@ -64,41 +64,47 @@ Entregables: la tarea de presentación (ya entregada) y la URL del proyecto en A
 
 ## 4. Cómo cubrimos cada criterio
 
-Estado al 17 de noviembre de 2026.
+Estado al 21 de noviembre de 2026. Arquitectura: Cloudflare (plan gratuito) + motor en la Mac (sección 5).
 
-| Criterio | Pts | Estado | Issues |
-|---|---|---|---|
-| Wiki | 10 | 🟡 PR #99 abierto. Hay que cambiar los diagramas de infraestructura y de deployment a Azure + Cloudflare. **Ya vamos tarde** (el nivel de 10 pts era a mitad del curso) | #7 |
-| Plan de trabajo | 5 | 🟡 Hay issues, milestones y un Project Board, pero falta la jerarquía PBI → Story → Task | #103 |
-| Ambientes | 10 | ❌ No hay nada desplegado. Hacen falta dev y prod para el backend (App Service) y el frontend (Cloudflare Pages) | #26, #27, #45 |
-| Estrategia de ramas | 10 | 🟢 `feature/*` → `develop` → `main` con PRs. Falta la protección de ramas | #103 |
-| Pipeline del backend | 10 | 🟡 La cobertura ya está (`pytest --cov` en `ci.yml`). Faltan la UAT, que los resultados se vean en el run y el deploy a dev y prod | #27, #28 |
-| Pipeline del front | 10 | 🟡 El export estático y el workflow manual ya están (#77). Faltan los dos ambientes | #45 |
-| Cambio visible en Dev | 10 | ❌ Depende de los ambientes | #45, #30 |
-| Aprobación a Prod | 5 | ❌ GitHub Environment `prod` con *required reviewers* | #27, #45 |
-| Cambio en Prod | 10 | ❌ Depende de los ambientes | #27, #45 |
-| APM | 10 | ❌ Application Insights con OpenTelemetry y un endpoint de error para la demo | #29 |
-| Métricas | 5 | ❌ Dashboard con CPU y memoria del App Service Plan | #29 |
-| Terraform | 5 | 🟡 Hay Terraform, pero es de AWS y está en el monorepo. Hay que rehacerlo con `azurerm` en el repo separado `trading_maxxing-infra` | #26, #39 |
+| Criterio | Pts | Cómo lo cubrimos | Estado | Issues |
+|---|---|---|---|---|
+| Wiki | 10 | Páginas en `docs/wiki/` (descripción, clases, stack, infraestructura, deployment, ramas, board) publicadas con `scripts/publish_wiki.sh`; diagramas de infraestructura y deployment regenerados para Cloudflare + Mac | 🟡 Páginas y diagramas listos; falta publicar en la Wiki de GitHub. **Ya vamos tarde** (el nivel de 10 pts era a mitad del curso) | #7 |
+| Plan de trabajo | 5 | Project Board con jerarquía PBI → Story → Task ligada a los commits | 🟡 Hay issues, milestones y board; falta la jerarquía | #103 |
+| Ambientes | 10 | dev y prod en backend (Workers `tm-api-dev` / `tm-api` + D1 `tm-dev` / `tm-prod`) y frontend (Pages `tm-web-dev` / `tm-web`); Terraform crea D1, Pages y Access | 🟡 La API ya existe (#120); faltan el `apply` de Terraform y los deploys | #26, #27, #45, #115, #116, #117 |
+| Estrategia de ramas | 10 | `feature/*` → `develop` → `main` con PRs | 🟢 Evidencia de ramas y PRs; falta la protección de ramas | #103 |
+| Pipeline del backend | 10 | `pytest --cov` (Python) y `vitest --coverage` de `apps/api` con JUnit en Checks y cobertura en el *job summary*; UAT con Playwright contra dev; deploy del Worker y migraciones de D1 a dev y prod; imágenes del motor a Docker Hub | 🟡 Cobertura y UAT existen (#106, `uat.yml`); falta el deploy a Cloudflare | #27, #28 |
+| Pipeline del front | 10 | `wrangler pages deploy` a `tm-web-dev` (merge a `develop`) y `tm-web` (merge a `main` con aprobación) | 🟡 Export estático y workflow manual listos (#77); falta el frontend sin Supabase y los dos ambientes | #45, #117 |
+| Cambio visible en Dev | 10 | Indicador de SHA y ambiente en el header; URL de `tm-web-dev` tras Access | ❌ Depende de los ambientes | #45, #30 |
+| Aprobación a Prod | 5 | GitHub Environment `prod` con *required reviewers* | ❌ Por configurar | #27, #45 |
+| Cambio en Prod | 10 | URL pública de `tm-web` tras Access | ❌ Depende de los ambientes | #27, #45 |
+| APM | 10 | Workers Observability: logs estructurados, trazas y el error de demo `POST /api/admin/debug/error` | 🟡 `[observability]` y el endpoint ya están en `apps/api` (#120); falta verlo en la nube | #29 |
+| Métricas | 5 | Panel del Worker: requests, errores, CPU time y duración. Workers no reporta memoria: se complementa con `docker stats` de la Mac (o métricas de Cloudflare Containers si se paga) | ❌ Hay que confirmar con el profe si basta CPU + requests | #29 |
+| Terraform | 5 | Repo separado `trading_maxxing-infra` con `cloudflare/cloudflare`: D1, Pages y Access (app web + service token del motor) por ambiente | 🟡 Código listo; falta el `apply`, el estado remoto y el CI del repo | #26, #39, #109 |
 
-**Ruta crítica (≈ 65 pts dependen de esto):** cuenta de Azure for Students → #26 (Terraform en Azure) → #27 y #45 (pipelines con dev y prod) → #29 (APM y métricas) → #30 (ensayo de la demo).
+**Ruta crítica (≈ 65 pts dependen de esto):** #26 (Terraform: D1, Pages, Access) → #115/#117 (API y frontend sin Supabase) → #27 y #45 (pipelines con dev y prod) → #29 (APM y métricas) → #30 (ensayo de la demo). #116 (motor en la Mac) es necesario para que el dashboard muestre trades reales, pero no bloquea los criterios de la rúbrica.
 
-Lo que no da puntos en la rúbrica (estrategias nuevas, go/no-go #44, explainer #37, caché de Kronos #62) tiene menos prioridad que la ruta crítica.
+#118 (PR #119) deja el LLM y las noticias **opcionales y apagados por defecto**: no da puntos por sí mismo, pero quita llaves y costos de terceros del camino de la demo.
+
+Lo que no da puntos en la rúbrica (estrategias nuevas, go/no-go #44, auditor #108, que está congelado) tiene menos prioridad que la ruta crítica.
 
 ## 5. Arquitectura de despliegue elegida
 
 ```
-GitHub (monorepo trading_maxxing)               GitHub (trading_maxxing-infra)
-  feature/* ─PR─▶ develop ─PR─▶ main               Terraform azurerm: envs/dev, envs/prod
-        │             │            │                       │
-        ▼             ▼            ▼                       ▼
-   CI (lint,    deploy dev     aprobación ──▶ deploy prod   Resource Group, App Service Plan (B1),
-   pruebas,     automático     (Environment               Web Apps (api, agents), App Insights,
-   cobertura)   + UAT          "prod")                    Log Analytics, Redis
+GitHub (monorepo trading_maxxing)                     GitHub (trading_maxxing-infra)
+  feature/* ─PR─▶ develop ─PR─▶ main                     Terraform cloudflare/cloudflare
+        │             │            │                     envs/dev, envs/prod:
+        ▼             ▼            ▼                     D1, Pages, Access (web + motor)
+   CI (lint,     deploy dev    aprobación ──▶ deploy prod
+   pruebas,      automático    (Environment
+   cobertura)    + UAT         "prod")
         │
-        └──▶ Docker Hub (imágenes por SHA) ──▶ Azure App Service (backend dev / prod)
-             Cloudflare Pages (frontend dev / prod)
-             Supabase Cloud, plan gratuito (un proyecto dev y otro prod)
+        ├──▶ Cloudflare Workers tm-api-dev / tm-api (Hono) + D1 tm-dev / tm-prod
+        ├──▶ Cloudflare Pages tm-web-dev / tm-web (tras Access; /api/* por service binding)
+        └──▶ Docker Hub (agents, engine, forecast) ──▶ Watchtower en la Mac de Carlo
+                                                     (solo conexiones salientes a Binance
+                                                      Spot Testnet y a /internal/* del Worker)
 ```
 
-Cuenta: **Azure for Students** con el correo del ITESO (100 USD de crédito, sin tarjeta).
+- **Cuenta:** Cloudflare, plan gratuito (0 USD). APM y métricas con Workers Observability.
+- **Por qué el motor no va en Workers:** Python en Pyodide sin paquetes nativos (NautilusTrader, PyTorch), sin procesos permanentes, 128 MB y 10 ms de CPU por invocación en el plan gratuito.
+- **Cuando paguemos:** Cloudflare Containers (Workers Paid, 5 USD al mes) con las mismas imágenes; ver [`docs/arquitectura/cloudflare.md`](arquitectura/cloudflare.md).
