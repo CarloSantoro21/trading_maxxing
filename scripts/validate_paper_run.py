@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Mide P&L, Sharpe, drawdown y nº de operaciones de la ventana de paper trading (#44).
 
-Entrada preferida: un CSV de fills exportado desde `public.trades` con las columnas
+Entrada preferida: un CSV de fills exportado de la tabla `trades` (D1) con las columnas
 `ts,symbol,side,quantity,entry_price,exit_price,fees,pnl`. Es lo que genera el SQL del
 checklist `docs/validacion-checklist.md`.
 
@@ -12,7 +12,7 @@ descuenta `fees`, ya sea leído o estimado.
 Salida: un JSON machine-readable (por defecto) o un fragmento markdown listo para pegar en
 `docs/validacion.md` cuando se pasa `--format md`.
 
-Este script es solo lectura. No conecta con Binance ni muta Supabase.
+Este script es solo lectura. No conecta con Binance ni muta la base (D1).
 """
 
 from __future__ import annotations

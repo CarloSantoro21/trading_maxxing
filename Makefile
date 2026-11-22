@@ -59,3 +59,38 @@ test: ## Pruebas de Python y del frontend
 lint: ## Lint y formato
 	uv run ruff check . && uv run ruff format --check .
 	cd apps/web && pnpm lint
+
+# --- Motor en la Mac (docs/arquitectura/motor-en-la-mac.md) ---------------------------------
+# runner-*: imágenes de Docker Hub + watchtower, con las variables de .env.runner.
+# motor-local: build local apuntando a la API en wrangler dev (cd apps/api && pnpm dev).
+RUNNER := $(COMPOSE) -f docker-compose.runner.yml --env-file .env.runner
+
+.PHONY: runner-up runner-down runner-logs runner-status runner-pull motor-local motor-local-down
+
+.env.runner:
+	@echo "Falta .env.runner: cp .env.runner.example .env.runner y llena TM_API_URL, TM_SERVICE_TOKEN, ..."; exit 1
+
+runner-up: .env.runner ## Motor en la Mac con imágenes de Docker Hub (redis, agents, engine, forecast, watchtower)
+	$(RUNNER) pull --quiet
+	$(RUNNER) up -d --wait
+	@$(MAKE) --no-print-directory runner-status
+
+runner-down: .env.runner ## Detiene el motor de la Mac (conserva volúmenes)
+	$(RUNNER) down
+
+runner-logs: .env.runner ## Logs en vivo del motor de la Mac
+	$(RUNNER) logs -f --tail=100
+
+runner-status: .env.runner ## Estado y health de los contenedores del motor
+	@$(RUNNER) ps --format 'table {{.Service}}\t{{.Image}}\t{{.Status}}'
+
+runner-pull: .env.runner ## Descarga ya las imágenes nuevas (sin esperar a watchtower)
+	$(RUNNER) pull && $(RUNNER) up -d --wait
+
+motor-local: ## Motor con build local contra wrangler dev en http://localhost:8787
+	TM_API_URL=$${TM_API_URL:-http://host.docker.internal:8787} \
+	  COMPOSE_PROFILES=forecast-docker $(COMPOSE) up -d --build --wait redis agents engine forecast
+	@COMPOSE_PROFILES=forecast-docker $(COMPOSE) ps
+
+motor-local-down: ## Detiene el motor local
+	COMPOSE_PROFILES=forecast-docker $(COMPOSE) down

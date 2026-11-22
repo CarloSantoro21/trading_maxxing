@@ -1,0 +1,104 @@
+# Motor de trading_maxxing en la Mac de Carlo ("runner"), con las imágenes de Docker Hub.
+#
+#   cp .env.runner.example .env.runner   # llena TM_API_URL, TM_SERVICE_TOKEN, Binance, ...
+#   make runner-up                       # docker compose -f docker-compose.runner.yml up -d
+#   make runner-status | runner-logs | runner-down
+#
+# Todo es saliente: Binance Spot Testnet y la API en Cloudflare Workers (/internal/*). No se
+# publica ningún puerto hacia fuera de la Mac. Guía completa: docs/arquitectura/motor-en-la-mac.md
+#
+# Imágenes: ${DOCKERHUB_NAMESPACE}/trading-maxxing-<svc>:${TM_ENV:-prod}. Watchtower revisa
+# cada 5 minutos si hay una imagen nueva con ese tag y reinicia SOLO los contenedores con la
+# etiqueta com.centurylinklabs.watchtower.enable=true (agents, engine y forecast).
+
+name: trading-maxxing-runner
+
+x-motor: &motor
+  env_file:
+    - path: .env.runner
+      required: true
+  environment:
+    REDIS_URL: redis://redis:6379/0
+    FORECAST_URL: http://forecast:8001
+    # Caché de velas de Binance (parquet). En /tmp porque los contenedores no corren como
+    # root; se vuelve a descargar si el contenedor se recrea.
+    TM_DATA_DIR: /tmp/tm-data/bars
+  depends_on:
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+  labels:
+    com.centurylinklabs.watchtower.enable: "true"
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "5" }
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
+
+  # Orquestador, ledger de referencia, latido "agents" y comandos start/stop/kill de la API.
+  agents:
+    <<: *motor
+    image: ${DOCKERHUB_NAMESPACE:?define DOCKERHUB_NAMESPACE en .env.runner o en el entorno}/trading-maxxing-agents:${TM_ENV:-prod}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,time; sys.exit(time.time() - os.path.getmtime('/tmp/heartbeat') > 60)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  # NautilusTrader contra Binance Spot Testnet; fills a /internal/trades, backtests encolados.
+  engine:
+    <<: *motor
+    image: ${DOCKERHUB_NAMESPACE:?define DOCKERHUB_NAMESPACE en .env.runner o en el entorno}/trading-maxxing-engine:${TM_ENV:-prod}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,time; sys.exit(time.time() - os.path.getmtime('/tmp/heartbeat') > 60)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+  # Kronos en CPU (en Docker no hay Metal). Solo lo llama agents por la red interna.
+  forecast:
+    <<: *motor
+    image: ${DOCKERHUB_NAMESPACE:?define DOCKERHUB_NAMESPACE en .env.runner o en el entorno}/trading-maxxing-forecast:${TM_ENV:-prod}
+    depends_on: {}
+    environment:
+      FORECAST_DEVICE: cpu
+      HF_HOME: /app/.cache/huggingface
+    volumes: [hf-cache:/app/.cache/huggingface]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 3
+
+  # Actualiza agents, engine y forecast cuando se publica una imagen nueva con el mismo tag.
+  watchtower:
+    image: containrrr/watchtower:1.7.1
+    command: ["--label-enable", "--interval", "300", "--cleanup", "--include-restarting"]
+    environment:
+      # Docker Desktop 4.x rechaza la API 1.25 que pide watchtower por omisión.
+      DOCKER_API_VERSION: ${WATCHTOWER_DOCKER_API_VERSION:-1.44}
+      TZ: ${TZ:-America/Mexico_City}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
+
+volumes:
+  redis-data:
+  hf-cache:
