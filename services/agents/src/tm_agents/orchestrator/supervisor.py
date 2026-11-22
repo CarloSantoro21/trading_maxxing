@@ -39,6 +39,7 @@ from tm_agents.orchestrator.bot import (
 )
 from tm_agents.orchestrator.state import TradeStateRepository
 from tm_agents.orchestrator.streams import DecisionSink
+from tm_agents.risk import RiskLimits
 from tm_agents.signals import SignalEvent
 
 log = logging.getLogger(__name__)
@@ -133,8 +134,12 @@ class BotSupervisor:
         explainer: ExplainerAgent | None = None,
         explanation_sink: BotExplanationSink | None = None,
         explain_executor: Callable[[Any], Any] | None = None,
+        risk_overrides: Mapping[str, Any] | None = None,
     ) -> None:
         self.repository = repository
+        #: Cambios a los ``RiskLimits`` del nivel de cada bot (p. ej. ``max_trades_per_day``
+        #: en la demo local, ver ``tm_agents.__main__``); vacío en dev y prod.
+        self.risk_overrides = dict(risk_overrides or {})
         self.sink = sink
         self.shadow_sink = shadow_sink
         self.trades = trades
@@ -150,9 +155,16 @@ class BotSupervisor:
 
     def _default_runner(self, cfg: BotConfig) -> BotRunner:
         sink = self.explanation_sink
+        limits = None
+        if self.risk_overrides:
+            profile = cfg.profile
+            limits = RiskLimits.from_profile(
+                profile.risk_level, profile.max_drawdown, **self.risk_overrides
+            )
         return BotRunner(
             cfg,
             self.sink,
+            limits=limits,
             shadow_sink=self.shadow_sink,
             explainer=self.explainer,
             explanation_sink=(

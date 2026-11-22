@@ -52,6 +52,22 @@ describe("AppShell", () => {
     expect(await screen.findByText("Motor en línea")).toBeInTheDocument();
   });
 
+  it("avisa si el engine ejecuta simulado (sin llaves de Testnet)", async () => {
+    const engine = {
+      component: "engine",
+      status: "ok",
+      version: null,
+      host: null,
+      started_at: null,
+      last_seen_at: "2026-11-21T10:00:00.000Z",
+      age_seconds: 5,
+      online: true,
+      details: { mode: "sim" },
+    };
+    renderShell({ "GET /engine/status": { ...ENGINE_ONLINE, components: [engine] } });
+    expect(await screen.findByText("Motor en línea (simulado)")).toBeInTheDocument();
+  });
+
   it("indica si el motor está desconectado", async () => {
     renderShell({ "GET /engine/status": { ...ENGINE_ONLINE, online: false } });
     expect(await screen.findByText("Motor desconectado")).toBeInTheDocument();

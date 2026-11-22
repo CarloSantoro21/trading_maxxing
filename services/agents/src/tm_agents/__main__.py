@@ -40,6 +40,12 @@ pueden prender en caliente con ``SETTINGS_SOURCE=worker-api`` (interruptor del a
 ver :mod:`tm_agents.orchestrator.settings`).
 
 Sin ``REDIS_URL`` solo escribe el heartbeat (archivo y, con la API, ``/internal/heartbeat``).
+
+Demo local (``make dev``): con ``TM_DEMO_STRATEGY=1`` se registra la estrategia
+``demo_pulse`` (:mod:`tm_agents.strategies.demo_pulse`, alterna long/flat cada
+``TM_DEMO_PULSE_MINUTES`` minutos sobre velas de 1 min) y el tope de operaciones por día del
+RiskAgent sube a ``TM_DEMO_MAX_TRADES_PER_DAY`` (10,000) para que la demo no se frene a los
+pocos minutos. Nunca se prende en dev ni en prod.
 """
 
 from __future__ import annotations
@@ -74,6 +80,32 @@ def _flag(env: Mapping[str, str], name: str, default: bool = True) -> bool:
     if value is None or value == "":
         return default
     return value.strip().lower() not in ("0", "false", "no", "off")
+
+
+DEMO_ENV = "TM_DEMO_STRATEGY"
+
+
+def register_demo_strategy(env: Mapping[str, str] | None = None) -> bool:
+    """Registra ``demo_pulse`` solo con ``TM_DEMO_STRATEGY=1``; devuelve si quedó registrada."""
+    env = os.environ if env is None else env
+    if not _flag(env, DEMO_ENV, default=False):
+        return False
+    from tm_agents.strategies import demo_pulse
+
+    log.warning(
+        "TM_DEMO_STRATEGY=1: estrategia de demo '%s' registrada (pulso de %s min). "
+        "Solo para ver el flujo en local; nunca en dev ni en prod.",
+        demo_pulse.DEMO_NAME,
+        demo_pulse.pulse_minutes(),
+    )
+    return True
+
+
+def demo_risk_overrides(env: Mapping[str, str]) -> dict[str, Any]:
+    """Límites del RiskAgent que cambian en la demo local (ninguno fuera de ella)."""
+    if not _flag(env, DEMO_ENV, default=False):
+        return {}
+    return {"max_trades_per_day": int(env.get("TM_DEMO_MAX_TRADES_PER_DAY") or 10_000)}
 
 
 def api_from_env(env: Mapping[str, str] | None = None) -> WorkerApiClient | None:
@@ -116,6 +148,7 @@ def build_worker(env: Mapping[str, str] | None = None) -> Any | None:
     from tm_agents.signals import RedisSignalSink, RedisSignalSource
 
     client = redis.Redis.from_url(url)
+    register_demo_strategy(env)
     api = api_from_env(env)
     if api is None:
         log.warning("sin TM_API_URL/TM_SERVICE_TOKEN: registro y bots en memoria (desarrollo)")
@@ -161,6 +194,7 @@ def build_worker(env: Mapping[str, str] | None = None) -> Any | None:
         explainer=explainer,
         explanation_sink=explanation_sink,
         explain_executor=explain_loop,
+        risk_overrides=demo_risk_overrides(env),
     )
     commands = equity = None
     if api is not None:

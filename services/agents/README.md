@@ -8,6 +8,23 @@ uv run --package tm-agents python -m tm_agents
 
 El worker corre en el mismo proceso la capa compartida del orquestador (publica `tm:signals`), los BotRunner (leen `tm:signals`, publican `tm:decisions`) y el `ReferenceService` (lee `tm:signals` con su propio cursor). Cada pieza se apaga con `ORCHESTRATOR_SHARED=0`, `ORCHESTRATOR_BOTS=0` o `REFERENCE_SERVICE=0`; todas necesitan `REDIS_URL` y el `ReferenceService` además la API (`TM_API_URL` y `TM_SERVICE_TOKEN`). Sin `REDIS_URL` solo escribe el heartbeat. Ver `.env.example` y `docs/arquitectura/orquestador.md`.
 
+## Estrategia de demo `demo_pulse` (solo local)
+
+`tm_agents.strategies.demo_pulse.DemoPulseAgent` alterna long/flat en BTCUSDT cada
+`TM_DEMO_PULSE_MINUTES` minutos (2) sobre velas de 1 minuto, para ver el flujo completo en una
+demo (las estrategias reales operan con velas de 4 h y diarias). **No es una estrategia de
+trading**: su pronóstico para la SimulationGate es sintético y su `lab_report` inventado.
+
+- Solo se registra con `TM_DEMO_STRATEGY=1` (`register_demo_strategy` en `__main__.py`); el
+  paquete `tm_agents.strategies` no la importa. Lo prende `make dev` (`docker-compose.yml`);
+  `docker-compose.runner.yml` (dev y prod) nunca.
+- Su fila en `strategies` (en `active`) solo está en `apps/api/seed/seed.sql`, que se carga en
+  la D1 local; ninguna migración la crea. `tests/test_demo_pulse.py` lo verifica.
+- Con la bandera, el tope de operaciones por día del RiskAgent sube a
+  `TM_DEMO_MAX_TRADES_PER_DAY` (10,000) para que la demo no se frene.
+
+Guía: [`docs/correr-local.md`](../../docs/correr-local.md).
+
 ## Conexión con la API en Cloudflare Workers (#116)
 
 El worker corre en la Mac (`make runner-up`, ver [`docs/arquitectura/motor-en-la-mac.md`](../../docs/arquitectura/motor-en-la-mac.md)) y **no tiene base de datos propia**: todo lo persistente está en D1 detrás de la API (`apps/api`, contrato en [`docs/arquitectura/api.md`](../../docs/arquitectura/api.md)). Solo hace conexiones salientes a `/internal/*` con el cliente común `tm_shared.api_client.WorkerApiClient`:
