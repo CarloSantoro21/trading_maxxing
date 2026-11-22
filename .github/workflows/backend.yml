@@ -3,8 +3,10 @@ name: Backend
 # Pipeline del backend (#27, #28, #29). Ver docs/pipeline-y-ambientes.md.
 #
 #   PR a develop/main  -> api (tsc + vitest + cobertura + JUnit) | python (ruff + pytest) | docker (build sin push)
-#   push a develop     -> lo anterior + push a Docker Hub (sha-<corto>, dev) + deploy-dev (D1 + Worker + smoke) + UAT
-#   push a main        -> lo anterior + push a Docker Hub (sha-<corto>, prod) + gate UAT + deploy-prod
+#   push a develop     -> lo anterior + push a Docker Hub (sha-<corto>, dev) + deploy-dev (D1 tm-dev + Worker tm-api-dev + smoke) + UAT
+#   push a main        -> lo anterior + push a Docker Hub (sha-<corto>, prod) + gate UAT + deploy-prod (D1 tm-prod + Worker tm-api)
+#   Las imágenes trading-maxxing-{agents,engine,forecast}:{dev,prod} son las que sigue
+#   watchtower en docker-compose.runner.yml (TM_ENV=dev|prod).
 #                         (environment `prod` con required reviewers: espera aprobación manual)
 #
 # Sin secrets de Cloudflare o Docker Hub los jobs no fallan: dejan un aviso en el summary.
@@ -72,6 +74,28 @@ jobs:
         run: pnpm test:coverage
       - name: Build del Worker (wrangler deploy --dry-run, sin publicar)
         run: pnpm build
+      - name: Nombres alineados con Terraform (trading_maxxing-infra)
+        working-directory: .
+        run: |
+          python3 - <<'PY'
+          import os, sys, tomllib
+          cfg = tomllib.load(open("apps/api/wrangler.toml", "rb"))
+          # envs/dev y envs/prod de trading_maxxing-infra: Worker y base D1 de cada ambiente.
+          want = {"dev": ("tm-api-dev", "tm-dev"), "production": ("tm-api", "tm-prod")}
+          bad, rows = [], []
+          for env, (worker, d1) in want.items():
+              e = cfg["env"][env]
+              got = (e.get("name"), e["d1_databases"][0]["database_name"])
+              rows.append(f"| {env} | `{got[0]}` | `{got[1]}` |")
+              if got != (worker, d1):
+                  bad.append(f"{env}: {got} (se esperaba {(worker, d1)})")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("### Worker y D1 por ambiente\n\n| Ambiente | Worker | D1 |\n|---|---|---|\n")
+              f.write("\n".join(rows) + "\n")
+          if bad:
+              print("::error::wrangler.toml no coincide con Terraform: " + "; ".join(bad))
+              sys.exit(1)
+          PY
       - name: APM habilitado (Workers Observability en dev y production, #29)
         working-directory: .
         run: |
@@ -369,6 +393,7 @@ jobs:
           print(f"database_id de env.{env} sustituido por la variable D1_DATABASE_ID")
           PY
 
+      # Binding DB de wrangler.toml: base tm-dev (env dev) o tm-prod (env production).
       - &migrate
         name: Migraciones de D1 (remoto)
         if: steps.creds.outputs.ok == 'true'

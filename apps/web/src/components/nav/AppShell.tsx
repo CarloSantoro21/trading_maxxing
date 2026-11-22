@@ -49,7 +49,10 @@ export function EngineIndicator() {
   const { data, error } = useSWR<EngineStatus>("/engine/status", { refreshInterval: SLOW_POLL_MS });
   const known = data !== undefined;
   const online = Boolean(data?.online) && !error;
-  const label = !known && !error ? "Motor: consultando…" : online ? "Motor en línea" : "Motor desconectado";
+  // Sin llaves de Binance Testnet el engine ejecuta simulado (fills al precio público).
+  const engine = data?.components.find((c) => c.component === "engine");
+  const sim = online && (engine?.details as { mode?: string } | undefined)?.mode === "sim";
+  const label = !known && !error ? "Motor: consultando…" : online ? (sim ? "Motor en línea (simulado)" : "Motor en línea") : "Motor desconectado";
   const title = data?.last_heartbeat_at
     ? `Último latido: ${formatDateTime(data.last_heartbeat_at)}`
     : "El motor de la Mac no ha mandado latidos";

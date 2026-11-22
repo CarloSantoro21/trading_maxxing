@@ -51,6 +51,7 @@ describe("format", () => {
     expect(formatSymbol("BTCUSDT")).toBe("BTC/USDT");
     expect(formatSymbol("XYZ")).toBe("XYZ");
     expect(strategyLabel("trend")).toBe("Tendencia");
+    expect(strategyLabel("demo_pulse")).toBe("Demo (pulso)");
     expect(strategyLabel("nueva")).toBe("nueva");
     expect(stateLabel("probation")).toBe("En observación");
     expect(stateLabel("otro")).toBe("otro");

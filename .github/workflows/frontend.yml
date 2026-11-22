@@ -3,6 +3,7 @@ name: Frontend
 # Pipeline del frontend (#45, #28). Ver docs/pipeline-y-ambientes.md.
 #
 #   PR a develop/main -> web: eslint + tsc + vitest (JUnit + cobertura) + next build (export) + check:export
+#                        e2e-mocked: Playwright del flujo completo con la API mockeada (pnpm e2e:mocked)
 #   push a develop    -> lo anterior + deploy-dev (Pages tm-web-dev, rama develop) + smoke + UAT
 #   push a main       -> lo anterior + gate UAT + deploy-prod (Pages tm-web, rama main; environment
 #                        `prod` con required reviewers: espera aprobación manual)
@@ -153,11 +154,64 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------------
+  # E2E con la API mockeada (Playwright + next dev, sin wrangler ni Access): en cada PR
+  # ---------------------------------------------------------------------------------
+  e2e-mocked:
+    name: E2E mocked (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      checks: write
+    defaults:
+      run:
+        working-directory: apps/web
+    env:
+      CI: "true"
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: apps/web/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Instalar navegador (chromium)
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Flujo completo con la API mockeada (pnpm e2e:mocked)
+        run: pnpm e2e:mocked
+      - name: Resultados en la pestaña Checks
+        if: ${{ !cancelled() }}
+        uses: mikepenz/action-junit-report@v5
+        with:
+          report_paths: apps/web/playwright-report/junit.xml
+          check_name: "Pruebas E2E mocked (Playwright)"
+          detailed_summary: true
+          include_passed: false
+          fail_on_failure: false
+          require_tests: false
+          annotate_only: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+      - name: Subir reporte de Playwright
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-e2e-mocked
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------------
   # Deploy a dev: automático en cada push a develop
   # ---------------------------------------------------------------------------------
   deploy-dev:
     name: Deploy web a dev
-    needs: web
+    needs: [web, e2e-mocked]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     environment:
@@ -283,7 +337,7 @@ jobs:
 
   deploy-prod:
     name: Deploy web a prod
-    needs: [web, uat-gate]
+    needs: [web, e2e-mocked, uat-gate]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:

@@ -1,5 +1,7 @@
 # Reporte de validación go/no-go (#44)
 
+> **Histórico.** Este documento se escribió con el stack anterior (Supabase, `services/api` y `make up`), que ya se borró. Para correr el sistema hoy usa `make dev` ([`correr-local.md`](correr-local.md)); los criterios de validación siguen valiendo con la tabla `trades` de D1 (`GET /api/trades`).
+
 > **Cambio de plan (2026-11-17):** este reporte ya no condiciona el deploy a
 > la nube. La rúbrica exige dev y prod sí o sí (ver `docs/rubrica.md`, #26,
 > #27, #45). El go/no-go se queda solo como validación de estrategias y

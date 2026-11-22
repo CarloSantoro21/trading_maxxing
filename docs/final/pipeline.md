@@ -8,15 +8,14 @@ Estado de los pipelines. Las fuentes son los workflows en [`.github/workflows/`]
 
 | Evento | Workflow | Qué hace |
 |---|---|---|
-| PR a `develop` o `main` | [`ci.yml`](../../.github/workflows/ci.yml) | Python (`ruff`, `pytest --cov` ≥ 70 %), API Worker (`tsc`, `vitest --coverage` ≥ 70 % con JUnit, `wrangler deploy --dry-run`), Web (`eslint`, `tsc`, `vitest`, export estático) y build sin publicar de las imágenes. |
-| Push a `develop` | `ci.yml` + `docker-publish.yml` + deploy dev | CI completo + imágenes del motor a Docker Hub + **deploy automático a dev** (migraciones de D1 y `wrangler deploy --env dev`; `wrangler pages deploy` a `tm-web-dev`) + **UAT** con Playwright ([`uat.yml`](../../.github/workflows/uat.yml)). |
-| Push a `main` | deploy prod | **Espera la aprobación** del environment `prod` (*required reviewer*) y despliega Worker `tm-api` + D1 `tm-prod` y Pages `tm-web`; imágenes del canal prod a Docker Hub. |
-| Manual | [`deploy-web.yml`](../../.github/workflows/deploy-web.yml) | Deploy del frontend a Pages eligiendo ambiente. |
+| PR a `develop` o `main` | [`backend.yml`](../../.github/workflows/backend.yml) + [`frontend.yml`](../../.github/workflows/frontend.yml) | Python (`ruff`, `pytest --cov` ≥ 70 %), API Worker (`tsc`, `vitest --coverage` ≥ 70 % con JUnit, `wrangler deploy --dry-run`, nombres de Worker/D1 iguales a Terraform), build sin publicar de las imágenes, Web (`eslint`, `tsc`, `vitest`, export estático) y **E2E mocked** con Playwright (`pnpm e2e:mocked`). |
+| Push a `develop` | los mismos | CI completo + imágenes del motor a Docker Hub (`sha-<corto>` y `dev`) + **deploy automático a dev** (migraciones de D1 `tm-dev` y `wrangler deploy --env dev` → `tm-api-dev`; `wrangler pages deploy` a `tm-web-dev`) + **UAT** con Playwright ([`uat.yml`](../../.github/workflows/uat.yml)). |
+| Push a `main` | los mismos + [`uat-gate.yml`](../../.github/workflows/uat-gate.yml) | Gate de UAT + **espera la aprobación** del environment `prod` (*required reviewer*) y despliega Worker `tm-api` + D1 `tm-prod` y Pages `tm-web`; imágenes `sha-<corto>` y `prod` a Docker Hub. |
 | Semanal / manual | [`cleanup-branches.yml`](../../.github/workflows/cleanup-branches.yml) | Limpia ramas ya fusionadas. |
 
 Los workflows **fallan en verde** cuando faltan credenciales externas (Docker Hub, Cloudflare): dejan un aviso en el *job summary* y terminan `success`, en vez de bloquear PRs mientras no haya cuenta.
 
-## CI principal (`ci.yml`)
+## CI (`backend.yml` y `frontend.yml`)
 
 Corre en cada PR y en cada push a `develop` y `main`. Jobs en paralelo:
 
@@ -36,10 +35,13 @@ Corre en cada PR y en cada push a `develop` y `main`. Jobs en paralelo:
 
 - `pnpm lint`, `pnpm typecheck`, `pnpm test` (Vitest).
 - `pnpm build` genera el export estático en `apps/web/out/` y `pnpm check:export` verifica que todas las rutas tengan su HTML.
+- Job **E2E mocked (Playwright)**: `pnpm e2e:mocked` levanta `next dev` y recorre onboarding → bot → trade → dashboard con `/api/*` mockeado.
+
+El E2E contra el stack local **real** (API + motor en Docker) es `make e2e-local`; corre en la Mac ([`docs/correr-local.md`](../correr-local.md)).
 
 ### Docker
 
-Matriz con las imágenes, `docker build` multi-stage sin publicar y cache de GHA. Mantiene paridad con `docker-publish`.
+Matriz con las imágenes (`agents`, `engine`, `forecast`): en PR, `docker build` multi-stage amd64 sin publicar con cache de GHA; en push, multi-arch y push a Docker Hub (abajo).
 
 ## Deploy del backend — Worker + D1 (#27)
 
@@ -58,11 +60,11 @@ Pasos:
 
 ## Motor — Docker Hub + Watchtower
 
-- `docker-publish.yml` construye **multi-arch** (`linux/amd64` + `linux/arm64`) `trading-maxxing-{agents,engine,forecast}`.
-- Tags: push a `develop` → `develop` + `sha-<commit>`; release a `main` → `X.Y.Z` + `latest`.
+- El job `docker` de `backend.yml` construye **multi-arch** (`linux/amd64` + `linux/arm64`) `trading-maxxing-{agents,engine,forecast}`.
+- Tags: push a `develop` → `sha-<corto>` + `dev`; push a `main` → `sha-<corto>` + `prod`. Son los que sigue [`docker-compose.runner.yml`](../../docker-compose.runner.yml) con `TM_ENV=dev|prod`.
 - En la Mac, **Watchtower** vigila el canal configurado y reinicia solo el servicio cuya imagen cambió. El "deploy" del motor es, entonces, publicar la imagen.
 - Sin `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` el job construye sin publicar y lo avisa.
-- Rollback: fijar `TM_TAG` al tag anterior en la Mac.
+- Rollback: en `.env.runner`, `TM_ENV=sha-<anterior>` y `make runner-up` (o mover el tag `prod` con `docker buildx imagetools create`).
 
 ## Deploy del frontend — Cloudflare Pages (#45)
 

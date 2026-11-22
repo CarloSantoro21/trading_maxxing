@@ -55,7 +55,7 @@ Terraform de `trading_maxxing-infra`.
    | `TM_API_URL` | `https://tm-api.<subdominio>.workers.dev` (o `tm-api-dev`), **sin** `/internal`. |
    | `TM_SERVICE_TOKEN` | El secreto `SERVICE_TOKEN` del Worker (`wrangler secret put SERVICE_TOKEN --env <env>`). Va en `X-Service-Token`. |
    | `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET` | Outputs `motor_service_token_client_id` / `motor_service_token_client_secret` de Terraform (app de Access que protege `/internal/*`). Van en `CF-Access-Client-Id` / `CF-Access-Client-Secret`. |
-   | `BINANCE_TESTNET_API_KEY`, `BINANCE_TESTNET_API_SECRET` | https://testnet.binance.vision. Sin ellas el motor arranca en modo `offline`. |
+   | `BINANCE_TESTNET_API_KEY`, `BINANCE_TESTNET_API_SECRET` | https://testnet.binance.vision. Sin ellas, `ENGINE_EXECUTION=auto` usa la ejecución **simulada** (fills al precio público de Binance, marcados con `rationale.execution = "sim"`); `ENGINE_EXECUTION=offline` para no ejecutar nada. |
 
 2. Levanta el motor:
 
@@ -131,16 +131,17 @@ Si hiciera falta, `COMMANDS_POLL_SECONDS=10` baja el total a ~18,000.
 ## Desarrollo local
 
 ```bash
-cd apps/api && pnpm dev       # wrangler dev en http://localhost:8787, D1 local
-make motor-local              # build local de agents/engine/forecast + redis
-make motor-local-down
+make dev                      # API (wrangler dev) + web + motor con build local, demo y ejecución sim
+make e2e-local                # Playwright de punta a punta contra ese stack
+make dev-down
 ```
 
-`docker-compose.yml` (build local) apunta a `TM_API_URL=http://host.docker.internal:8787` con
-el `SERVICE_TOKEN` de `apps/api/.dev.vars` (`dev-service-token-cambiame`). Si Docker no llega a
-wrangler, arráncalo escuchando en todas las interfaces: `pnpm exec wrangler dev --env dev
---local --ip 0.0.0.0`. Para probar sin la API, deja `TM_API_URL` vacía: el orquestador corre
-con registro y bots en memoria.
+Guía completa: [`docs/correr-local.md`](../correr-local.md). `docker-compose.yml` (build local)
+apunta a `TM_API_URL=http://host.docker.internal:8787` con el `SERVICE_TOKEN` de
+`apps/api/.dev.vars` (`dev-service-token-cambiame`); `make dev` arranca wrangler escuchando en
+`0.0.0.0` para que Docker lo alcance. Kronos va en el perfil `forecast` (`make dev FORECAST=1`).
+Para probar sin la API, deja `TM_API_URL` vacía: el orquestador corre con registro y bots en
+memoria.
 
 Pruebas (sin red): `uv run pytest services/agents services/engine packages`. Usan `respx` y
 `tm_shared.fake_api.FakeWorkerApi`, una API simulada en memoria con las mismas respuestas y

@@ -59,13 +59,14 @@ Por qué el motor no va en Workers y el plan con Cloudflare Containers:
 
 ## Cómo levantarlo en local
 
-Mientras terminan #116 y #117, el motor y la web todavía leen de Supabase local; la API nueva ya
-corre sola con D1 local. Ver [`final/setup-local.md`](final/setup-local.md).
+Todo el sistema (API en `wrangler dev` con D1 local, web y motor en Docker) con un comando,
+sin llaves: el motor usa la estrategia de demo `demo_pulse` y, sin llaves de Binance Testnet,
+la ejecución simulada. Guía: [`correr-local.md`](correr-local.md).
 
 ```bash
-cd apps/api && pnpm i && cp .dev.vars.example .dev.vars
-pnpm db:migrate:local && pnpm db:seed:local && pnpm dev    # API en http://localhost:8787
-make up && make web                                        # motor y web (aún con Supabase local)
+make dev          # API + web + motor; imprime las URLs
+make e2e-local    # Playwright de punta a punta: arranca un bot y espera su primera operación
+make dev-down
 make test && make lint
 ```
 
@@ -120,8 +121,8 @@ pendientes de correr.
 
 Puntos menores: gráfica de velas con el pronóstico de Kronos en el dashboard, enlaces del
 dashboard a `/backtests` y `/goals`, y que los SL/TP emulados sobrevivan a un reinicio del
-motor. Al terminar #115–#117 se borran `services/api`, `supabase/` y el Terraform de AWS en
-`infra/`.
+motor. `services/api` (FastAPI) y `supabase/` ya se borraron; falta quitar el Terraform de AWS
+en `infra/`.
 
 ## Cómo trabajar en el repo
 

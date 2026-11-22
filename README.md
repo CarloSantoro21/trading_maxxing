@@ -4,6 +4,7 @@ Proyecto final de Infraestructura para el Desarrollo Continuo (ITESO).
 
 Plataforma multiestrategia de trading de criptomonedas: un comité de agentes combina los pronósticos de [Kronos](https://github.com/shiyu-coder/Kronos) con estrategias cuantitativas con evidencia publicada en cripto (trend following y momentum intradía). Cada estrategia se valida con backtest in-sample/out-of-sample y Monte Carlo, cada operación se simula antes de ejecutarse y todo corre sobre [NautilusTrader](https://github.com/nautechsystems/nautilus_trader) en Binance Testnet (paper trading).
 
+- **Correr todo en local (make dev):** [docs/correr-local.md](docs/correr-local.md)
 - **Estado del proyecto y traspaso:** [docs/estado-del-proyecto.md](docs/estado-del-proyecto.md)
 - **Documentación final (arquitectura, setup, pipeline, decisiones, demo):** [docs/final/README.md](docs/final/README.md)
 - Propuesta: [docs/propuesta/Propuesta-trading_maxxing.md](docs/propuesta/Propuesta-trading_maxxing.md) ([PDF](docs/propuesta/Propuesta-trading_maxxing.pdf))
@@ -31,67 +32,56 @@ services/forecast   Servicio de pronóstico con Kronos (FastAPI)
 services/engine     Ejecución y backtest con NautilusTrader
 packages/shared     Contratos compartidos (Pydantic)
 docs/               Propuesta, arquitectura, wiki y diagramas
-scripts/            Utilidades (board de GitHub, publicar la Wiki)
+scripts/            Utilidades (make dev en scripts/dev, board de GitHub, publicar la Wiki)
 ```
 
-## Desarrollo local
+## Correr todo en local
 
-Requisitos: Python 3.12 con [uv](https://docs.astral.sh/uv/), Node 24 LTS con pnpm y Docker.
+**Guía paso a paso: [docs/correr-local.md](docs/correr-local.md).** Requisitos: Docker Desktop,
+Node 24 con pnpm 9, Python 3.12 con [uv](https://docs.astral.sh/uv/) y `make`.
 
 ```bash
-uv sync --all-packages          # dependencias de Python (workspace)
-uv run pytest --cov             # pruebas de Python con cobertura
-uv run ruff check . && uv run ruff format --check .
-
-cd apps/web && pnpm install
-pnpm test && pnpm lint && pnpm dev
-
-cd apps/api && pnpm install          # API: ver apps/api/README.md
-pnpm db:migrate:local && pnpm db:seed:local && pnpm dev   # http://localhost:8787
+make dev          # API (wrangler dev + D1 local) + web (next dev) + motor (docker compose)
+make e2e-local    # Playwright contra ese stack: arranca un bot y espera su primera operación
+make dev-down     # apaga todo
 ```
 
-## Levantar todo en local
-
-```bash
-make up          # motor: Redis + agents + engine + forecast (CPU)
-make up-mps      # igual, con forecast nativo en la Mac (Metal); luego `make forecast-mps`
-make web         # frontend con hot reload
-make ps          # estado y health
-make down        # detener
-```
+`make dev` deja el sistema completo operando sin ninguna llave: el motor usa la estrategia de
+demo `demo_pulse` (alterna long/flat cada 2 minutos en velas de 1 minuto; **solo existe en
+local**) y, sin llaves de Binance Spot Testnet, la **ejecución simulada** (fills al precio
+público de Binance con la comisión del laboratorio). Con llaves en `.env` opera en Testnet.
 
 | Servicio | URL |
 |---|---|
 | web | http://localhost:3000 |
 | API (Worker local) | http://localhost:8787/api/health |
-| forecast | http://localhost:8001/health |
 | Redis | localhost:6379 |
+| forecast (opcional, `make dev FORECAST=1`) | http://localhost:8001/health |
 
-Copia `.env.example` a `.env` (`make up` lo hace la primera vez) y llena las llaves.
+Pruebas y lint (lo mismo que corre el CI):
 
-Base de datos: D1 local de `wrangler` (`pnpm db:migrate:local`, `pnpm db:seed:local` en `apps/api`). Guía completa en [docs/final/setup-local.md](docs/final/setup-local.md). Mientras se fusionan #116 y #117, `make up` todavía levanta Supabase local para el código que no se ha migrado.
+```bash
+uv sync --all-packages && uv run pytest --cov && uv run ruff check . && uv run ruff format --check .
+cd apps/api && pnpm install && pnpm typecheck && pnpm test
+cd apps/web && pnpm install && pnpm lint && pnpm typecheck && pnpm test && pnpm e2e:mocked
+```
 
 ## Imágenes en Docker Hub
 
-El workflow `.github/workflows/docker-publish.yml` construye (linux/amd64 y linux/arm64) y publica las imágenes del motor (`trading-maxxing-{agents,forecast,engine}`, entre otras). En push a `develop` publica `sha-<commit>` y `develop`; en un tag `vX.Y.Z` publica `X.Y.Z` y `latest`. Sin los secrets solo construye y lo avisa en el resumen del job (no falla).
-
-Configurar los secrets:
-
-1. En Docker Hub: Account Settings > Personal access tokens > Generate new token (permisos Read & Write).
-2. Cargarlos en el repo:
+El workflow [`backend.yml`](.github/workflows/backend.yml) construye las imágenes del motor
+(`trading-maxxing-{agents,engine,forecast}`) en cada PR y, en cada push, las publica para
+linux/amd64 y linux/arm64 con el tag `sha-<corto>` y el del canal: **`dev`** en `develop` y
+**`prod`** en `main`. Esos son los tags que sigue Watchtower en
+[`docker-compose.runner.yml`](docker-compose.runner.yml) (`TM_ENV=dev|prod`). Sin los secrets
+`DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` solo construye y lo avisa en el resumen del job.
 
 ```bash
 gh secret set DOCKERHUB_USERNAME --repo CarloSantoro21/trading_maxxing --body "<usuario>"
-gh secret set DOCKERHUB_TOKEN --repo CarloSantoro21/trading_maxxing   # pega el token cuando lo pida
+gh secret set DOCKERHUB_TOKEN --repo CarloSantoro21/trading_maxxing   # token Read & Write
 ```
 
-Usar las imágenes publicadas en vez de construirlas:
-
-```bash
-export DOCKERHUB_USERNAME=<usuario> TM_TAG=develop   # o un X.Y.Z
-docker compose -f docker-compose.yml -f docker-compose.hub.yml pull
-docker compose -f docker-compose.yml -f docker-compose.hub.yml up -d
-```
+Motor en la Mac con esas imágenes: [docs/arquitectura/motor-en-la-mac.md](docs/arquitectura/motor-en-la-mac.md)
+(`make runner-up`).
 
 Cómo contribuir: [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -103,7 +93,7 @@ Conjunto de guías de cierre del proyecto en [`docs/final/`](docs/final/):
 |---|---|
 | [`docs/final/README.md`](docs/final/README.md) | Índice y mapa de la documentación final |
 | [`docs/final/arquitectura.md`](docs/final/arquitectura.md) | Vista end-to-end, ciclo de vida, persistencia y secretos |
-| [`docs/final/setup-local.md`](docs/final/setup-local.md) | Cómo levantar todo desde cero en Mac/Linux |
+| [`docs/final/setup-local.md`](docs/final/setup-local.md) | Instalación desde cero en Mac/Linux (y [`docs/correr-local.md`](docs/correr-local.md) para `make dev`) |
 | [`docs/final/pipeline.md`](docs/final/pipeline.md) | CI/CD, cobertura y flujo de releases |
 | [`docs/final/decisiones.md`](docs/final/decisiones.md) | ADR-lite de las decisiones clave |
 | [`docs/final/demo-guion.md`](docs/final/demo-guion.md) | Guion de 10 min para la demo final |

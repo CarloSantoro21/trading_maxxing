@@ -8,6 +8,9 @@ name: UAT (Playwright contra dev)
 # - Corre en el environment `dev`: lee la variable WEB_URL (URL de Pages dev) y los secrets
 #   CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET (service token de Cloudflare Access) que
 #   Playwright manda como headers para pasar el login de Access.
+# - Variables que lee apps/web/tests/e2e/uat.spec.ts: APP_URL, CF_ACCESS_CLIENT_ID,
+#   CF_ACCESS_CLIENT_SECRET y EXPECTED_ENV (el badge de ambiente debe decir `dev`). No hay
+#   usuario ni contraseña: el login es Cloudflare Access (OTP por correo).
 # - Si falla, el run del push a develop queda en rojo y el check "UAT (Playwright)" de ese
 #   commit queda en failure; el job "Gate UAT" (uat-gate.yml) del push a main lo lee y
 #   bloquea el deploy a prod.
@@ -43,13 +46,11 @@ jobs:
       run:
         working-directory: apps/web
     env:
+      # Un solo origen: Pages sirve el sitio y reenvía /api/* al Worker por service binding.
       APP_URL: ${{ inputs.app_url || vars.WEB_URL }}
-      # Un solo origen: Pages reenvía /api/* al Worker por service binding.
-      API_URL: ${{ inputs.app_url || vars.WEB_URL }}
       CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
       CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
-      DEMO_EMAIL: ${{ secrets.DEMO_EMAIL }}
-      DEMO_PASSWORD: ${{ secrets.DEMO_PASSWORD }}
+      EXPECTED_ENV: dev
       NEXT_TELEMETRY_DISABLED: "1"
     steps:
       - name: Revisar configuración de la UAT
@@ -98,32 +99,12 @@ jobs:
         if: steps.creds.outputs.ok == 'true'
         run: pnpm exec playwright install --with-deps chromium
 
-      # Playwright manda el service token de Access en cada petición (extraHTTPHeaders) para
-      # que Access deje pasar sin el login interactivo. La config se genera solo en el runner
-      # y extiende la de apps/web, así que el repo no guarda ni lee el secreto.
-      - name: Config de Playwright con los headers de Access
-        if: steps.creds.outputs.ok == 'true'
-        run: |
-          cat > playwright.access.config.ts <<'TS'
-          import { defineConfig } from "@playwright/test";
-          import base from "./playwright.config";
-
-          export default defineConfig({
-            ...base,
-            use: {
-              ...base.use,
-              extraHTTPHeaders: {
-                ...(base.use?.extraHTTPHeaders ?? {}),
-                "CF-Access-Client-Id": process.env.CF_ACCESS_CLIENT_ID ?? "",
-                "CF-Access-Client-Secret": process.env.CF_ACCESS_CLIENT_SECRET ?? "",
-              },
-            },
-          });
-          TS
-
+      # uat.spec.ts manda el service token de Access en cada petición (extraHTTPHeaders con
+      # CF_ACCESS_CLIENT_ID/SECRET) para que Access deje pasar sin el login interactivo. Con
+      # APP_URL definido Playwright no levanta ningún servidor local.
       - name: Correr UAT
         if: steps.creds.outputs.ok == 'true'
-        run: pnpm exec playwright test uat.spec.ts --config playwright.access.config.ts
+        run: pnpm e2e:uat
 
       - name: Resultados de la UAT en la pestaña Checks
         if: ${{ !cancelled() && steps.creds.outputs.ok == 'true' }}

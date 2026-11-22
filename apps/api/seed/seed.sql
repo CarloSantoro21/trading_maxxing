@@ -1,6 +1,6 @@
--- Datos de prueba para desarrollo local (port de supabase/seed.sql).
--- Se cargan con: pnpm db:seed:local   (después de pnpm db:migrate:local)
--- Nunca se cargan en la base de producción.
+-- Datos de prueba para desarrollo local (D1 local de `wrangler dev --local`).
+-- Se cargan con `make dev` (o pnpm db:seed:local después de pnpm db:migrate:local).
+-- Nunca se cargan en las bases de la nube (tm-dev ni tm-prod): ahí solo corren las migraciones.
 --
 -- Usuario demo: demo@trading-maxxing.local, admin. En local AUTH_MODE=dev entra con él
 -- (DEV_USER_EMAIL); no hay contraseña porque el login real lo hace Cloudflare Access.
@@ -17,15 +17,17 @@ INSERT INTO goals (id, profile_id, target_return, deadline)
 VALUES ('55555555-5555-5555-5555-555555555501', '22222222-2222-2222-2222-222222222222', 0.12,
         date('now', '+1 year'));
 
--- Bot con las tres estrategias del MVP.
-INSERT INTO bots (id, profile_id, name, status, strategy_config, started_at)
+-- Bot con las estrategias del MVP. Empieza DETENIDO: en la demo local (`make dev`) se arranca
+-- desde el dashboard con "Arrancar" y entonces opera la estrategia demo_pulse (al final).
+INSERT INTO bots (id, profile_id, name, status, strategy_config, started_at, stopped_at)
 VALUES (
   '33333333-3333-3333-3333-333333333333',
   '22222222-2222-2222-2222-222222222222',
   'Comité BTC/ETH',
-  'running',
+  'stopped',
   '{"kronos":{"enabled":true,"weight":0.40,"timeframe":"15m"},"trend":{"enabled":true,"weight":0.35,"timeframe":"1d"},"intraday_momentum":{"enabled":true,"weight":0.25,"timeframe":"30m"},"news_veto":{"enabled":true}}',
-  strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-3 days')
+  strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-3 days'),
+  strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 hours')
 );
 
 -- Operaciones: dos cerradas (una ganadora y una perdedora) y una abierta.
@@ -104,3 +106,27 @@ WHERE name = 'trend';
 UPDATE strategies
 SET lab_report = '{"sharpe_oos":0.66,"max_drawdown_p95":0.21,"max_drawdown_p99":0.28,"trades":118,"approved":true}'
 WHERE name = 'kronos';
+
+-- ---------------------------------------------------------------------------------------
+-- Estrategia SOLO DE DEMO: demo_pulse (services/agents/src/tm_agents/strategies/demo_pulse.py).
+-- Alterna long/flat en BTCUSDT cada TM_DEMO_PULSE_MINUTES (2) minutos sobre velas de 1 min para
+-- ver el flujo completo en local: señal, SimulationGate, bot, engine, trades y dashboard.
+-- Solo tiene código si el worker agents corre con TM_DEMO_STRATEGY=1 (lo pone `make dev`).
+-- Esta fila vive únicamente en este seed local: ninguna migración la crea, así que nunca
+-- existe en tm-dev ni en tm-prod. Su lab_report es inventado (solo para que el allocator le
+-- dé capital): no es evidencia de nada.
+-- ---------------------------------------------------------------------------------------
+INSERT INTO strategies (id, name, params, created_at, state_changed_at) VALUES
+  ('44444444-4444-4444-4444-444444444499', 'demo_pulse', '{"symbols":["BTCUSDT"]}',
+   strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-9 days'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-9 days'));
+
+INSERT INTO strategy_transitions (strategy_id, from_state, to_state, actor, reason, created_at) VALUES
+  ('44444444-4444-4444-4444-444444444499', 'research', 'lab', 'system', 'demo local', strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-9 days'));
+INSERT INTO strategy_transitions (strategy_id, from_state, to_state, actor, reason, created_at) VALUES
+  ('44444444-4444-4444-4444-444444444499', 'lab', 'shadow', 'system', 'demo local', strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-8 days'));
+INSERT INTO strategy_transitions (strategy_id, from_state, to_state, actor, reason, created_at) VALUES
+  ('44444444-4444-4444-4444-444444444499', 'shadow', 'active', '11111111-1111-1111-1111-111111111111', 'demo local: solo para ver el flujo', strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 days'));
+
+UPDATE strategies
+SET lab_report = '{"demo":true,"note":"estrategia de demo local, sin evidencia","aggregate":{"volatility":0.4,"sharpe":1.0},"montecarlo":{"max_drawdown":{"p95":0.15,"p99":0.25}}}'
+WHERE name = 'demo_pulse';

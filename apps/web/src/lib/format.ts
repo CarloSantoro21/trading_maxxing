@@ -64,6 +64,8 @@ const STRATEGY_LABELS: Record<string, string> = {
   trend: "Tendencia",
   intraday_momentum: "Momentum intradía",
   kronos: "Kronos (pronóstico)",
+  // Solo existe en la demo local (make dev, TM_DEMO_STRATEGY=1).
+  demo_pulse: "Demo (pulso)",
 };
 
 export function strategyLabel(name: string): string {

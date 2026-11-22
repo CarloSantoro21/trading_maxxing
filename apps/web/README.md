@@ -20,6 +20,7 @@ pnpm exec playwright install chromium   # solo la primera vez
 pnpm e2e:mocked     # flujo completo con /api/* mockeado (sin API ni Access)
 APP_URL=https://tm-web-dev.pages.dev CF_ACCESS_CLIENT_ID=... CF_ACCESS_CLIENT_SECRET=... \
   pnpm e2e:uat      # UAT contra el deploy de dev
+make e2e-local      # (desde la raíz) contra el stack local real: API + motor + web
 ```
 
 Requiere Node 24 LTS (ver `.nvmrc` en la raíz).
@@ -175,6 +176,10 @@ Las pruebas unitarias no usan red:
   el sitio carga y, si la identidad del token está dada de alta, el badge (`EXPECTED_ENV`),
   el onboarding o el dashboard y `/strategies`. Si no está dada de alta valida la pantalla de
   "No tienes acceso". Sin `APP_URL` en local hace `test.skip`; en CI falla.
+- **Stack local real** (`make e2e-local` desde la raíz): `tests/e2e/local-stack.spec.ts`, sin
+  mocks, contra `make dev` (wrangler dev + D1 local + motor en Docker con la estrategia de
+  demo). Arranca el bot y espera hasta 6 minutos a que el motor registre una operación y el
+  dashboard la muestre. Sin `LOCAL_STACK=1` se omite. Guía: [`docs/correr-local.md`](../../docs/correr-local.md).
 
 Los artefactos (`playwright-report/`, `test-results/`) están en `.gitignore`.
 

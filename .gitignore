@@ -23,12 +23,16 @@ next-env.d.ts
 playwright-report/
 test-results/
 
+# Stack local de `make dev` (pids y logs)
+.dev/
+
 # Entorno y secretos
 .env
 .env.*
 !.env.example
+!.env.runner.example
 
-# Datos y modelos (van a S3)
+# Datos y modelos (locales; no se suben)
 data/
 *.parquet
 models/

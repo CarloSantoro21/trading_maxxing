@@ -60,6 +60,8 @@ POLICIES: Mapping[str, SleevePolicy] = MappingProxyType(
         "intraday_momentum": SleevePolicy(gate_horizon=1),
         # El pronóstico de Kronos cubre `pred_len` (6) velas de 4 h.
         "kronos": SleevePolicy(gate_horizon=6, signal_levels=True, use_external_paths=True),
+        # Solo demo local (TM_DEMO_STRATEGY=1): velas de 1 min y pronóstico sintético.
+        "demo_pulse": SleevePolicy(gate_horizon=5, use_external_paths=True),
     }
 )
 
