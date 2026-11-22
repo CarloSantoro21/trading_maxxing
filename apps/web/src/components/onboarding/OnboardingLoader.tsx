@@ -1,38 +1,29 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useAuth } from "@/components/auth/AuthProvider";
-import { fetchProfile, profileToForm } from "@/lib/onboarding/repository";
-import type { OnboardingFormState } from "@/lib/onboarding/schema";
+import useSWR, { useSWRConfig } from "swr";
+import { useMe } from "@/components/auth/RequireAuth";
+import { ErrorBox, Loading } from "@/components/ui/feedback";
+import { DASHBOARD_KEY } from "@/lib/dashboard/data";
+import { fetchProfile, ONBOARDING_KEY, profileToForm, type ProfileRow } from "@/lib/onboarding/repository";
 import { OnboardingWizard } from "./OnboardingWizard";
 
 /**
- * Carga el perfil existente (si lo hay) y muestra el wizard prellenado.
- * Debe ir dentro de <RequireAuth>, que garantiza que hay sesión; la navegación y el cierre
- * de sesión los pone <AppShell>.
+ * Carga el perfil existente (`GET /api/onboarding`) y muestra el wizard prellenado.
+ * Debe ir dentro de <RequireAuth>; la navegación y el cierre de sesión los pone <AppShell>.
+ * Al guardar vuelve a leer `/api/me` (que trae el perfil) y el dashboard.
  */
 export function OnboardingLoader() {
-  const { supabase, session } = useAuth();
-  const userId = session?.user.id;
-  const [initial, setInitial] = useState<OnboardingFormState | undefined>(undefined);
-  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  const { refresh } = useMe();
+  const { mutate } = useSWRConfig();
+  const { data, error, isLoading, mutate: reload } = useSWR<ProfileRow | null>(ONBOARDING_KEY, fetchProfile, {
+    revalidateOnFocus: false,
+  });
 
-  useEffect(() => {
-    if (!supabase || !userId) return;
-    let active = true;
-    fetchProfile(supabase, userId)
-      .then((row) => {
-        if (!active) return;
-        setInitial(row ? profileToForm(row) : undefined);
-        setState("ready");
-      })
-      .catch(() => {
-        if (active) setState("error");
-      });
-    return () => {
-      active = false;
-    };
-  }, [supabase, userId]);
+  function handleSaved() {
+    void refresh();
+    void mutate(DASHBOARD_KEY);
+    void reload();
+  }
 
   return (
     <div className="mx-auto w-full max-w-3xl">
@@ -43,18 +34,12 @@ export function OnboardingLoader() {
         </p>
       </header>
 
-      {state === "loading" && (
-        <p role="status" className="text-neutral-500">
-          Cargando tu perfil…
-        </p>
+      {isLoading && <Loading>Cargando tu perfil…</Loading>}
+      {error && !isLoading && (
+        <ErrorBox onRetry={() => void reload()}>{error instanceof Error ? error.message : "No se pudo leer tu perfil."}</ErrorBox>
       )}
-      {state === "error" && (
-        <p role="alert" className="text-red-700 dark:text-red-400">
-          No se pudo leer tu perfil. Revisa que Supabase esté corriendo y recarga la página.
-        </p>
-      )}
-      {state === "ready" && supabase && userId && (
-        <OnboardingWizard supabase={supabase} userId={userId} initial={initial} />
+      {!isLoading && !error && data !== undefined && (
+        <OnboardingWizard initial={data ? profileToForm(data) : undefined} onSaved={handleSaved} />
       )}
     </div>
   );

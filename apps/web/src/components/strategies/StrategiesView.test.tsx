@@ -1,11 +1,10 @@
-import type { Session } from "@supabase/supabase-js";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { AuthProvider } from "@/components/auth/AuthProvider";
+import { describe, expect, it, vi } from "vitest";
+import { RequireAuth } from "@/components/auth/RequireAuth";
 import { AppShell } from "@/components/nav/AppShell";
-import { mockApi, type ApiHandler } from "@/test/api";
-import { createFakeSupabase, type Responder } from "@/test/fakeSupabase";
+import { mockApi, type RouteHandler, type Routes } from "@/test/api";
+import { renderWithApi } from "@/test/render";
 import { StrategiesView } from "./StrategiesView";
 
 vi.mock("next/navigation", () => ({
@@ -48,43 +47,29 @@ const equity = [
   { strategy_id: "s1", started_at: "2026-10-20T00:00:00Z", day: "2026-10-28", equity: "1003", drawdown: "0.01" },
 ];
 
-function responder({ admin = false, strategies = [strategy()] }: { admin?: boolean; strategies?: unknown[] } = {}): Responder {
-  return (q) => {
-    if (q.table === "strategies") return { data: strategies };
-    if (q.table === "strategy_transitions") return { data: transitions };
-    if (q.table === "reference_equity") return { data: equity };
-    if (q.table === "app_roles") return { data: admin ? { role: "admin" } : { role: "member" } };
-    return { data: null };
-  };
+function overview({ admin = false, strategies = [strategy()] }: { admin?: boolean; strategies?: unknown[] } = {}) {
+  return { strategies, transitions, equity, isAdmin: admin };
 }
 
-function renderView(respond: Responder, api?: ApiHandler, refreshDelayMs = 0) {
-  const fake = createFakeSupabase(respond);
-  fake.auth.getSession.mockResolvedValue({
-    data: { session: { user: { id: "user-1" }, access_token: "jwt" } as unknown as Session },
-    error: null,
-  });
-  const apiMock = mockApi(api);
-  render(
-    <AuthProvider client={fake.client}>
+const OVERVIEW = "GET /strategies/overview";
+
+function renderView(routes: Routes, refreshMs = 60_000) {
+  const api = mockApi(routes);
+  renderWithApi(
+    <RequireAuth>
       <AppShell>
-        <StrategiesView refreshDelayMs={refreshDelayMs} />
+        <StrategiesView refreshMs={refreshMs} />
       </AppShell>
-    </AuthProvider>,
+    </RequireAuth>,
   );
-  return { fake, api: apiMock };
+  return api;
 }
 
-afterEach(() => {
-  vi.unstubAllEnvs();
-  vi.unstubAllGlobals();
-  vi.useRealTimers();
-});
+const overviewCalls = (api: ReturnType<typeof mockApi>) => api.calls.filter((c) => c.path === "/strategies/overview").length;
 
 describe("StrategiesView", () => {
   it("muestra estado, días en shadow, banda del MC, reporte del lab e historial", async () => {
-    renderView(responder());
-    expect(screen.getByRole("status")).toHaveTextContent("Cargando estrategias…");
+    renderView({ [OVERVIEW]: overview() });
     const card = await screen.findByRole("article");
     expect(within(card).getByText("Shadow")).toBeInTheDocument();
     expect(within(card).getByText("8.0")).toBeInTheDocument();
@@ -103,7 +88,7 @@ describe("StrategiesView", () => {
   });
 
   it("un member no ve los botones de promover ni retirar", async () => {
-    renderView(responder());
+    renderView({ [OVERVIEW]: overview() });
     await screen.findByRole("article");
     expect(screen.queryByRole("button", { name: "Promover a activa" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retirar" })).not.toBeInTheDocument();
@@ -111,38 +96,38 @@ describe("StrategiesView", () => {
   });
 
   it("el admin promueve con confirmación dentro de la página y recarga", async () => {
-    const { api, fake } = renderView(responder({ admin: true }), () => ({
+    const promote: RouteHandler = () => ({
       body: { from_state: "shadow", to_state: "active", actor: "user-1", reason: "8 días en shadow sin fallas" },
-    }));
+    });
+    const api = renderView({ [OVERVIEW]: overview({ admin: true }), "POST /strategies/trend/promote": promote });
     await screen.findByRole("article");
     expect(screen.getByText("Admin")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Promover a activa" }));
     const dialog = screen.getByRole("dialog", { name: "¿Promover Tendencia a activa?" });
     expect(within(dialog).getByLabelText("Motivo")).toHaveValue("8 días en shadow sin fallas");
-    const before = fake.queries.length;
+    const before = overviewCalls(api);
     await userEvent.click(within(dialog).getByRole("button", { name: "Sí, promover" }));
     expect(await screen.findByText("Tendencia pasó de Shadow a Activa.")).toBeInTheDocument();
-    expect(api.calls[0]).toMatchObject({
+    expect(api.actions().find((c) => c.method === "POST")).toMatchObject({
       method: "POST",
       path: "/strategies/trend/promote",
       body: { reason: "8 días en shadow sin fallas" },
     });
-    expect(api.calls[0].headers.Authorization).toBe("Bearer jwt");
-    await waitFor(() => expect(fake.queries.length).toBeGreaterThan(before));
+    await waitFor(() => expect(overviewCalls(api)).toBeGreaterThan(before));
   });
 
   it("con menos de 7 días limpios el botón de promover queda deshabilitado", async () => {
-    renderView(responder({ admin: true, strategies: [strategy({ shadow_days_clean: 3 })] }));
+    renderView({ [OVERVIEW]: overview({ admin: true, strategies: [strategy({ shadow_days_clean: 3 })] }) });
     await screen.findByRole("article");
     expect(screen.getByRole("button", { name: "Promover a activa" })).toBeDisabled();
     expect(screen.getByText("Lleva 3.0 de 7 días en shadow sin fallas.")).toBeInTheDocument();
   });
 
   it("retirar exige un motivo y muestra el 403 de la API", async () => {
-    const { api } = renderView(responder({ admin: true, strategies: [strategy({ state: "active" })] }), () => ({
-      status: 403,
-      body: { detail: "Solo un admin puede retirar estrategias" },
-    }));
+    const api = renderView({
+      [OVERVIEW]: overview({ admin: true, strategies: [strategy({ state: "active" })] }),
+      "POST /strategies/trend/retire": { status: 403, body: { detail: "Solo un admin puede retirar estrategias" } },
+    });
     await screen.findByRole("article");
     expect(screen.queryByRole("button", { name: "Promover a activa" })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Retirar" }));
@@ -152,17 +137,20 @@ describe("StrategiesView", () => {
     await userEvent.type(within(dialog).getByLabelText("Motivo"), "  Se degradó  ");
     await userEvent.click(confirm);
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("Solo un admin puede retirar estrategias");
-    expect(api.calls[0]).toMatchObject({ path: "/strategies/trend/retire", body: { reason: "Se degradó" } });
+    expect(api.actions().find((c) => c.method === "POST")).toMatchObject({
+      path: "/strategies/trend/retire",
+      body: { reason: "Se degradó" },
+    });
     await userEvent.click(within(dialog).getByRole("button", { name: "Cancelar" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("sin banda ni curva ni reporte lo explica", async () => {
-    renderView(
-      responder({
+    renderView({
+      [OVERVIEW]: overview({
         strategies: [strategy({ id: "s9", state: "lab", lab_report: null, live_metrics: {}, shadow_days_clean: null })],
       }),
-    );
+    });
     const card = await screen.findByRole("article");
     expect(within(card).getByText("Sin curva de referencia")).toBeInTheDocument();
     expect(within(card).getByText("Todavía no pasa por el laboratorio.")).toBeInTheDocument();
@@ -171,25 +159,21 @@ describe("StrategiesView", () => {
 
   it("estado vacío y error con reintento", async () => {
     let fail = true;
-    renderView((q) => (fail ? { error: { message: "x" } } : responder({ strategies: [] })(q)));
-    expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo leer las estrategias.");
+    renderView({
+      [OVERVIEW]: () => (fail ? { status: 500, body: { detail: "x" } } : { body: overview({ strategies: [] }) }),
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent("No se pudieron cargar las estrategias.");
     fail = false;
     await userEvent.click(screen.getByRole("button", { name: "Reintentar" }));
     expect(await screen.findByText("No hay estrategias registradas")).toBeInTheDocument();
   });
 
-  it("vuelve a leer cuando Realtime avisa de un cambio", async () => {
+  it("vuelve a leer la API cada cierto tiempo (polling)", async () => {
     let state = "shadow";
-    const { fake } = renderView((q) =>
-      q.table === "strategies" ? { data: [strategy({ state })] } : responder()(q),
-    );
+    renderView({ [OVERVIEW]: () => ({ body: overview({ strategies: [strategy({ state })] }) }) }, 50);
     await screen.findByRole("article");
     expect(screen.getByText("En vivo")).toBeInTheDocument();
     state = "active";
-    act(() => {
-      fake.emitRealtime("strategies", "UPDATE", {});
-      fake.emitRealtime("reference_equity", "INSERT", {});
-    });
-    expect(await screen.findByText("Activa")).toBeInTheDocument();
+    expect(await screen.findByText("Activa", {}, { timeout: 2000 })).toBeInTheDocument();
   });
 });

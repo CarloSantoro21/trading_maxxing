@@ -1,108 +1,64 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mockApi } from "@/test/api";
-import {
-  ApiError,
-  apiErrorMessage,
-  apiRequest,
-  createBot,
-  errorDetail,
-  getApiUrl,
-  killBot,
-  MissingApiConfigError,
-  startBot,
-  stopBot,
-  transitionStrategy,
-} from "./client";
+import { ApiError, apiBase, apiFetch, errorDetail, triggerDemoError } from "./client";
 
-afterEach(() => {
-  vi.unstubAllEnvs();
-  vi.unstubAllGlobals();
+afterEach(() => vi.unstubAllEnvs());
+
+describe("apiBase", () => {
+  it("usa el mismo origen por defecto", () => {
+    vi.stubEnv("NEXT_PUBLIC_API_BASE", "");
+    expect(apiBase()).toBe("/api");
+  });
+
+  it("acepta otro origen sin la diagonal final", () => {
+    vi.stubEnv("NEXT_PUBLIC_API_BASE", "http://localhost:8787/");
+    expect(apiBase()).toBe("http://localhost:8787/api");
+  });
 });
 
-describe("apiRequest", () => {
-  it("manda el token y el cuerpo JSON", async () => {
-    const { calls } = mockApi(() => ({ body: { ok: true } }));
-    await expect(apiRequest("/x", { token: "jwt", method: "POST", body: { a: 1 } })).resolves.toEqual({ ok: true });
-    expect(calls[0]).toMatchObject({ method: "POST", path: "/x", body: { a: 1 } });
-    expect(calls[0].headers).toEqual({ Authorization: "Bearer jwt", "Content-Type": "application/json" });
+describe("apiFetch", () => {
+  it("llama a /api con la cookie de Access, sin tokens y con el body en JSON", async () => {
+    const { fetchMock, calls } = mockApi({ "PUT /onboarding": { profileId: "p1", profile_id: "p1" } });
+    const res = await apiFetch("/onboarding", { method: "PUT", body: { capital: 600 } });
+    expect(res).toEqual({ profileId: "p1", profile_id: "p1" });
+    const [url, init] = fetchMock.mock.calls.at(-1)!;
+    expect(url).toBe("/api/onboarding");
+    expect(init).toMatchObject({ method: "PUT", credentials: "include", redirect: "manual" });
+    expect(calls.at(-1)?.headers).toEqual({ Accept: "application/json", "Content-Type": "application/json" });
   });
 
-  it("sin cuerpo no manda Content-Type y acepta respuestas vacías o de texto", async () => {
-    const { calls } = mockApi(() => ({ status: 200 }));
-    await expect(apiRequest("/x", { token: "t" })).resolves.toBeNull();
-    expect(calls[0].headers).toEqual({ Authorization: "Bearer t" });
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("hola", { status: 200 })));
-    await expect(apiRequest("/x", { token: "t" })).resolves.toBe("hola");
+  it("devuelve undefined con 204", async () => {
+    mockApi({ "DELETE /admin/users/u2": { status: 204 } });
+    await expect(apiFetch("/admin/users/u2", { method: "DELETE" })).resolves.toBeUndefined();
   });
 
-  it("convierte los errores de FastAPI en ApiError", async () => {
-    mockApi(() => ({ status: 409, body: { detail: "No se puede arrancar" } }));
-    const err = (await apiRequest("/x", { token: "t" }).catch((e: unknown) => e)) as ApiError;
+  it("lanza ApiError con el detail de la API", async () => {
+    mockApi({ "POST /bots": { status: 409, body: { detail: "Ya tienes un bot" } } });
+    const err = await apiFetch("/bots", { method: "POST", body: {} }).catch((e) => e);
     expect(err).toBeInstanceOf(ApiError);
-    expect(err.status).toBe(409);
-    expect(err.message).toBe("No se puede arrancar");
+    expect(err).toMatchObject({ status: 409, message: "Ya tienes un bot" });
   });
 
-  it("explica un error de red", async () => {
-    vi.stubEnv("NEXT_PUBLIC_API_URL", "http://api.test/");
-    vi.stubGlobal("fetch", vi.fn(async () => Promise.reject(new TypeError("Failed to fetch"))));
-    const err = (await apiRequest("/x", { token: "t" }).catch((e: unknown) => e)) as ApiError;
-    expect(err.status).toBe(0);
-    expect(err.message).toContain("http://api.test");
+  it("une los mensajes de un 422 de validación", () => {
+    expect(errorDetail({ detail: [{ msg: "capital >= 500" }, { msg: "riesgo 1..5" }] }, 422)).toBe("capital >= 500; riesgo 1..5");
+    expect(errorDetail(null, 401)).toMatch(/Cloudflare Access/);
+    expect(errorDetail("html", 502)).toBe("La API respondió con un error (502).");
   });
 
-  it("falla con un mensaje claro si falta NEXT_PUBLIC_API_URL", async () => {
-    vi.stubEnv("NEXT_PUBLIC_API_URL", "");
-    expect(getApiUrl()).toBeNull();
-    await expect(apiRequest("/x", { token: "t" })).rejects.toBeInstanceOf(MissingApiConfigError);
+  it("sin conexión lanza ApiError con status 0", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+    await expect(apiFetch("/me")).rejects.toMatchObject({ status: 0 });
   });
-});
 
-describe("errorDetail", () => {
-  it.each([
-    [{ detail: [{ msg: "campo requerido" }, { msg: "muy largo" }] }, 422, "campo requerido; muy largo"],
-    [{ detail: [{}] }, 422, "La API respondió con un error (422)."],
-    [null, 401, "Tu sesión expiró; vuelve a iniciar sesión."],
-    ["x", 403, "No tienes permiso para hacer esto."],
-    [{}, 500, "La API respondió con un error (500)."],
-  ])("errorDetail(%j, %i)", (body, status, expected) => {
-    expect(errorDetail(body, status)).toBe(expected);
+  it("si Access redirige al login (sesión vencida) lo trata como 401", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ type: "opaqueredirect" } as Response));
+    await expect(apiFetch("/me")).rejects.toMatchObject({ status: 401 });
   });
 });
 
-describe("endpoints", () => {
-  it("usa las rutas de bots y estrategias", async () => {
-    const { calls } = mockApi(() => ({ body: {} }));
-    const opts = { token: "t" };
-    await createBot("Mi bot", opts);
-    await startBot("b 1", opts);
-    await stopBot("b1", opts);
-    await killBot("b1", "pánico", opts);
-    await transitionStrategy("trend", "promote", "7 días", opts);
-    await transitionStrategy("trend", "retire", "drawdown", opts);
-    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
-      "POST /bots",
-      "POST /bots/b%201/start",
-      "POST /bots/b1/stop",
-      "POST /bots/b1/kill",
-      "POST /strategies/trend/promote",
-      "POST /strategies/trend/retire",
-    ]);
-    expect(calls.map((c) => c.body)).toEqual([
-      { name: "Mi bot" },
-      undefined,
-      undefined,
-      { reason: "pánico" },
-      { reason: "7 días" },
-      { reason: "drawdown" },
-    ]);
-  });
-});
-
-describe("apiErrorMessage", () => {
-  it("usa el mensaje de los errores conocidos y uno genérico para lo demás", () => {
-    expect(apiErrorMessage(new ApiError(409, "conflicto"))).toBe("conflicto");
-    expect(apiErrorMessage(new MissingApiConfigError())).toContain("NEXT_PUBLIC_API_URL");
-    expect(apiErrorMessage(new Error("x"))).toBe("Ocurrió un error inesperado. Intenta de nuevo.");
+describe("triggerDemoError", () => {
+  it("devuelve el request_id del 500 a propósito", async () => {
+    mockApi({ "POST /admin/debug/error": { status: 500, body: { detail: "x", request_id: "r-1" } } });
+    await expect(triggerDemoError()).resolves.toBe("r-1");
   });
 });

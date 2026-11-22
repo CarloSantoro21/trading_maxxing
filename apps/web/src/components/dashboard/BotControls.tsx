@@ -28,15 +28,13 @@ export function BotStatusBadge({ status }: { status: string }) {
 /**
  * Estado del bot y sus botones (API #21): arrancar, detener y paro de emergencia. El paro
  * de emergencia vende todas las posiciones a USDT, así que pide confirmación en la página.
- * La respuesta de la API actualiza el estado al momento; Realtime lo confirma después.
+ * La respuesta de la API actualiza el estado al momento; el siguiente refresco lo confirma.
  */
 export function BotControls({
   bot,
-  token,
   onChange,
 }: {
   bot: BotRow;
-  token: string;
   onChange: (bot: ApiBot) => void;
 }) {
   const [busy, setBusy] = useState<"start" | "stop" | "kill" | null>(null);
@@ -49,10 +47,10 @@ export function BotControls({
     try {
       const result =
         action === "start"
-          ? await startBot(bot.id, { token })
+          ? await startBot(bot.id)
           : action === "stop"
-            ? await stopBot(bot.id, { token })
-            : await killBot(bot.id, reason || "paro de emergencia manual", { token });
+            ? await stopBot(bot.id)
+            : await killBot(bot.id, reason || "paro de emergencia manual");
       onChange(result.bot);
       setConfirmKill(false);
     } catch (err) {

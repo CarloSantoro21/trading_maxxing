@@ -28,7 +28,8 @@ describe("rutas", () => {
   it("la app real solo tiene las rutas estáticas esperadas", () => {
     const { routes, problems } = scanApp(join(webDir, "src", "app"));
     expect(problems).toEqual([]);
-    expect(routes).toEqual(expect.arrayContaining(["/", "/login", "/onboarding"]));
+    expect(routes).not.toContain("/login");
+    expect(routes).toEqual(expect.arrayContaining(["/", "/admin", "/onboarding"]));
   });
 });
 

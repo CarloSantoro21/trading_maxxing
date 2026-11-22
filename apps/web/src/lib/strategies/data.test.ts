@@ -1,16 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { createFakeSupabase } from "@/test/fakeSupabase";
 import {
   actorLabel,
   availableActions,
   bandPosition,
   drawdownBand,
-  fetchStrategies,
   labSummary,
   latestRun,
   mcBand,
+  normalizeOverview,
   referenceSeries,
-  StrategiesLoadError,
   type ReferenceEquityRow,
 } from "./data";
 
@@ -24,30 +22,25 @@ const report = {
   approval: { approved: true, checks: [{ name: "sharpe", passed: true, reason: "Sharpe ≥ 1" }, null, { passed: false }] },
 };
 
-describe("fetchStrategies", () => {
-  it("normaliza las filas y detecta al admin", async () => {
-    const fake = createFakeSupabase((q) => {
-      if (q.table === "strategies")
-        return { data: [{ id: "s1", name: "trend", state: "shadow", params: null, lab_report: null, live_metrics: null, state_changed_at: "x", shadow_days_clean: "7.5" }] };
-      if (q.table === "app_roles") return { data: { role: "admin" } };
-      return { data: null };
+describe("normalizeOverview", () => {
+  it("aplica defaults y convierte los días a número", () => {
+    const data = normalizeOverview({
+      strategies: [
+        // La API puede mandar null en params/live_metrics y los días como texto.
+        { id: "s1", name: "trend", state: "shadow", params: null, lab_report: null, live_metrics: null, state_changed_at: "x", shadow_days_clean: "7.5" } as never,
+      ],
+      transitions: undefined as never,
+      equity: undefined as never,
+      isAdmin: true,
     });
-    const data = await fetchStrategies(fake.client, "u1");
     expect(data.isAdmin).toBe(true);
     expect(data.strategies[0]).toMatchObject({ params: {}, live_metrics: {}, shadow_days_clean: 7.5 });
     expect(data.transitions).toEqual([]);
+    expect(data.equity).toEqual([]);
   });
 
-  it("si no puede leer el rol sigue en modo lectura", async () => {
-    const fake = createFakeSupabase((q) => (q.table === "app_roles" ? { error: { message: "rls" } } : { data: [] }));
-    await expect(fetchStrategies(fake.client, "u1")).resolves.toMatchObject({ isAdmin: false });
-  });
-
-  it("falla si no puede leer las estrategias", async () => {
-    const fake = createFakeSupabase((q) => (q.table === "strategies" ? { error: { message: "x" } } : { data: [] }));
-    const err = await fetchStrategies(fake.client, "u1").catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(StrategiesLoadError);
-    expect((err as Error).message).toBe("No se pudo leer las estrategias.");
+  it("isAdmin solo es true si la API lo dice", () => {
+    expect(normalizeOverview({ strategies: [], transitions: [], equity: [], isAdmin: "si" as never }).isAdmin).toBe(false);
   });
 });
 

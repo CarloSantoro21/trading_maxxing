@@ -14,22 +14,13 @@ import {
   type BacktestFormState,
   type BacktestJob,
 } from "@/lib/backtests/api";
-import type { Fetcher } from "@/lib/tmApi";
 
 function toggle(list: string[], value: string): string[] {
   return list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
 }
 
-/** Formulario para encolar un backtest con POST /backtests. */
-export function BacktestForm({
-  token,
-  onCreated,
-  fetcher,
-}: {
-  token: string;
-  onCreated?: (job: BacktestJob) => void;
-  fetcher?: Fetcher;
-}) {
+/** Formulario para encolar un backtest con POST /api/backtests. */
+export function BacktestForm({ onCreated }: { onCreated?: (job: BacktestJob) => void }) {
   const [form, setForm] = useState<BacktestFormState>(EMPTY_BACKTEST_FORM);
   const [errors, setErrors] = useState<BacktestFieldErrors>({});
   const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
@@ -50,7 +41,7 @@ export function BacktestForm({
     setStatus("sending");
     setMessage(null);
     try {
-      const job = await createBacktest(token, result.body, fetcher);
+      const job = await createBacktest(result.body);
       setStatus("sent");
       setMessage(`Backtest encolado (${job.id.slice(0, 8)}). Lo procesa el worker del motor.`);
       onCreated?.(job);

@@ -1,6 +1,5 @@
 "use client";
 
-import type { SupabaseClient } from "@supabase/supabase-js";
 import Link from "next/link";
 import { useEffect, useId, useRef, useState } from "react";
 import {
@@ -68,13 +67,9 @@ function RiskExplanation({ id, capital, level }: { id: string; capital: number |
 }
 
 export function OnboardingWizard({
-  supabase,
-  userId,
   initial = EMPTY_FORM,
   onSaved,
 }: {
-  supabase: SupabaseClient;
-  userId: string;
   initial?: OnboardingFormState;
   onSaved?: (profileId: string) => void;
 }) {
@@ -138,7 +133,7 @@ export function OnboardingWizard({
     setSaveError(null);
     setSaving(true);
     try {
-      const { profileId } = await saveOnboarding(supabase, userId, result.data);
+      const { profileId } = await saveOnboarding(result.data);
       setSaved(true);
       onSaved?.(profileId);
     } catch (err) {
