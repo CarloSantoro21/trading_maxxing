@@ -1,0 +1,62 @@
+name: Gate UAT
+
+# Gate de promoción a prod (#28). Lo llaman backend.yml y frontend.yml en el push a main,
+# ANTES del job de deploy-prod (que además espera la aprobación del environment prod).
+#
+# Busca el commit de develop que se promovió (segundo padre del merge a main; si el merge
+# fue squash o fast-forward, la punta de develop) y lee el check "UAT (Playwright)" que la
+# UAT dejó en ese commit al desplegar a dev:
+#   - alguno en failure / timed_out  -> este job falla y el deploy a prod NO corre.
+#   - todos en success               -> pasa.
+#   - no hay UAT registrada          -> pasa con un aviso en el summary (p. ej. el push a
+#                                       develop no tocó front ni API, o faltan secrets).
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  checks: read
+
+jobs:
+  gate:
+    name: UAT de dev en verde
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Leer el resultado de la UAT del commit promovido
+        run: |
+          set -euo pipefail
+          uat_checks() {
+            gh api --paginate "repos/$REPO/commits/$1/check-runs?per_page=100" \
+              --jq '.check_runs[] | select(.name | test("(^| / )UAT \\(Playwright\\)$")) | "\(.conclusion // .status) \(.html_url)"'
+          }
+          parents=$(gh api "repos/$REPO/commits/$GITHUB_SHA" --jq '.parents[].sha')
+          candidates=()
+          [ "$(echo "$parents" | wc -l)" -ge 2 ] && candidates+=("$(echo "$parents" | sed -n 2p)")
+          candidates+=("$GITHUB_SHA" "$(gh api "repos/$REPO/commits/develop" --jq .sha)")
+          for sha in "${candidates[@]}"; do
+            results=$(uat_checks "$sha")
+            [ -z "$results" ] && continue
+            echo "UAT del commit $sha:"; echo "$results"
+            {
+              echo "### Gate UAT: commit \`${sha::7}\`"
+              echo ""
+              while IFS= read -r l; do echo "- $l"; done <<< "$results"
+            } >> "$GITHUB_STEP_SUMMARY"
+            if echo "$results" | grep -qE '^(failure|timed_out|action_required) '; then
+              echo "::error title=UAT en rojo::La UAT de dev falló para ${sha::7}; se bloquea la promoción a prod."
+              exit 1
+            fi
+            if echo "$results" | grep -qvE '^(success|skipped|neutral) '; then
+              echo "::error title=UAT sin terminar::La UAT de ${sha::7} no ha terminado en verde; vuelve a correr cuando termine."
+              exit 1
+            fi
+            echo "UAT en verde: se permite la promoción a prod."
+            exit 0
+          done
+          msg="No hay UAT registrada para el commit promovido ni para la punta de develop; se permite la promoción."
+          echo "::warning title=Sin UAT::$msg"
+          { echo "### Gate UAT"; echo "$msg"; } >> "$GITHUB_STEP_SUMMARY"
