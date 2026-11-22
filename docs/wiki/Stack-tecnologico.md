@@ -2,34 +2,43 @@
 
 | Capa | Tecnología | Nota |
 |---|---|---|
-| Frontend | **Next.js 15** (App Router), TypeScript, Tailwind, shadcn/ui, Recharts | Export estático publicado en **Cloudflare Pages** (dev y prod). |
-| Backend API | **FastAPI** + Pydantic sobre Python 3.12 | Web App de contenedor `tm-api-<env>` en Azure App Service. |
-| Agentes y engine | **Python 3.12** con numpy y pandas | Web App de contenedor `tm-agents-<env>` (orquestador, engine y forecast en el mismo plan B1 para abaratar costos). |
-| Pronóstico | **Kronos-small** con PyTorch (CPU) servido por FastAPI | Pronósticos del backtest precalculados en Parquet para liberar recursos en producción. |
-| Motor de trading | **NautilusTrader** (LGPL-3.0) | Motor event-driven con núcleo Rust; `AgenticStrategy` convierte decisiones en órdenes bracket en Binance Testnet. |
-| LLM | **Groq** (gpt-oss-20b) detrás de `LLMClient` | Solo `NewsAgent` y `ExplainerAgent` usan LLM. |
-| Base de datos y autenticación | **Supabase Cloud** (Postgres, Auth, Realtime, RLS), plan gratuito | Un proyecto para dev y otro para prod. En local, Supabase CLI. |
-| Mensajería y cache | **Azure Cache for Redis Basic C0** en la nube; contenedor `redis` en local | Canal de señales, decisiones y cola de jobs. |
-| Contenedores | **Docker** y Docker Compose; imágenes en **Docker Hub** (multi-arch) | `trading-maxxing-{web,api,agents,forecast,engine}`. Tags: `sha-<commit>`, `develop`, `X.Y.Z`, `latest`. |
-| Infraestructura como código | **Terraform** con provider `azurerm` en repo separado `trading_maxxing-infra` | Módulos por recurso (`modules/`) y ambientes por carpeta (`envs/dev` y `envs/prod`). |
-| CI/CD | **GitHub Actions** con autenticación a Azure por **OIDC** y Cloudflare por **API Token** | Workflows separados `backend.yml` y `frontend.yml`; environments `dev` y `prod` (prod con *required reviewers*). |
-| APM y métricas | **Application Insights** + **Log Analytics Workspace** (Azure Monitor) | Traces, errores y requests; métricas del App Service Plan (CPU y memoria) en el portal de Azure. |
-| Calidad | pytest + pytest-cov (cobertura ≥ 70 %), Vitest, React Testing Library, ruff, ESLint, Prettier | Reporte JUnit publicado en la pestaña de Checks (`dorny/test-reporter`). |
+| Frontend | **Next.js 15** (App Router), TypeScript, Tailwind, shadcn/ui, Recharts | Export estático en **Cloudflare Pages** (`tm-web-dev` y `tm-web`). Datos por `/api/*` con polling. |
+| API | **Cloudflare Workers** con **Hono + TypeScript** (`apps/api`) | Workers `tm-api-dev` y `tm-api`. Pages le reenvía `/api/*` por service binding. |
+| Base de datos | **Cloudflare D1** (SQLite) | `tm-dev` y `tm-prod`. El aislamiento por usuario lo hace la API (filtros por `user_id`). |
+| Login | **Cloudflare Access** (Zero Trust) | Allowlist de correos y One-time PIN; roles `admin` y `member` en D1. |
+| Agentes y orquestador | **Python 3.12** con numpy y pandas | Contenedor `agents` en la Mac de Carlo. |
+| Pronóstico | **Kronos-small** con PyTorch | Contenedor `forecast` (o nativo con Metal/MPS). |
+| Motor de trading | **NautilusTrader** (LGPL-3.0) | Contenedor `engine`; `AgenticStrategy` manda órdenes bracket a Binance Spot Testnet. |
+| Mensajería | **Redis** (contenedor en la Mac) | `tm:signals`, `tm:decisions`, `tm:shadow`. |
+| LLM y noticias | Opcionales y **apagados por defecto** | `NEWS_ENABLED`, `EXPLAINER_ENABLED`, `LLM_PROVIDER` (none, Workers AI, Groq u OpenAI-compatible); noticias por RSS. |
+| Contenedores | **Docker**, Docker Compose, **Docker Hub** y **Watchtower** | Imágenes `trading-maxxing-{agents,engine,forecast}`; Watchtower actualiza la Mac. |
+| Infraestructura como código | **Terraform** con el provider `cloudflare/cloudflare` | Repo separado `trading_maxxing-infra` con `envs/dev` y `envs/prod` (D1, Pages, Access). |
+| CI/CD | **GitHub Actions** + `wrangler` | Environments `dev` y `prod` (prod con *required reviewers*). |
+| APM y métricas | **Workers Observability** | Logs, trazas, errores, requests y CPU time. |
+| Calidad | pytest + pytest-cov, Vitest (también dentro del runtime de Workers), React Testing Library, Playwright, ruff, ESLint | Cobertura ≥ 70 % en Python y en `apps/api`. |
 
-## Por qué Azure App Service y no Kubernetes
+## Por qué Cloudflare
 
-Son dos Web Apps de contenedor sin requisitos de orquestación avanzada. AKS cobra la administración del plano de control y agrega complejidad operativa; App Service en plan **Linux B1** cubre lo que necesitamos con dos Web Apps en el mismo plan (~13 USD al mes cada plan) y permite ver CPU y memoria del plan directamente desde el portal, que es lo que evalúa la rúbrica.
+- La rúbrica acepta **Azure Portal o Cloudflare**. Cloudflare cubre frontend, API, base,
+  login, APM y métricas en el **plan gratuito**, sin tarjeta ni créditos que se acaben.
+- Un solo origen (Pages + service binding al Worker) simplifica el login con Access: la cookie
+  llega a la API sin CORS.
+- `wrangler` despliega y hace rollback en segundos; Terraform crea D1, Pages y Access.
 
-## Por qué Cloudflare Pages para el frontend
+## Por qué el motor corre en la Mac
 
-Next.js con `output: "export"` genera un bundle estático. Cloudflare Pages permite dos ambientes (`tm-web-dev` y `tm-web`, con URLs `*.pages.dev`), builds por push y HTTPS por default, sin costo en el plan gratuito.
-
-## Por qué Supabase se queda en la nube pública
-
-Postgres, Auth, Realtime y RLS vienen integrados y el plan gratuito alcanza para dev y prod con proyectos separados. No se mueve a Azure Database for PostgreSQL porque la RLS y el Realtime son parte del diseño del producto.
+Python en Workers corre sobre Pyodide y no carga paquetes nativos (NautilusTrader, PyTorch);
+además Workers no tiene procesos permanentes y el plan gratuito da 128 MB y 10 ms de CPU por
+invocación. El motor necesita websockets abiertos con Binance todo el día y más de 1 GB de
+memoria, así que corre en contenedores en la Mac. Con Workers Paid (5 USD al mes) se puede
+mover a **Cloudflare Containers** con las mismas imágenes. Detalle en
+[`docs/arquitectura/cloudflare.md`](https://github.com/CarloSantoro21/trading_maxxing/blob/develop/docs/arquitectura/cloudflare.md).
 
 ## Resumen de flujos
 
-- **Desarrollo:** `docker compose` levanta api, agents, forecast, engine y Redis; Supabase CLI corre local; `pnpm dev` corre el frontend.
-- **Dev en la nube:** push a `develop` → GitHub Actions construye, publica a Docker Hub, despliega a App Service `tm-api-dev` y `tm-agents-dev` y a Cloudflare Pages `tm-web-dev`.
-- **Prod:** push o merge a `main` → mismo pipeline, pero el job de prod espera aprobación manual (GitHub Environments) antes de desplegar.
+- **Desarrollo:** `pnpm dev` en `apps/api` (Worker local con D1 local) y en `apps/web`;
+  `docker compose` levanta agents, engine, forecast y Redis.
+- **Dev en la nube:** merge a `develop` → migraciones de D1 + `wrangler deploy --env dev`,
+  `wrangler pages deploy` a `tm-web-dev`, imágenes del motor a Docker Hub y UAT.
+- **Prod:** merge a `main` → aprobación del environment `prod` → mismo despliegue a `tm-api`,
+  `tm-prod` y `tm-web`.
