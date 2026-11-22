@@ -1,207 +1,195 @@
 # web
 
-Frontend de trading_maxxing (Next.js 15, App Router, TypeScript, Tailwind).
+Frontend de trading_maxxing (Next.js 15, App Router, TypeScript, Tailwind, SWR). Es un
+export estático que se publica en **Cloudflare Pages** (`tm-web-dev` con la rama `develop`,
+`tm-web` con `main`). Todos los datos pasan por la API (`apps/api`, Cloudflare Worker + D1);
+el contrato está en [`docs/arquitectura/api.md`](../../docs/arquitectura/api.md). No hay
+Supabase ni llaves en el navegador.
 
 ```bash
 pnpm install
-cp .env.example .env.local   # llena la llave anon con `supabase status`
-pnpm dev        # http://localhost:3000
-pnpm test       # Vitest + React Testing Library
+pnpm dev        # http://localhost:3000; /api/* se reenvía a wrangler dev (localhost:8787)
+pnpm test       # Vitest + React Testing Library (incluye la Pages Function)
 pnpm lint
-pnpm typecheck
+pnpm typecheck  # tsc de la app y de functions/ (tipos de @cloudflare/workers-types)
 pnpm build          # export estático en out/
 pnpm check:export   # verifica que out/ tenga todas las rutas de src/app
 
-# E2E con Playwright (#28)
+# E2E con Playwright (#28, #106)
 pnpm exec playwright install chromium   # solo la primera vez
-pnpm e2e:mocked     # flujo completo sin backend (lo que corre CI en cada PR)
-APP_URL=https://dev.<...> DEMO_EMAIL=... DEMO_PASSWORD=... \
-  pnpm e2e:uat      # UAT contra dev (misma corrida que el pipeline post-deploy)
+pnpm e2e:mocked     # flujo completo con /api/* mockeado (sin API ni Access)
+APP_URL=https://tm-web-dev.pages.dev CF_ACCESS_CLIENT_ID=... CF_ACCESS_CLIENT_SECRET=... \
+  pnpm e2e:uat      # UAT contra el deploy de dev
 ```
 
 Requiere Node 24 LTS (ver `.nvmrc` en la raíz).
 
-## Export estático
+## Cómo llega el navegador a la API
 
-`next.config.ts` usa `output: "export"`: `pnpm build` genera HTML, JS y CSS en `out/`
-(`index.html`, `login.html`, `onboarding.html`, `404.html` y `_next/static/`). Por eso:
-
-- No hay render en servidor, route handlers (`route.ts`), middleware, server actions ni
-  `next start`. Todo lo dinámico (sesión, lecturas y escrituras a Supabase) se hace en el
-  navegador.
-- `next/image` va con `images.unoptimized`, porque el optimizador necesita un servidor.
-- Las rutas dinámicas (`[id]`) requerirían `generateStaticParams`; hoy no hay ninguna.
-- `scripts/check-export.mjs` deriva las rutas esperadas de los `page.tsx` de `src/app`,
-  comprueba que estén en `out/` y falla si aparece un route handler, middleware o segmento
-  dinámico. Corre en CI (job web) y dentro del build de la imagen; sus pruebas están en
-  `scripts/check-export.test.mjs`.
-
-Para probar `out/` localmente sin Docker: `npx serve out` (o `python3 -m http.server -d out`,
-aunque este último no resuelve `/login` a `login.html`).
-
-## Imagen Docker
-
-El `Dockerfile` construye el export y lo sirve con `nginxinc/nginx-unprivileged` (usuario
-`nginx`, uid 101, sin root) en el puerto 3000, con `HEALTHCHECK` contra `/healthz`.
-`nginx.conf` imita a Cloudflare Pages: `/login` sirve `login.html` y lo desconocido, `404.html`.
-
-```bash
-docker build -t trading-maxxing-web \
-  --build-arg NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321 \
-  --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon key> apps/web
-docker run --rm -p 127.0.0.1:3000:3000 trading-maxxing-web
+```
+navegador ──► Cloudflare Access ──► Pages (tm-web[-dev])
+                (login OTP)           ├─ out/               archivos estáticos
+                                      └─ functions/api/[[path]].ts
+                                             │ service binding API (env.API)
+                                             ▼
+                                        Worker tm-api[-dev] ──► D1 tm-dev / tm-prod
 ```
 
-Las `NEXT_PUBLIC_*` se incrustan en el build: cambiar de entorno implica reconstruir.
+- **Un solo origen.** El frontend siempre llama a `/api/...` relativo
+  (`src/lib/api/client.ts`). En Pages, la Pages Function `functions/api/[[path]].ts` reenvía
+  la petición completa (método, URL, headers incluidos `Cf-Access-Jwt-Assertion` y la cookie
+  `CF_Authorization`, y body) al Worker por el service binding `API` y devuelve su respuesta
+  sin tocarla. Sin CORS y sin exponer la URL del Worker. Si falta el binding responde 503;
+  si el Worker no contesta, 502.
+- **Solo `/api/*` invoca la función.** `wrangler pages deploy out` (desde `apps/web`) toma
+  `functions/` y genera el `_routes.json`; el resto del sitio se sirve estático. Las pruebas de
+  la función están en `tests/functions/` (fuera de `functions/` para que Pages no las tome
+  como rutas) y compilan con `functions/tsconfig.json`.
+- **`next build` no choca con `functions/`:** Next.js solo mira `src/app`, y el
+  `tsconfig.json` de la app excluye `functions/` y `tests/functions/` (tienen sus propios tipos
+  de Workers).
+
+## Local
+
+| Qué | Cómo |
+| --- | --- |
+| API | `cd apps/api && pnpm dev` (`wrangler dev --env dev --local`, puerto 8787, `AUTH_MODE=dev`) |
+| Frontend | `pnpm dev` en `apps/web` |
+
+En desarrollo `next.config.ts` quita `output: "export"` y agrega un rewrite de `/api/:path*`
+a `API_DEV_URL` (por defecto `http://localhost:8787`). Un export estático no admite rewrites,
+por eso el rewrite solo existe con `NODE_ENV=development`; en el build de producción la
+función de Pages hace ese trabajo. Sin Access, la API con `AUTH_MODE=dev` responde
+`GET /api/me` con el usuario demo (`demo@trading-maxxing.local`).
 
 ## Variables de entorno
 
-| Variable | Valor local |
+Todas son opcionales. Las `NEXT_PUBLIC_*` son públicas: Next.js las incrusta en el bundle
+al construir, así que cambiar de ambiente implica reconstruir.
+
+| Variable | Para qué | Local | Pages |
+| --- | --- | --- | --- |
+| `NEXT_PUBLIC_ENV` | Badge del encabezado: `local`, `dev` o `prod` | `local` (default) | `dev` en `tm-web-dev`, `prod` en `tm-web` |
+| `NEXT_PUBLIC_COMMIT_SHA` | Commit del build; el badge muestra 7 caracteres | vacío ("sin versión") | `${{ github.sha }}` |
+| `NEXT_PUBLIC_API_BASE` | Origen de la API si no es el mismo del sitio | vacío | vacío |
+| `API_DEV_URL` | Solo `pnpm dev`: a dónde reenvía `/api/*` | `http://localhost:8787` | – |
+
+El badge de ambiente y versión sirve para enseñar en la demo qué commit está desplegado en
+cada ambiente.
+
+## Autenticación
+
+- **Cloudflare Access** (Zero Trust, One-time PIN por correo) protege el dominio de Pages
+  antes de que cargue el sitio. No hay formulario de login en la app ni `/login`.
+- `RequireAuth` (`src/components/auth/RequireAuth.tsx`) pide `GET /api/me`
+  (`{id, email, role, profile}`) y lo expone con `useMe()`. Si la API responde **401/403**
+  (el correo pasó Access pero no está dado de alta en la tabla de usuarios), muestra
+  "No tienes acceso" con la indicación de pedir al admin que lo dé de alta y una liga para
+  entrar con otro correo.
+- **Cerrar sesión** es navegar a `/cdn-cgi/access/logout` (borra la cookie de Access).
+- Si la sesión de Access vence a media navegación, Access responde con una redirección; el
+  cliente no la sigue (`redirect: "manual"`) y la trata como 401.
+- `/` decide el destino: `/onboarding` si `me.profile` es `null`, si no `/dashboard`.
+
+## Páginas
+
+| Ruta | Lee / escribe |
 | --- | --- |
-| `NEXT_PUBLIC_SUPABASE_URL` | `http://127.0.0.1:54321` (API de `supabase start`) |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `anon key` de `supabase status` |
-| `NEXT_PUBLIC_API_URL` | Reservada para cuando el frontend consuma `services/api` (hoy no se usa). En la nube debe ser `https://` |
+| `/dashboard` | `GET /api/dashboard` (polling cada 5 s), `POST /api/bots`, `POST /api/bots/{id}/start\|stop\|kill` |
+| `/strategies` | `GET /api/strategies/overview` (polling cada 5 s); admins: `POST /api/strategies/{name}/promote\|retire` |
+| `/backtests` | `GET /api/lab/reports`, `GET /api/lab/reports/{name}`, `GET/POST /api/backtests` (lista cada 15 s) |
+| `/goals` | `GET /api/goals`, `GET /api/goals/{id}/probability` |
+| `/onboarding` | `GET /api/onboarding`, `PUT /api/onboarding` (perfil y metas en un batch) |
+| `/admin` (solo admins) | `GET/POST /api/admin/users`, `PATCH/DELETE /api/admin/users/{id}`, `GET/PUT /api/admin/settings`, `POST /api/admin/debug/error` |
 
-Son públicas: Next.js las incrusta en el bundle durante el build. Nunca pongas aquí la
-llave `service_role`. Si faltan, el build pasa igual y la app muestra un aviso.
+- **Encabezado** (`AppShell`): navegación (la liga *Admin* solo para admins), indicador
+  "Motor en línea / desconectado" con `GET /api/engine/status` (cada 15 s; desconectado si
+  el último latido del motor de la Mac es más viejo que `stale_after_seconds` o si la API
+  falla), badge de ambiente y versión, correo y *Cerrar sesión*.
+- **Tiempo real = polling con SWR** (`src/components/providers/ApiProvider.tsx`). La llave
+  de cada consulta es la ruta de la API. SWR no refresca con la pestaña oculta
+  (`refreshWhenHidden: false`) ni sin red, y vuelve a pedir los datos al regresar a la
+  pestaña. Las respuestas de los botones del bot se aplican al momento sin esperar el
+  siguiente refresco.
+- **Admin**: alta (correo y rol), cambio de rol y baja con confirmación de usuarios (no te
+  deja quitarte el admin ni darte de baja a ti mismo), interruptores `news_enabled` y
+  `explainer_enabled` que el motor lee en cada ciclo (`GET /internal/settings`), y el botón
+  de la demo de APM que provoca un 500 controlado y muestra el `request_id` para buscarlo en
+  Workers Observability. Dar de alta en la app no basta: el correo también debe estar en la
+  allowlist de Access (Terraform de `trading_maxxing-infra`).
+- **Onboarding**: wizard de tres pasos (#78): capital (mínimo 500 USDT), nivel de riesgo del
+  1 al 5 con la caída máxima en dólares, y metas. La API deriva `max_drawdown` del nivel.
+  Validación con zod en `src/lib/onboarding/schema.ts`, alineada con la API; `RISK_TABLE` es
+  copia de `tm_agents.risk.RISK_TABLE` (`services/agents/tests/test_risk_levels_sync.py`
+  falla si se desalinean).
 
-## Autenticación y onboarding
+## Export estático
 
-- **Sitio estático.** En la entrega el frontend se publica con `output: "export"` en
-  Cloudflare Pages, así que no hay middleware ni server actions: la sesión de Supabase Auth
-  se resuelve en el navegador (`@supabase/ssr` con `createBrowserClient`) dentro de
-  `AuthProvider`, y `RequireAuth` redirige a `/login?next=…` si no hay sesión. La seguridad
-  real la dan las políticas RLS de la base; la protección de rutas solo evita mostrar
-  pantallas que no funcionarían.
-- **`/login`**: correo y contraseña. No hay registro público (#67): un admin da de alta a
-  cada persona con `make user EMAIL=... ROLE=member|admin`. Usuario demo del seed (admin):
-  `demo@trading-maxxing.local` / `demo1234`. Tras entrar va a `next` (solo rutas internas), a
-  `/onboarding` si todavía no hay perfil o a `/` si ya lo hay.
-- **`/onboarding`**: wizard de tres pasos (#78): capital (mínimo 500 USDT), nivel de riesgo
-  del 1 al 5 con una explicación en lenguaje simple y la caída máxima en dólares para el
-  capital capturado, y metas. Ya no pide horizonte, drawdown ni instrumentos: siempre se
-  operan BTC/USDT y ETH/USDT, y la base deriva el drawdown del nivel. Escribe en `profiles`
-  (upsert por `user_id`) y reemplaza las filas de `goals` con la sesión del usuario, por lo
-  que RLS limita todo a sus propias filas. Si ya hay perfil, el wizard se prellena.
-- **Validación** con zod en `src/lib/onboarding/schema.ts`, alineada con los checks de
-  `supabase/migrations/`: capital >= 500, riesgo entero de 1 a 5, retorno objetivo > 0 % y
-  fecha límite futura. `RISK_TABLE` ahí es copia de `tm_agents.risk.RISK_TABLE`;
-  `services/agents/tests/test_risk_levels_sync.py` falla si se desalinean.
+`pnpm build` genera HTML, JS y CSS en `out/` (`index.html`, `dashboard.html`, …,
+`404.html` y `_next/static/`). Por eso:
+
+- No hay render en servidor, route handlers (`route.ts`), middleware, server actions ni
+  `next start`. Todo lo dinámico se hace en el navegador contra `/api`.
+- `next/image` va con `images.unoptimized`.
+- Las rutas dinámicas (`[id]`) requerirían `generateStaticParams`; hoy no hay ninguna (el
+  detalle de un reporte usa `?report=` en `/backtests`).
+- `scripts/check-export.mjs` deriva las rutas esperadas de los `page.tsx` de `src/app`,
+  comprueba que estén en `out/` y falla si aparece un route handler, middleware o segmento
+  dinámico. Corre en CI (job web) y dentro del build de la imagen.
+
+## Imagen Docker
+
+El `Dockerfile` construye el export y lo sirve con `nginxinc/nginx-unprivileged` (uid 101,
+sin root) en el puerto 3000, con `HEALTHCHECK` contra `/healthz`. nginx no reenvía `/api`,
+así que la imagen llama directo al Worker local (`NEXT_PUBLIC_API_BASE`, por defecto
+`http://localhost:8787`, que en el ambiente dev de la API tiene CORS para `localhost:3000`).
+
+```bash
+docker build -t trading-maxxing-web \
+  --build-arg NEXT_PUBLIC_ENV=local \
+  --build-arg NEXT_PUBLIC_COMMIT_SHA=$(git rev-parse --short HEAD) apps/web
+docker run --rm -p 127.0.0.1:3000:3000 trading-maxxing-web
+```
 
 ## Pruebas
 
-Las pruebas unitarias no usan red: `src/test/fakeSupabase.ts` simula el cliente de Supabase
-(query builder encadenable y `auth`) y registra cada llamada para verificar qué se escribe.
+Las pruebas unitarias no usan red:
 
-### E2E con Playwright (#28)
+- `src/test/api.ts` → `mockApi(routes)` reemplaza `fetch` con rutas `"MÉTODO /ruta"` (sin
+  `/api`) que responden un cuerpo, `{status, body}` o una función de la llamada, y registra
+  cada llamada (`calls`, `actions()`) para verificar qué se escribe. `GET /me` y
+  `GET /engine/status` tienen respuestas por defecto (usuario demo, motor en línea).
+- `src/test/render.tsx` → `renderWithApi(ui)` envuelve en SWR con caché nueva por prueba.
+- `tests/functions/proxy.test.ts` prueba la Pages Function con un service binding falso.
 
-Hay dos modos, ambos en `tests/e2e/`:
+### E2E con Playwright
 
-- **Mocked** (`pnpm e2e:mocked`): `tests/e2e/full-flow.mocked.spec.ts` intercepta Supabase
-  y la API con `page.route()`. Corre sin `make up`, así que es la variante que arranca
-  en cada PR (CI) y la útil para desarrollar localmente. `pnpm e2e:mocked` levanta
-  `pnpm dev` con variables "mocked" y lanza solo este spec.
-- **UAT contra dev** (`pnpm e2e:uat`): `tests/e2e/uat.spec.ts` apunta a `APP_URL` (el
-  deploy de dev) y recorre login → onboarding → dashboard → `/strategies`, además de un
-  `GET $API_URL/health`. Corre en el pipeline **después** del deploy a dev
-  (`.github/workflows/uat.yml`) y es gate obligatorio: si falla, bloquea la promoción
-  a prod.
+- **Mocked** (`pnpm e2e:mocked`): `tests/e2e/full-flow.mocked.spec.ts` intercepta `/api/*`
+  con `page.route()` (`tests/e2e/mocks.ts`, con estado en memoria) y recorre inicio →
+  onboarding → dashboard → crear y arrancar el bot → la operación aparece sola por polling,
+  además de la pantalla de "No tienes acceso". Levanta `pnpm dev` solo (puerto `E2E_PORT`,
+  3000 por defecto) y precompila las páginas antes de navegar.
+- **UAT contra dev** (`pnpm e2e:uat`): `tests/e2e/uat.spec.ts` apunta a `APP_URL` y manda
+  el service token de Access (`CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET`) en cada
+  petición. Verifica `GET /api/health` por el mismo origen (Pages Function → Worker), que
+  el sitio carga y, si la identidad del token está dada de alta, el badge (`EXPECTED_ENV`),
+  el onboarding o el dashboard y `/strategies`. Si no está dada de alta valida la pantalla de
+  "No tienes acceso". Sin `APP_URL` en local hace `test.skip`; en CI falla.
 
-Variables de la UAT (secrets en GitHub / env vars en local):
+Los artefactos (`playwright-report/`, `test-results/`) están en `.gitignore`.
 
-| Variable        | Para qué                                              |
-| --------------- | ----------------------------------------------------- |
-| `APP_URL`       | URL del frontend desplegado en dev.                   |
-| `API_URL`       | URL de la API desplegada (opcional; habilita health). |
-| `DEMO_EMAIL`    | Correo del usuario demo con perfil ya creado en dev.  |
-| `DEMO_PASSWORD` | Contraseña del usuario demo.                          |
+## Despliegue en Cloudflare Pages
 
-Las credenciales nunca se commitean. Sin `APP_URL` en local, `pnpm e2e:uat` hace
-`test.skip` y termina en verde; en CI, si falta algún secret el workflow avisa en el
-*Step Summary* y sale en verde sin verificar nada (el gate real es el fallo del job
-`uat` cuando sí hay secrets).
+Los proyectos de Pages, el service binding `API`, la app de Access y sus políticas se crean
+con el Terraform de `CarloSantoro21/trading_maxxing-infra` (outputs `pages_project_name`,
+`access_team_domain`, `access_web_aud`, …). El deploy desde CI es:
 
-Antes de la primera corrida: `pnpm exec playwright install chromium`. Los artefactos
-(`playwright-report/`, `test-results/`) están en `.gitignore`. El reporte HTML y el
-JUnit se suben como artifact `playwright-report` del workflow `UAT (Playwright contra
-dev)`.
+```bash
+cd apps/web
+NEXT_PUBLIC_ENV=dev NEXT_PUBLIC_COMMIT_SHA=$GITHUB_SHA pnpm build
+pnpm check:export
+npx wrangler pages deploy out --project-name tm-web-dev --branch develop
+```
 
-El checklist manual del flujo completo contra Binance Testnet (señal → orden →
-trade visible) y el hueco para la liga del video de demostración están en
-`docs/e2e-checklist.md`.
-
-## Cloudflare Pages (entrega final, #45)
-
-> **Diferido.** Todavía no hay cuenta de Cloudflare y no se ha desplegado nada. Esto
-> describe lo que hay que hacer para la entrega; el código y el workflow ya están listos.
-
-El workflow `.github/workflows/deploy-web.yml` es manual (`workflow_dispatch`), usa el
-environment `production`, construye `out/`, corre `check:export` y ejecuta
-`wrangler pages deploy out --project-name trading-maxxing`. Si faltan
-`CLOUDFLARE_API_TOKEN` o `CLOUDFLARE_ACCOUNT_ID`, avisa en el resumen del run y termina en
-verde sin desplegar.
-
-### 1. Cuenta gratuita
-
-1. Regístrate en <https://dash.cloudflare.com/sign-up> con correo y contraseña (plan Free;
-   no pide tarjeta ni dominio propio).
-2. Verifica el correo.
-
-### 2. Proyecto de Pages (subdominio `*.pages.dev`)
-
-El proyecto debe existir antes del primer deploy desde CI. Dos opciones:
-
-- **Dashboard:** *Workers & Pages → Create → Pages → Use direct upload*, nombre
-  `trading-maxxing`. No conectes el repo de GitHub: el build lo hace nuestro workflow.
-- **CLI:** `npx wrangler login` y luego
-  `npx wrangler pages project create trading-maxxing --production-branch main`.
-
-El sitio queda en `https://trading-maxxing.pages.dev` (si el nombre está ocupado, Cloudflare
-agrega un sufijo; usa el que muestre el dashboard). No se configura dominio propio. Los
-deploys con otra rama (input `branch` del workflow) quedan como previews en
-`https://<rama>.trading-maxxing.pages.dev`.
-
-### 3. Token y Account ID
-
-1. *My Profile → API Tokens → Create Token → Create Custom Token*.
-2. Permiso: **Account → Cloudflare Pages → Edit**, limitado a tu cuenta. Nada más.
-3. Copia el token (solo se muestra una vez).
-4. El **Account ID** aparece en *Workers & Pages* (columna derecha) o en la URL del
-   dashboard (`dash.cloudflare.com/<account id>/…`).
-
-### 4. Secrets y variables en GitHub
-
-En *Settings → Environments → New environment* crea `production` (opcional: exige
-aprobación de un revisor). Dentro del environment:
-
-| Tipo | Nombre | Valor |
-| --- | --- | --- |
-| Secret | `CLOUDFLARE_API_TOKEN` | token del paso 3 |
-| Secret | `CLOUDFLARE_ACCOUNT_ID` | Account ID del paso 3 |
-| Variable | `NEXT_PUBLIC_SUPABASE_URL` | URL del proyecto de Supabase en la nube |
-| Variable | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | llave `anon` de ese proyecto (pública) |
-| Variable | `NEXT_PUBLIC_API_URL` | URL **HTTPS** de la API (cuando el frontend la use) |
-
-Las `NEXT_PUBLIC_*` son públicas (terminan en el bundle), por eso van como *variables* y no
-como secrets; otro entorno (p. ej. `staging`) tendría su propio juego. Nunca pongas la llave
-`service_role`.
-
-Después: *Actions → Deploy web (Cloudflare Pages) → Run workflow*. En Supabase
-(*Authentication → URL Configuration*) agrega la URL de `pages.dev` como *Site URL* y en
-*Redirect URLs*.
-
-### 5. Pendiente: API por HTTPS (contenido mixto)
-
-Pages sirve el sitio por HTTPS. Si el navegador llama a la API por `http://` (por ejemplo,
-directo al ALB de AWS), lo bloquea como **contenido mixto**. Antes de que el frontend
-consuma `services/api` en la nube, la API debe exponerse por HTTPS con alguna de estas
-opciones:
-
-- **CloudFront delante del ALB**: certificado gratuito en `*.cloudfront.net`, sin dominio
-  propio; el ALB puede quedarse en HTTP detrás de CloudFront.
-- **Cloudflare Tunnel** (`cloudflared` junto a la API): expone la API por HTTPS sin abrir
-  puertos (los túneles con nombre requieren una zona en Cloudflare; los *quick tunnels*
-  `*.trycloudflare.com` sirven solo para demos).
-
-Esto queda **pendiente para la entrega**, junto con el CORS de la API para el origen de
-`pages.dev`. Supabase en la nube ya se sirve por HTTPS, así que no tiene este problema.
+`wrangler pages deploy` debe correr desde `apps/web` para que suba `functions/` junto con
+`out/`.
