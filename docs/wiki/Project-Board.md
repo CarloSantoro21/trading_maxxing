@@ -9,14 +9,22 @@ El plan de trabajo, los issues y su estado se siguen en el GitHub Project Board 
 ## Columnas
 
 - **Backlog**: ideas y temas por priorizar.
-- **To Do**: ya priorizados y listos para tomarse.
-- **In Progress**: alguien está trabajando en ellos.
-- **In Review**: pull request abierto y en revisión.
+- **Ready**: ya priorizados y listos para tomarse.
+- **In progress**: alguien está trabajando en ellos.
+- **In review**: pull request abierto y en revisión.
 - **Done**: fusionados a `develop` o `main`.
+
+## Jerarquía PBI → Story → Task
+
+- **PBI** (etiqueta `pbi`): épica por objetivo del producto; uno o dos por milestone (#125 a #132).
+- **Story** (etiqueta `story`): funcionalidad entregable; es sub-issue de su PBI.
+- **Task** (etiqueta `task`): trabajo técnico concreto; es sub-issue de su story o de su PBI.
+- El board tiene el campo **Tipo** (PBI / Story / Task) y los campos de GitHub **Parent issue** y **Sub-issues progress**. Para ver el plan, agrupa la vista por **Milestone** o por **Parent issue**.
+- Detalle y lista de PBI en [CONTRIBUTING.md → Plan de trabajo y ramas](https://github.com/CarloSantoro21/trading_maxxing/blob/main/CONTRIBUTING.md#plan-de-trabajo-y-ramas).
 
 ## Convenciones
 
-- Cada issue lleva descripción, criterios de aceptación, etiquetas por área (`frontend`, `backend`, `agents`, `ml`, `trading-engine`, `devops`, `testing`, `docs`, `database`) y milestone.
+- Cada issue lleva descripción, criterios de aceptación, una etiqueta de tipo (`story` o `task`), etiquetas por área (`frontend`, `backend`, `agents`, `ml`, `trading-engine`, `devops`, `testing`, `docs`, `database`), milestone y un padre (sub-issue).
 - Las ramas nacen como `feature/<issue>-<descripcion>` desde `develop`.
 - Los pull requests enlazan su issue con `Closes #N` y se fusionan con **squash merge** a `develop`.
 - `develop` no es la rama por defecto, así que `Closes #N` **no cierra el issue automáticamente**; hay que cerrarlos a mano al fusionar.

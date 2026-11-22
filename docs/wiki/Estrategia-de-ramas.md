@@ -55,7 +55,7 @@ gitGraph
 - Los commits siguen **Conventional Commits** (`feat:`, `fix:`, `docs:`, `test:`, `ci:`, etc.).
 - Cada pull request **enlaza su issue** (`Closes #N`) y se fusiona con **squash merge**.
 - `develop` no es la rama por defecto del repo, así que `Closes #N` **no cierra el issue automáticamente**: hay que cerrarlos a mano al fusionar.
-- Las ramas `main` y `develop` tienen protecciones: PR obligatorio, CI en verde y (para `main`) revisión de un segundo mantenedor.
+- Las ramas `main` y `develop` (de este repo y de `trading_maxxing-infra`) están protegidas: PR obligatorio sin push directo, checks de CI en verde, conversaciones resueltas, sin force push ni borrado. No se exigen aprobaciones para no bloquear al equipo y la regla no aplica a administradores para poder intervenir en una emergencia. Los checks requeridos están en [CONTRIBUTING.md → Protección de ramas](https://github.com/CarloSantoro21/trading_maxxing/blob/main/CONTRIBUTING.md#protección-de-ramas).
 
 ## Mapa con los ambientes
 
