@@ -1,9 +1,9 @@
 """Persistencia del ledger de referencia: ``reference_trades`` y ``reference_equity``.
 
-Las tablas están en la migración ``20261109000200_reference_ledger.sql``. Las escribe solo el
-backend con la llave ``service_role``; cualquier usuario autenticado las lee (página
-``/strategies``, #58). Hay dos backends: :class:`InMemoryReferenceStore` (pruebas) y
-:class:`PostgRESTReferenceStore` (Supabase).
+Las tablas están en la migración ``apps/api/migrations/0003_reference_ledger.sql`` (D1). Las
+escribe solo el motor con el token de servicio (``/internal/reference/*``); cualquier usuario
+autenticado las lee (página ``/strategies``, #58). Hay dos backends:
+:class:`InMemoryReferenceStore` (pruebas) y :class:`WorkerApiReferenceStore` (API en Workers).
 
 Las escrituras son idempotentes: los trades tienen llave única ``(strategy_id, symbol,
 closed_at)`` y se insertan ignorando duplicados, y la equity diaria hace *upsert* sobre
@@ -12,14 +12,13 @@ closed_at)`` y se insertan ignorando duplicados, y la equity diaria hace *upsert
 
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Protocol
 from uuid import UUID
 
-import httpx
+from tm_shared.api_client import WorkerApiClient, WorkerApiError
 
 from tm_agents.reference.ledger import ReferenceTrade
 from tm_agents.strategy_stats import StrategyState
@@ -113,66 +112,41 @@ class InMemoryReferenceStore:
         )
 
 
-class PostgRESTReferenceStore:
-    """Backend sobre PostgREST de Supabase con la llave ``service_role``."""
+#: Filas por petición: el Worker acepta hasta 500 por batch de D1.
+CHUNK = 500
 
-    def __init__(
-        self,
-        url: str,
-        key: str,
-        *,
-        client: httpx.Client | None = None,
-        timeout: float = 10.0,
-    ) -> None:
-        if not url:
-            raise ValueError("falta la URL de Supabase")
-        if not key:
-            raise ValueError("falta la llave service_role de Supabase")
-        headers = {"apikey": key, "Content-Type": "application/json"}
-        if key.startswith("eyJ"):
-            headers["Authorization"] = f"Bearer {key}"
-        self._base = url.rstrip("/") + "/rest/v1"
-        self._client = client or httpx.Client(timeout=timeout)
-        self._headers = headers
+
+class WorkerApiReferenceStore:
+    """Backend sobre la API en Workers: ``POST /internal/reference/trades`` (ignora
+    duplicados) y ``PUT /internal/reference/equity`` (upsert por ``strategy_id, day``)."""
+
+    def __init__(self, client: WorkerApiClient, *, chunk: int = CHUNK) -> None:
+        self.client = client
+        self.chunk = chunk
 
     @classmethod
     def from_env(
         cls, env: Mapping[str, str] | None = None, **kwargs: Any
-    ) -> PostgRESTReferenceStore:
-        """Lee ``SUPABASE_URL`` y ``SUPABASE_SERVICE_ROLE_KEY`` del entorno."""
-        env = os.environ if env is None else env
-        return cls(env.get("SUPABASE_URL", ""), env.get("SUPABASE_SERVICE_ROLE_KEY", ""), **kwargs)
+    ) -> WorkerApiReferenceStore:
+        """Lee ``TM_API_URL``, ``TM_SERVICE_TOKEN`` y los headers de Access del entorno."""
+        return cls(WorkerApiClient.from_env(env), **kwargs)
 
     def close(self) -> None:
-        self._client.close()
+        self.client.close()
 
     def save_trades(self, rows: Sequence[Mapping[str, Any]]) -> None:
-        if rows:
-            self._post(
-                "/reference_trades",
-                [dict(r) for r in rows],
-                on_conflict="strategy_id,symbol,closed_at",
-                resolution="ignore-duplicates",
-            )
+        for i in range(0, len(rows), self.chunk):
+            batch = [dict(r) for r in rows[i : i + self.chunk]]
+            # Idempotente: la API ignora los duplicados por (strategy_id, symbol, closed_at).
+            self._call("POST", "/internal/reference/trades", {"rows": batch}, idempotent=True)
 
     def upsert_equity(self, points: Sequence[EquityPoint]) -> None:
-        if points:
-            self._post(
-                "/reference_equity",
-                [p.to_row() for p in points],
-                on_conflict="strategy_id,day",
-                resolution="merge-duplicates",
-            )
+        for i in range(0, len(points), self.chunk):
+            batch = [p.to_row() for p in points[i : i + self.chunk]]
+            self._call("PUT", "/internal/reference/equity", {"points": batch})
 
-    def _post(self, path: str, rows: list[dict[str, Any]], *, on_conflict: str, resolution: str):
-        headers = {**self._headers, "Prefer": f"resolution={resolution},return=minimal"}
+    def _call(self, method: str, path: str, body: Any, **kw: Any) -> Any:
         try:
-            resp = self._client.post(
-                self._base + path, params={"on_conflict": on_conflict}, json=rows, headers=headers
-            )
-        except httpx.HTTPError as exc:
-            raise ReferenceStoreError(f"no se pudo llamar a PostgREST: {exc}") from exc
-        if not resp.is_success:
-            raise ReferenceStoreError(
-                f"PostgREST respondió {resp.status_code} en {path}: {resp.text[:300]}"
-            )
+            return self.client.request(method, path, json=body, **kw)
+        except WorkerApiError as exc:
+            raise ReferenceStoreError(str(exc)) from exc

@@ -57,6 +57,7 @@ from tm_agents.orchestrator.settings import (
     parse_bool,
     settings_from_env,
 )
+from tm_shared.api_client import WorkerApiClient
 
 CF_URL = "https://api.cloudflare.com/client/v4/accounts/acc-1/ai/run/@cf/meta/llama-3.1-8b-instruct"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -506,23 +507,26 @@ def test_env_settings_invalid_value_uses_default():
     assert s.get_bool("news_enabled") is False
 
 
+API = "https://api.test"
+
+
+def _provider(**kw):
+    client = WorkerApiClient(API + "/", "svc", sleep=lambda _s: None)
+    return WorkerApiSettingsProvider(client, **kw)
+
+
 @respx.mock
-@pytest.mark.parametrize(
-    "body",
-    [
-        {"news_enabled": True},
-        {"settings": {"news_enabled": "true"}},
-        [{"key": "news_enabled", "value": "1"}],
-    ],
-)
-def test_worker_api_settings_formats(body):
-    route = respx.get("https://api.test/internal/settings").mock(
-        return_value=httpx.Response(200, json=body)
+def test_worker_api_settings_reads_the_contract():
+    route = respx.get(f"{API}/internal/settings").mock(
+        return_value=httpx.Response(200, json={"news_enabled": True, "explainer_enabled": False})
     )
-    s = WorkerApiSettingsProvider("https://api.test/", "svc", fallback=StaticSettingsProvider())
+    s = _provider(fallback=StaticSettingsProvider({"explainer_enabled": True}))
     assert s.get_bool("news_enabled") is True
-    assert s.get_bool("explainer_enabled") is False  # no viene: valor del fallback
-    assert route.calls.last.request.headers["authorization"] == "Bearer svc"
+    assert s.get_bool("explainer_enabled") is False  # la API manda sobre el fallback
+    assert s.get_bool("otra") is False  # no viene: valor del fallback
+    req = route.calls.last.request
+    assert req.headers["x-service-token"] == "svc"
+    assert "authorization" not in req.headers
     assert route.call_count == 1  # en caché durante refresh_seconds
     s.close()
 
@@ -530,18 +534,16 @@ def test_worker_api_settings_formats(body):
 @respx.mock
 def test_worker_api_settings_cache_and_fail_safe():
     now = [0.0]
-    route = respx.get("https://api.test/internal/settings").mock(
+    route = respx.get(f"{API}/internal/settings").mock(
         side_effect=[
-            httpx.Response(500),
+            httpx.Response(500, json={"detail": "x"}),
             httpx.Response(200, json={"news_enabled": True}),
             httpx.ConnectError("caído"),
             httpx.Response(200, json="raro"),
         ]
     )
     fallback = StaticSettingsProvider({"news_enabled": False})
-    s = WorkerApiSettingsProvider(
-        "https://api.test", "svc", fallback=fallback, refresh_seconds=60, clock=lambda: now[0]
-    )
+    s = _provider(fallback=fallback, refresh_seconds=60, clock=lambda: now[0])
     assert s.get_bool("news_enabled") is False  # nunca respondió: entorno
     now[0] = 61
     assert s.get_bool("news_enabled") is True
@@ -551,22 +553,22 @@ def test_worker_api_settings_cache_and_fail_safe():
     assert s.get_bool("news_enabled") is True  # cae la API: últimos valores conocidos
     now[0] = 300
     assert s.get_bool("news_enabled") is True  # formato raro: igual
-    assert route.call_count == 4
+    assert route.call_count == 4  # sin reintentos: el ciclo no se cuelga por los ajustes
 
 
 def test_settings_from_env_worker_api():
-    s = settings_from_env(
-        {
-            "SETTINGS_SOURCE": "worker-api",
-            "WORKER_API_URL": "https://a",
-            "WORKER_SERVICE_TOKEN": "t",
-        }
-    )
-    assert isinstance(s, WorkerApiSettingsProvider) and s.url == "https://a/internal/settings"
-    with pytest.raises(ValueError, match="WORKER_API_URL"):
+    env = {"TM_API_URL": "https://a", "TM_SERVICE_TOKEN": "t", "SETTINGS_REFRESH_SECONDS": "9"}
+    s = settings_from_env({"SETTINGS_SOURCE": "worker-api", **env})
+    assert isinstance(s, WorkerApiSettingsProvider)
+    assert s.client.base_url == "https://a" and s.refresh_seconds == 9
+    # sin SETTINGS_SOURCE: worker-api si la API está configurada; si no, el entorno
+    assert isinstance(settings_from_env(env), WorkerApiSettingsProvider)
+    assert isinstance(settings_from_env({}), EnvSettingsProvider)
+    assert isinstance(settings_from_env({"SETTINGS_SOURCE": "env", **env}), EnvSettingsProvider)
+    with pytest.raises(ValueError, match="TM_API_URL"):
         settings_from_env({"SETTINGS_SOURCE": "worker-api"})
-    with pytest.raises(ValueError, match="WORKER_SERVICE_TOKEN"):
-        settings_from_env({"SETTINGS_SOURCE": "api", "WORKER_API_URL": "https://a"})
+    with pytest.raises(ValueError, match="TM_SERVICE_TOKEN"):
+        settings_from_env({"SETTINGS_SOURCE": "api", "TM_API_URL": "https://a"})
     with pytest.raises(ValueError, match="SETTINGS_SOURCE"):
         settings_from_env({"SETTINGS_SOURCE": "supabase"})
 

@@ -47,7 +47,8 @@ class RiskLevel:
 
 
 # Tabla única de niveles de riesgo (propuesta, sección 3.4). La copian, y deben coincidir:
-#   * supabase/migrations/20261109000100_profiles_risk_levels.sql (private.risk_level_max_drawdown)
+#   * apps/api/src/lib/risk.ts (RISK_MAX_DRAWDOWN, MIN_CAPITAL) y el CHECK de capital de
+#     apps/api/migrations/0001_core.sql
 #   * apps/web/src/lib/onboarding/schema.ts (RISK_TABLE)
 # tests/test_risk_levels_sync.py falla si alguna se desalinea.
 RISK_TABLE: Mapping[int, RiskLevel] = MappingProxyType(

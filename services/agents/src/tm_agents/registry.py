@@ -1,13 +1,13 @@
 """StrategyRegistry: estado del ciclo de vida de cada estrategia (propuesta, sección 3.3).
 
 El código de una estrategia entra por PR; su estado es un dato que vive en la tabla
-``strategies`` de Supabase, con su historial en ``strategy_transitions``::
+``strategies`` de D1 (API en Workers), con su historial en ``strategy_transitions``::
 
     research → lab → shadow → active → probation → retired
                  ▲                                    │
                  └──────────── revalidación ──────────┘
 
-Reglas (iguales a las de la migración ``20261108000100_strategies.sql``):
+Reglas (iguales a las de la migración ``apps/api/migrations/0002_strategies.sql``):
 
 - Solo existen las transiciones de :data:`ALLOWED_TRANSITIONS`.
 - Las promociones (``shadow → active`` y ``probation → active``) solo las hace una persona:
@@ -16,19 +16,18 @@ Reglas (iguales a las de la migración ``20261108000100_strategies.sql``):
 - Cada cambio de estado queda en el historial con quién, cuándo y por qué.
 
 Hay dos backends: :class:`InMemoryBackend` (pruebas y backtests) y
-:class:`PostgRESTBackend` (Supabase con la llave ``service_role``)::
+:class:`WorkerApiBackend` (API en Cloudflare Workers, ``/internal/strategies``)::
 
-    from tm_agents.registry import SYSTEM_ACTOR, PostgRESTBackend, StrategyRegistry
+    from tm_agents.registry import SYSTEM_ACTOR, StrategyRegistry, WorkerApiBackend
     from tm_agents.strategy_stats import StrategyState
 
-    registry = StrategyRegistry(PostgRESTBackend.from_env())
+    registry = StrategyRegistry(WorkerApiBackend.from_env())
     registry.transition("trend", StrategyState.PROBATION, SYSTEM_ACTOR, "drawdown > p95")
     registry.history("trend")
 """
 
 from __future__ import annotations
 
-import os
 import re
 import threading
 from collections.abc import Iterable, Mapping
@@ -36,9 +35,10 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Any, Protocol
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
-import httpx
+from tm_shared.api_client import WorkerApiClient, WorkerApiError
 
 from tm_agents.strategy_stats import StrategyState
 
@@ -74,7 +74,7 @@ Actor = str | UUID
 # Errores
 # ---------------------------------------------------------------------------------------
 class RegistryError(Exception):
-    """Error genérico del registro (por ejemplo, una respuesta inesperada de PostgREST)."""
+    """Error genérico del registro (por ejemplo, una respuesta inesperada de la API)."""
 
 
 class StrategyNotFoundError(RegistryError, KeyError):
@@ -193,7 +193,7 @@ class StrategyRecord:
 
     @classmethod
     def from_row(cls, row: Mapping[str, Any]) -> StrategyRecord:
-        """Construye el registro a partir de una fila de PostgREST."""
+        """Construye el registro a partir de una fila de la API (``Strategy``)."""
         return cls(
             name=row["name"],
             state=S(row["state"]),
@@ -243,7 +243,7 @@ class StrategyTransition:
 def _parse_ts(value: str | datetime) -> datetime:
     if isinstance(value, datetime):
         return value
-    # PostgREST devuelve ISO 8601; Python 3.12 entiende el "+00:00" y la "Z".
+    # La API devuelve ISO 8601 UTC con "Z"; Python 3.12 la entiende.
     return datetime.fromisoformat(value)
 
 
@@ -345,151 +345,93 @@ class InMemoryBackend:
             raise StrategyNotFoundError(name) from None
 
 
-class PostgRESTBackend:
-    """Backend sobre la API REST de Supabase (PostgREST) con la llave ``service_role``.
+class WorkerApiBackend:
+    """Backend sobre la API en Cloudflare Workers (``/internal/strategies``), base D1.
 
-    La base vuelve a validar todo (checks y triggers de la migración), así que aunque otro
-    servicio escriba directo, el ciclo de vida se respeta. Cada transición es un solo
-    ``INSERT`` en ``strategy_transitions``: el trigger bloquea la fila de la estrategia,
-    exige que ``from_state`` sea el estado actual y actualiza ``strategies.state`` en la
-    misma transacción.
+    La base vuelve a validar todo (checks y triggers de ``0002_strategies.sql``), así que
+    aunque otro servicio escriba directo, el ciclo de vida se respeta: cada transición es un
+    ``POST /internal/strategies/{name}/transitions`` y el Worker responde ``409 stale_state``
+    si el estado ya no es ``from_state``.
 
     Args:
-        url: URL base de Supabase (``SUPABASE_URL``), p. ej. ``http://127.0.0.1:54321``.
-        key: llave ``service_role`` (JWT) o ``sb_secret_...``. Nunca la del frontend.
-        client: cliente de httpx opcional (para pruebas o para reutilizar conexiones).
-        timeout: segundos por petición.
+        client: :class:`~tm_shared.api_client.WorkerApiClient` (``TM_API_URL`` y
+            ``TM_SERVICE_TOKEN``).
     """
 
-    def __init__(
-        self,
-        url: str,
-        key: str,
-        *,
-        client: httpx.Client | None = None,
-        timeout: float = 10.0,
-    ) -> None:
-        if not url:
-            raise ValueError("falta la URL de Supabase")
-        if not key:
-            raise ValueError("falta la llave service_role de Supabase")
-        headers = {"apikey": key, "Content-Type": "application/json"}
-        # Las llaves nuevas (sb_secret_...) no son JWT y solo van en el header apikey.
-        if key.startswith("eyJ"):
-            headers["Authorization"] = f"Bearer {key}"
-        self._base = url.rstrip("/") + "/rest/v1"
-        self._client = client or httpx.Client(timeout=timeout)
-        self._headers = headers
+    def __init__(self, client: WorkerApiClient) -> None:
+        self.client = client
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] | None = None, **kwargs: Any) -> PostgRESTBackend:
-        """Lee ``SUPABASE_URL`` y ``SUPABASE_SERVICE_ROLE_KEY`` del entorno."""
-        env = os.environ if env is None else env
-        return cls(env.get("SUPABASE_URL", ""), env.get("SUPABASE_SERVICE_ROLE_KEY", ""), **kwargs)
+    def from_env(cls, env: Mapping[str, str] | None = None, **kwargs: Any) -> WorkerApiBackend:
+        """Lee ``TM_API_URL``, ``TM_SERVICE_TOKEN`` y los headers de Access del entorno."""
+        return cls(WorkerApiClient.from_env(env, **kwargs))
 
     def close(self) -> None:
-        self._client.close()
+        self.client.close()
 
     # --- lectura -----------------------------------------------------------------------
     def get(self, name: str) -> StrategyRecord | None:
-        rows = self._request("GET", "/strategies", params={"name": f"eq.{name}", "select": "*"})
-        return StrategyRecord.from_row(rows[0]) if rows else None
+        try:
+            row = self._call("GET", f"/internal/strategies/{quote(name)}")
+        except StrategyNotFoundError:
+            return None
+        return StrategyRecord.from_row(row)
 
     def list(self, states: Iterable[StrategyState] | None = None) -> list[StrategyRecord]:
-        params = {"select": "*", "order": "name.asc"}
-        if states is not None:
-            params["state"] = "in.(" + ",".join(S(s).value for s in states) + ")"
-        return [StrategyRecord.from_row(r) for r in self._request("GET", "/strategies", params)]
+        params = {} if states is None else {"state": ",".join(S(s).value for s in states)}
+        rows = self._call("GET", "/internal/strategies", params=params)
+        return [StrategyRecord.from_row(r) for r in rows or []]
 
     def history(self, record: StrategyRecord) -> list[StrategyTransition]:
-        rows = self._request(
-            "GET",
-            "/strategy_transitions",
-            params={
-                "strategy_id": f"eq.{record.id}",
-                "select": "*",
-                "order": "created_at.asc,id.asc",
-            },
-        )
-        return [StrategyTransition.from_row(record.name, r) for r in rows]
+        rows = self._call("GET", f"/internal/strategies/{quote(record.name)}/transitions")
+        return [StrategyTransition.from_row(record.name, r) for r in rows or []]
 
     # --- escritura ---------------------------------------------------------------------
     def create(self, name: str, params: Mapping[str, Any]) -> StrategyRecord:
-        rows = self._request(
-            "POST", "/strategies", json={"name": name, "params": dict(params)}, returning=True
+        row = self._call(
+            "POST", "/internal/strategies", json={"name": name, "params": dict(params)}
         )
-        return StrategyRecord.from_row(rows[0])
+        return StrategyRecord.from_row(row)
 
     def update(self, name: str, fields: Mapping[str, Any]) -> StrategyRecord:
-        rows = self._request(
-            "PATCH",
-            "/strategies",
-            params={"name": f"eq.{name}"},
-            json=dict(fields),
-            returning=True,
-        )
-        if not rows:
-            raise StrategyNotFoundError(name)
-        return StrategyRecord.from_row(rows[0])
+        row = self._call("PATCH", f"/internal/strategies/{quote(name)}", json=dict(fields))
+        return StrategyRecord.from_row(row)
 
     def append_transition(
         self, record: StrategyRecord, to_state: StrategyState, actor: str, reason: str
     ) -> StrategyTransition:
-        rows = self._request(
+        row = self._call(
             "POST",
-            "/strategy_transitions",
+            f"/internal/strategies/{quote(record.name)}/transitions",
             json={
-                "strategy_id": str(record.id),
                 "from_state": record.state.value,
                 "to_state": S(to_state).value,
                 "actor": actor,
                 "reason": reason,
             },
-            returning=True,
         )
-        return StrategyTransition.from_row(record.name, rows[0])
+        return StrategyTransition.from_row(record.name, row)
 
     # --- HTTP --------------------------------------------------------------------------
-    def _request(
-        self,
-        method: str,
-        path: str,
-        params: Mapping[str, str] | None = None,
-        *,
-        json: Any = None,
-        returning: bool = False,
-    ) -> list[dict[str, Any]]:
-        headers = dict(self._headers)
-        if returning:
-            headers["Prefer"] = "return=representation"
+    def _call(self, method: str, path: str, **kwargs: Any) -> Any:
         try:
-            resp = self._client.request(
-                method, self._base + path, params=params, json=json, headers=headers
-            )
-        except httpx.HTTPError as exc:
-            raise RegistryError(f"no se pudo llamar a PostgREST: {exc}") from exc
-        if resp.is_success:
-            return resp.json() if resp.content else []
-        raise _error_from_response(resp)
+            return self.client.request(method, path, **kwargs)
+        except WorkerApiError as exc:
+            raise _error_from_api(exc) from exc
 
 
-def _error_from_response(resp: httpx.Response) -> RegistryError:
-    """Traduce los errores de Postgres que devuelve PostgREST a errores del registro."""
-    try:
-        body = resp.json()
-    except ValueError:
-        body = {}
-    code = body.get("code", "") if isinstance(body, dict) else ""
-    message = body.get("message", resp.text) if isinstance(body, dict) else resp.text
-    if code == "40001":
+def _error_from_api(exc: WorkerApiError) -> RegistryError:
+    """Traduce los ``code`` del contrato a errores del registro."""
+    message = str(exc.detail or exc)
+    if exc.code == "stale_state":
         return StaleStateError(message)
-    if code == "23505":
+    if exc.code in ("strategy_exists", "unique_violation"):
         return StrategyExistsError(message)
-    if code in ("23514", "42501"):
+    if exc.code in ("transition_not_allowed", "check_violation"):
         return TransitionError(message)
-    if code == "23503":
+    if exc.status == 404 or exc.code in ("not_found", "foreign_key_violation"):
         return StrategyNotFoundError(message)
-    return RegistryError(f"PostgREST respondió {resp.status_code}: {message}")
+    return RegistryError(str(exc))
 
 
 # ---------------------------------------------------------------------------------------
