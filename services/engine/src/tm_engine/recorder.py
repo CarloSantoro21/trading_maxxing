@@ -63,6 +63,8 @@ class FillRecord:
     ts: datetime
     decision: TradeDecision | None = None
     bot_id: str | None = None
+    #: Cómo se ejecutó: `None` (TradingNode en Testnet) o `"sim"` (`tm_engine.sim`).
+    execution: str | None = None
 
 
 class FillRecorder(Protocol):
@@ -177,6 +179,8 @@ class WorkerApiTradeRecorder:
             decision.rationale.model_dump(mode="json") if decision is not None else {}
         )
         rationale["sleeve"] = record.sleeve
+        if record.execution:
+            rationale["execution"] = record.execution
         open_row = _OpenRow(
             id="",
             fees=record.commission,

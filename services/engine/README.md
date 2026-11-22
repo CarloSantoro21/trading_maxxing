@@ -63,14 +63,23 @@ desde el último id existente al arrancar (no reprocesa decisiones viejas), desc
 aviso en el log las entradas malformadas y revisa el stream cada `poll_interval_secs` (1 s) y
 en cada vela. Si Redis no está disponible sigue funcionando con `submit()`.
 
-## Modo TESTNET y modo sin conexión
+## Modos de ejecución: TESTNET, simulado y sin conexión
 
-`TradingEngineService` arma un `TradingNode` con el adaptador de Binance Spot en
+`ENGINE_EXECUTION` elige cómo se ejecutan las decisiones:
+
+| Valor | Qué hace |
+| --- | --- |
+| `auto` (por omisión) | `testnet` si hay `BINANCE_TESTNET_API_KEY`/`SECRET`; si no, `sim`. |
+| `testnet` | `TradingNode` de NautilusTrader contra Binance Spot Testnet (abajo). Sin llaves queda `offline`. |
+| `sim` | `tm_engine.sim.SimExecutionEngine`: sin Nautilus ni llaves, llena cada decisión al precio actual de la REST **pública** de Binance (`api.binance.com`, respaldo `data-api.binance.vision` y luego el último precio conocido) con la comisión del laboratorio (0.1 % por lado, `ENGINE_SIM_FEE`), vigila el SL/TP y registra los fills por la API igual que el modo real, con `rationale.execution = "sim"`. Mismas reglas de aceptación que `AgenticStrategy` (shadow, guardia de sleeves, RiskAgent, sin cortos). Es lo que usa `make dev` sin llaves ([`docs/correr-local.md`](../../docs/correr-local.md)). |
+| `offline` | No ejecuta nada: solo acepta decisiones y lo reporta en el latido. |
+
+En modo `testnet`, `TradingEngineService` arma un `TradingNode` con el adaptador de Binance Spot en
 `BinanceEnvironment.TESTNET` (datos y ejecución), con las llaves de:
 
 | Variable | Uso |
 | --- | --- |
-| `BINANCE_TESTNET_API_KEY`, `BINANCE_TESTNET_API_SECRET` | Llaves de https://testnet.binance.vision. Si falta alguna, el motor arranca en modo `offline` (sin conexión). |
+| `BINANCE_TESTNET_API_KEY`, `BINANCE_TESTNET_API_SECRET` | Llaves de https://testnet.binance.vision. Si falta alguna, `ENGINE_EXECUTION=auto` usa la ejecución simulada (`sim`). |
 | `REDIS_URL` | Stream de decisiones. |
 | `ENGINE_SYMBOLS` (`BTCUSDT`), `ENGINE_TIMEFRAME` (`1m`), `ENGINE_PROFILE` (`default`) | Perfil de ejecución. |
 | `TM_API_URL` + `TM_SERVICE_TOKEN` (+ `CF_ACCESS_CLIENT_ID`/`CF_ACCESS_CLIENT_SECRET`) | API en Cloudflare Workers: fills en `trades`, guardia de sleeves, latido y backtests (abajo). Sin ellas los fills solo quedan en memoria. |
@@ -78,7 +87,8 @@ en cada vela. Si Redis no está disponible sigue funcionando con `submit()`.
 | `HEARTBEAT_FILE` (`/tmp/heartbeat`), `HEARTBEAT_INTERVAL` (`10`) | Heartbeat del contenedor. |
 
 El heartbeat es un JSON con el estado:
-`{"ts": ..., "mode": "testnet" | "offline", "connected": false, "error": "faltan ...", ...}`.
+`{"ts": ..., "mode": "testnet" | "sim" | "offline", "connected": false, "error": ..., ...}`
+(en `sim` trae además `sim: {fills, fee, price_source, positions}`).
 Los logs salen por stdout en **JSON estructurado** (en la Mac: `make runner-logs`; Docker los
 rota con `max-size: 10m`). El APM del proyecto es Workers Observability del lado de la API;
 del motor, la API guarda el latido (`/api/engine/status`). Los de Nautilus van

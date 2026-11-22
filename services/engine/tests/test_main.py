@@ -9,7 +9,7 @@ def test_once_prints_health(capsys):
     worker.main(["--once"])
     out = json.loads(capsys.readouterr().out)
     assert out["service"] == "engine"
-    assert out["mode"] == "offline"
+    assert out["mode"] == "sim"  # sin llaves, ENGINE_EXECUTION=auto simula
 
 
 def test_loop_writes_heartbeat_and_stops(tmp_path, monkeypatch):
@@ -27,7 +27,7 @@ def test_loop_writes_heartbeat_and_stops(tmp_path, monkeypatch):
     assert not t.is_alive()
     beat = json.loads(hb.read_text())
     assert beat["ts"] > 0
-    assert beat["mode"] == "offline"
+    assert beat["mode"] == "sim"
     assert beat["connected"] is False
 
 
@@ -93,5 +93,5 @@ def test_loop_with_api_sends_heartbeats_and_stops(tmp_path, monkeypatch):
     t.join(timeout=5)
     assert not t.is_alive()
     assert api.heartbeats["engine"]["status"] == "stopping"
-    assert api.heartbeats["engine"]["details"]["mode"] == "offline"
+    assert api.heartbeats["engine"]["details"]["mode"] == "sim"
     assert len(started) == 1 and started[0].is_set()  # el hilo de backtests se detiene

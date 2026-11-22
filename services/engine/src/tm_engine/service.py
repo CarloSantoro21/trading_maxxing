@@ -9,6 +9,17 @@
   stream de Redis `tm:decisions`, ver `tm_engine.decisions`).
 - `get_positions()`: posiciones y P&L por sleeve, más las posiciones netas del venue.
 - `stop()`: detiene el nodo y libera sus recursos.
+
+Modo de ejecución (`execution`):
+
+- `testnet`: el `TradingNode` de arriba (requiere las llaves).
+- `sim`: sin Nautilus ni llaves, `tm_engine.sim.SimExecutionEngine` llena cada decisión al
+  precio actual de la REST pública de Binance con la comisión del laboratorio y registra los
+  fills por la API igual que el modo real (demo local, ver `docs/correr-local.md`).
+- `offline`: no ejecuta nada; solo acepta decisiones y lo reporta.
+- `auto` (por omisión de la clase): `testnet` con llaves, `offline` sin ellas. El proceso
+  (`python -m tm_engine`) resuelve `ENGINE_EXECUTION=auto` a `sim` cuando faltan las llaves
+  (ver `resolve_execution`).
 """
 
 from __future__ import annotations
@@ -18,9 +29,10 @@ import logging
 import os
 import threading
 from collections import deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
@@ -30,6 +42,7 @@ from tm_shared.contracts import Timeframe, TradeDecision
 from tm_engine.decisions import DecisionEnvelope, DecisionSource, RedisStreamDecisionSource
 from tm_engine.instruments import BINANCE, bar_type, instrument_id
 from tm_engine.recorder import FillRecorder, MemoryFillRecorder
+from tm_engine.sim import PublicPriceFeed, SimExecutionEngine, SimRunner
 from tm_engine.strategy import AgenticStrategy, AgenticStrategyConfig
 
 log = logging.getLogger(__name__)
@@ -42,6 +55,37 @@ class EngineMode(StrEnum):
     STOPPED = "stopped"
     OFFLINE = "offline"  # sin llaves de Binance Testnet: no hay conexión al venue
     TESTNET = "testnet"
+    SIM = "sim"  # fills simulados al precio público de Binance (tm_engine.sim)
+
+
+class ExecutionMode(StrEnum):
+    """Cómo se ejecutan las decisiones (`ENGINE_EXECUTION`)."""
+
+    AUTO = "auto"
+    TESTNET = "testnet"
+    SIM = "sim"
+    OFFLINE = "offline"
+
+
+EXECUTION_ENV = "ENGINE_EXECUTION"
+
+
+def resolve_execution(
+    env: Mapping[str, str] | None = None, credentials: Credentials | object | None = None
+) -> ExecutionMode:
+    """`ENGINE_EXECUTION`; `auto` (o vacío) es `testnet` con llaves y `sim` sin ellas."""
+    env = os.environ if env is None else env
+    raw = (env.get(EXECUTION_ENV) or "auto").strip().lower()
+    try:
+        mode = ExecutionMode(raw)
+    except ValueError:
+        raise ValueError(
+            f"{EXECUTION_ENV}={raw!r} no es válido (auto, testnet, sim u offline)"
+        ) from None
+    if mode is ExecutionMode.AUTO:
+        creds = Credentials.from_env() if credentials is None else credentials
+        return ExecutionMode.TESTNET if isinstance(creds, Credentials) else ExecutionMode.SIM
+    return mode
 
 
 class EngineProfile(BaseModel):
@@ -195,8 +239,14 @@ class TradingEngineService:
         recorder: FillRecorder | None = None,
         node_factory: NodeFactory = build_node,
         sleeve_guard: Callable[[str], bool] | None = None,
+        execution: ExecutionMode | str = ExecutionMode.AUTO,
+        price_feed: PublicPriceFeed | None = None,
     ) -> None:
         self._credentials = Credentials.from_env() if credentials is _FROM_ENV else credentials
+        self.execution = ExecutionMode(execution)
+        self._price_feed = price_feed
+        self.sim: SimExecutionEngine | None = None
+        self._sim_runner: SimRunner | None = None
         self._redis = redis_client
         self._recorder: FillRecorder = recorder or MemoryFillRecorder()
         self._node_factory = node_factory
@@ -225,10 +275,16 @@ class TradingEngineService:
                 sources.append(RedisStreamDecisionSource(self._redis))
             except Exception as exc:
                 log.warning("Redis no disponible, solo se usarán decisiones locales: %s", exc)
-        self.strategy = build_strategy(
-            self.profile, CompositeDecisionSource(sources), self._recorder, self._sleeve_guard
-        )
+        source = CompositeDecisionSource(sources)
+        if self.execution is ExecutionMode.SIM:
+            return self._start_sim(source)
+        self.strategy = build_strategy(self.profile, source, self._recorder, self._sleeve_guard)
         self.restored = self._restore_positions(self.strategy)
+        if self.execution is ExecutionMode.OFFLINE:
+            self.mode = EngineMode.OFFLINE
+            self.error = f"{EXECUTION_ENV}=offline: no se ejecuta ninguna orden"
+            log.warning("motor en modo sin conexión: %s", self.error)
+            return self.mode
         if self._credentials is None:
             self.mode = EngineMode.OFFLINE
             self.error = f"faltan {API_KEY_ENV} / {API_SECRET_ENV}"
@@ -256,7 +312,33 @@ class TradingEngineService:
         )
         return self.mode
 
-    def _restore_positions(self, strategy: AgenticStrategy) -> int:
+    def _start_sim(self, source: DecisionSource) -> EngineMode:
+        """Ejecución simulada: sin TradingNode, fills al precio público de Binance."""
+        assert self.profile is not None
+        fee = os.environ.get("ENGINE_SIM_FEE")
+        self.sim = SimExecutionEngine(
+            source,
+            self._recorder,
+            prices=self._price_feed or PublicPriceFeed(),
+            sleeve_guard=self._sleeve_guard,
+            **({"fee_rate": Decimal(fee)} if fee else {}),
+        )
+        self.restored = self._restore_positions(self.sim)
+        self._sim_runner = SimRunner(self.sim, interval=self.profile.poll_interval_secs)
+        self._sim_runner.start()
+        self.mode = EngineMode.SIM
+        log.warning(
+            "motor en modo SIMULADO: fills al precio público de Binance con comisión de %s "
+            "(sin órdenes en Testnet; pon BINANCE_TESTNET_API_KEY/SECRET para operar de verdad)",
+            self.sim.fee_rate,
+        )
+        log.info(
+            "Starting simulated execution",
+            extra={"symbols": list(self.profile.symbols), "fee": str(self.sim.fee_rate)},
+        )
+        return self.mode
+
+    def _restore_positions(self, strategy: AgenticStrategy | SimExecutionEngine) -> int:
         """Siembra el libro por bot y sleeve con las operaciones abiertas de `trades` (#89).
 
         Si el recorder no sabe leerlas (memoria) no hay nada que restaurar. Si falla la
@@ -290,6 +372,9 @@ class TradingEngineService:
     def stop(self, timeout: float = 30.0) -> None:
         if self.mode is EngineMode.STOPPED:
             return
+        if self._sim_runner is not None:
+            self._sim_runner.stop(timeout)
+            self._sim_runner = None
         node, self._node = self._node, None
         if node is not None:
             loop = node.get_event_loop()
@@ -326,7 +411,8 @@ class TradingEngineService:
 
     def get_positions(self) -> dict[str, Any]:
         """Posiciones por sleeve (libro propio) y posiciones netas del venue (cache del nodo)."""
-        sleeves = self.strategy.sleeve_report() if self.strategy is not None else {}
+        engine = self.sim if self.sim is not None else self.strategy
+        sleeves = engine.sleeve_report() if engine is not None else {}
         venue: list[dict[str, str]] = []
         if self._node is not None:
             for position in self._node.cache.positions_open(venue=BINANCE):
@@ -342,14 +428,26 @@ class TradingEngineService:
 
     def status(self) -> dict[str, Any]:
         """Estado para el heartbeat y el healthcheck."""
-        return {
+        engine = self.sim if self.sim is not None else self.strategy
+        error = self.error
+        if error is None and self._sim_runner is not None:
+            error = self._sim_runner.error
+        status: dict[str, Any] = {
             "mode": self.mode.value,
             "connected": self.mode is EngineMode.TESTNET and self.error is None,
             "profile": self.profile.name if self.profile else None,
             "symbols": list(self.profile.symbols) if self.profile else [],
             "pending_decisions": self.pending,
-            "rejections": len(self.strategy.rejections) if self.strategy else 0,
-            "error": self.error,
+            "rejections": len(engine.rejections) if engine is not None else 0,
+            "error": error,
             "restored_positions": self.restored,
             "restore_error": self.restore_error,
         }
+        if self.sim is not None:
+            status["sim"] = {
+                "fills": self.sim.fills,
+                "fee": str(self.sim.fee_rate),
+                "price_source": self.sim.prices.source,
+                "positions": self.sim.positions(),
+            }
+        return status

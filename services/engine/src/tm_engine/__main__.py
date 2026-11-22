@@ -1,11 +1,16 @@
 """Worker engine: arranca TradingEngineService y escribe un heartbeat con su estado.
 
-python -m tm_engine           # corre en bucle (Binance Spot Testnet o modo sin conexión)
+python -m tm_engine           # corre en bucle (Binance Spot Testnet, simulado o sin conexión)
 python -m tm_engine --once    # imprime su estado y termina
 
 El heartbeat (`HEARTBEAT_FILE`, por defecto /tmp/heartbeat) es un JSON con la hora y el
-estado del motor: `{"ts": ..., "mode": "testnet" | "offline", "connected": ..., ...}`. El
-healthcheck del contenedor solo revisa que se actualice.
+estado del motor: `{"ts": ..., "mode": "testnet" | "sim" | "offline", "connected": ..., ...}`.
+El healthcheck del contenedor solo revisa que se actualice.
+
+`ENGINE_EXECUTION` elige cómo se ejecutan las decisiones: `auto` (por omisión) usa Binance
+Spot Testnet si hay `BINANCE_TESTNET_API_KEY`/`SECRET` y, si faltan, la ejecución **simulada**
+(`tm_engine.sim`: fills al precio público de Binance con la comisión del laboratorio);
+`testnet`, `sim` u `offline` lo fuerzan.
 
 Con `TM_API_URL` y `TM_SERVICE_TOKEN` (API en Cloudflare Workers, ver
 `docs/arquitectura/motor-en-la-mac.md`) el motor además:
@@ -36,7 +41,7 @@ from tm_shared.api_client import HeartbeatReporter, WorkerApiClient, api_configu
 from tm_shared.health import health
 
 from tm_engine.logging_setup import setup_json_logging
-from tm_engine.service import Credentials, EngineProfile, TradingEngineService
+from tm_engine.service import EngineProfile, TradingEngineService, resolve_execution
 
 HEARTBEAT = Path(os.environ.get("HEARTBEAT_FILE", "/tmp/heartbeat"))
 INTERVAL = float(os.environ.get("HEARTBEAT_INTERVAL", "10"))
@@ -136,14 +141,14 @@ def _engine_status(status: Mapping[str, Any]) -> str:
 def main(argv: list[str] | None = None) -> None:
     args = argparse.ArgumentParser(prog="tm_engine").parse_known_args(argv)[1]
     setup_json_logging(service="engine", level=os.environ.get("LOG_LEVEL", "INFO"))
-    mode = "testnet" if Credentials.from_env() else "offline"
+    mode = resolve_execution().value
     print(json.dumps({**health("engine").model_dump(), "mode": mode}), flush=True)
     if "--once" in args:
         return
 
     profile = EngineProfile.from_env()
     log.info(
-        "Starting TradingNode",
+        "Starting TradingNode" if mode == "testnet" else "Starting engine",
         extra={"mode": mode, "symbols": list(profile.symbols), "timeframe": profile.timeframe},
     )
     api = api_from_env()
@@ -151,6 +156,7 @@ def main(argv: list[str] | None = None) -> None:
         redis_client=redis_from_env(),
         recorder=recorder_from_env(api),
         sleeve_guard=sleeve_guard_from_env(api),
+        execution=mode,
     )
     service.start(profile)
     heartbeat = heartbeat_from_env(api, service)
