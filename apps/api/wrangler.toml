@@ -3,15 +3,17 @@
 # Hay dos ambientes: `dev` y `production`. Cada uno tiene su propia base D1 (binding "DB").
 # Siempre se usa con --env: `wrangler dev --env dev --local`, `wrangler deploy --env production`.
 #
-# Los `database_id` son placeholders: se sustituyen por los ids reales que devuelve
-# `wrangler d1 create trading-maxxing-dev` (y `-prod`) o el Terraform de la infraestructura.
+# Los nombres son los del Terraform (repo trading_maxxing-infra, envs/dev y envs/prod):
+#   Worker tm-api-dev + D1 tm-dev (rama develop) y Worker tm-api + D1 tm-prod (rama main).
+# Los `database_id` son placeholders: el pipeline (backend.yml) los sustituye con la variable
+# D1_DATABASE_ID de cada environment (output `d1_database_id` de Terraform).
 # En local (`--local`) el id no importa: wrangler guarda la base en .wrangler/state.
 #
 # Secretos (no van en este archivo; se cargan con `wrangler secret put <NOMBRE> --env <env>`):
 #   SERVICE_TOKEN   token que manda el motor de la Mac en X-Service-Token (/internal/*)
 # En local se ponen en .dev.vars (ver .dev.vars.example).
 
-name = "trading-maxxing-api"
+name = "tm-api"
 main = "src/index.ts"
 compatibility_date = "2026-11-01"
 compatibility_flags = ["nodejs_compat"]
@@ -39,7 +41,7 @@ head_sampling_rate = 1
 # Ambiente dev (local con --local y el Worker de desarrollo en la nube)
 # ---------------------------------------------------------------------------------------
 [env.dev]
-name = "trading-maxxing-api-dev"
+name = "tm-api-dev"
 
 [env.dev.vars]
 ENVIRONMENT = "dev"
@@ -49,12 +51,12 @@ AUTH_MODE = "dev"
 DEV_USER_EMAIL = "demo@trading-maxxing.local"
 ACCESS_TEAM_DOMAIN = "trading-maxxing.cloudflareaccess.com"
 ACCESS_AUD = "PLACEHOLDER_ACCESS_AUD_DEV"
-CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
+CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000,https://tm-web-dev.pages.dev"
 ENGINE_STALE_SECONDS = "120"
 
 [[env.dev.d1_databases]]
 binding = "DB"
-database_name = "trading-maxxing-dev"
+database_name = "tm-dev"
 database_id = "00000000-0000-0000-0000-000000000001"
 migrations_dir = "migrations"
 
@@ -72,19 +74,19 @@ enabled = true
 # Ambiente production
 # ---------------------------------------------------------------------------------------
 [env.production]
-name = "trading-maxxing-api"
+name = "tm-api"
 
 [env.production.vars]
 ENVIRONMENT = "production"
 AUTH_MODE = "access"
 ACCESS_TEAM_DOMAIN = "trading-maxxing.cloudflareaccess.com"
 ACCESS_AUD = "PLACEHOLDER_ACCESS_AUD_PROD"
-CORS_ORIGINS = "https://trading-maxxing.pages.dev"
+CORS_ORIGINS = "https://tm-web.pages.dev"
 ENGINE_STALE_SECONDS = "120"
 
 [[env.production.d1_databases]]
 binding = "DB"
-database_name = "trading-maxxing-prod"
+database_name = "tm-prod"
 database_id = "00000000-0000-0000-0000-000000000002"
 migrations_dir = "migrations"
 

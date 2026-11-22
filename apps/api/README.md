@@ -1,8 +1,9 @@
 # apps/api: API en Cloudflare Workers
 
 API de trading_maxxing en **Cloudflare Workers** con **Hono + TypeScript**, base **D1**
-(SQLite) y login con **Cloudflare Access**. Reemplaza a `services/api` (FastAPI) y a
-Supabase. El contrato completo está en [`docs/arquitectura/api.md`](../../docs/arquitectura/api.md).
+(SQLite) y login con **Cloudflare Access**. El contrato completo está en
+[`docs/arquitectura/api.md`](../../docs/arquitectura/api.md). Para levantar todo el sistema
+(API + web + motor) en local: `make dev` desde la raíz ([`docs/correr-local.md`](../../docs/correr-local.md)).
 
 ## Requisitos
 
@@ -18,6 +19,7 @@ cp .dev.vars.example .dev.vars        # SERVICE_TOKEN para /internal/*
 pnpm db:migrate:local                 # aplica migrations/ a la D1 local (.wrangler/state)
 pnpm db:seed:local                    # usuario demo admin, perfil, bot, trades y estrategias
 pnpm dev                              # wrangler dev --env dev --local  ->  http://localhost:8787
+# Para que el motor en Docker la alcance: pnpm exec wrangler dev --env dev --local --ip 0.0.0.0
 ```
 
 ```bash
@@ -49,20 +51,21 @@ reemplaza a RLS, admin vs member, los endpoints internos con token y los ports n
 
 | | `dev` | `production` |
 |---|---|---|
-| Worker | `trading-maxxing-api-dev` | `trading-maxxing-api` |
-| D1 | `trading-maxxing-dev` | `trading-maxxing-prod` |
+| Worker | `tm-api-dev` | `tm-api` |
+| D1 | `tm-dev` | `tm-prod` |
 | `AUTH_MODE` | `dev` en local; en la nube se cambia a `access` | `access` |
 
 Variables (`[env.*.vars]` en `wrangler.toml`): `ENVIRONMENT`, `AUTH_MODE`, `ACCESS_TEAM_DOMAIN`,
 `ACCESS_AUD`, `ACCESS_SERVICE_CLIENT_IDS` (opcional), `DEV_USER_EMAIL`, `CORS_ORIGINS`,
 `ENGINE_STALE_SECONDS`. Secreto: `SERVICE_TOKEN` (`wrangler secret put SERVICE_TOKEN --env <env>`).
 
-Los `database_id` y los `ACCESS_AUD` de `wrangler.toml` son **placeholders**. Para la nube:
+Los nombres salen del Terraform de [`trading_maxxing-infra`](https://github.com/CarloSantoro21/trading_maxxing-infra)
+(que crea las bases D1, los proyectos de Pages y las apps de Access). Los `database_id` y los
+`ACCESS_AUD` de `wrangler.toml` son **placeholders**: el pipeline (`backend.yml`) usa las
+variables `D1_DATABASE_ID`, `ACCESS_TEAM_DOMAIN` y `ACCESS_AUD` de cada environment. A mano:
 
 ```bash
-pnpm exec wrangler d1 create trading-maxxing-dev     # copia el database_id a [env.dev]
-pnpm exec wrangler d1 create trading-maxxing-prod    # copia el database_id a [env.production]
-pnpm exec wrangler d1 migrations apply DB --env dev --remote
+pnpm exec wrangler d1 migrations apply DB --env dev --remote   # con el database_id real de tm-dev
 pnpm exec wrangler d1 execute DB --env production --remote \
   --command "INSERT INTO users (id, email, role) VALUES (lower(hex(randomblob(16))), 'tu@correo', 'admin')"
 pnpm deploy:dev
@@ -80,8 +83,8 @@ src/routes/           profiles, goals, bots, portfolio (+trades), backtests, str
                       users (+admin), app-data (dashboard, onboarding, lab, engine), internal
 src/lib/              D1, validación (zod), errores, logs, Monte Carlo, allocator, exposición,
                       proyección de metas, reportes del laboratorio
-migrations/           esquema D1 (port de supabase/migrations)
-seed/seed.sql         datos de desarrollo local
+migrations/           esquema D1
+seed/seed.sql         datos de desarrollo local (incluye la estrategia de demo demo_pulse)
 scripts/              build de los reportes del laboratorio
 test/                 pruebas (vitest + Workers)
 ```
