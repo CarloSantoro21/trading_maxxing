@@ -4,13 +4,15 @@
 
 | Rama | Uso | Sale de | Regresa a |
 |---|---|---|---|
-| `main` | Producción. Cada merge lleva un tag `vX.Y.Z` | — | — |
-| `develop` | Integración, desplegada en staging | `main` | — |
+| `main` | Producción (ambiente **prod**: Pages `tm-web`, Worker `tm-api`, D1 `tm-prod`). Cada push despliega tras la aprobación del environment `prod`. Cada release lleva un tag `vX.Y.Z` | — | — |
+| `develop` | Integración (ambiente **dev**: Pages `tm-web-dev`, Worker `tm-api-dev`, D1 `tm-dev`). Cada push despliega automático y corre la UAT | `main` | `main` (PR de promoción) |
 | `feature/<issue>-<descripcion>` | Funcionalidades, p. ej. `feature/18-risk-agent` | `develop` | `develop` (squash merge) |
 | `release/X.Y.Z` | Estabilización antes de liberar; solo correcciones | `develop` | `main` y `develop` |
 | `hotfix/<descripcion>` | Correcciones urgentes en producción | `main` | `main` y `develop` |
 
 `main` y `develop` están protegidas: no se hace push directo, todo entra por pull request con el CI en verde.
+
+Promoción a producción: PR `develop` → `main` con **merge commit** (así el gate de UAT encuentra el commit de `develop` que se probó en dev). El deploy a prod espera la aprobación del environment `prod`. El flujo completo, los secrets y el rollback están en [docs/pipeline-y-ambientes.md](docs/pipeline-y-ambientes.md).
 
 ## Commits: Conventional Commits
 
@@ -29,7 +31,7 @@ Tipos: `feat`, `fix`, `test`, `ci`, `docs`, `refactor`, `chore`, `perf`. Ejemplo
 1. Crea la rama desde `develop` con el número del issue.
 2. Usa la plantilla del PR y enlaza el issue (`Closes #N`).
 3. El título del PR sigue Conventional Commits, porque se usa como mensaje del squash merge.
-4. El CI debe pasar: lint, pruebas y cobertura de Python ≥ 70 %.
+4. El CI debe pasar (workflows `Backend` y `Frontend`): lint, tipos, pruebas y cobertura ≥ 70 % en Python y en la API.
 5. Merge con **squash** a `develop`.
 
 ## Versiones
