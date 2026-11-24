@@ -325,13 +325,8 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
       CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
       TM_SERVICE_TOKEN: ${{ secrets.TM_SERVICE_TOKEN }}
-      API_URL: ${{ vars.API_URL }}
-      D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
-      ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
-      ACCESS_AUD: ${{ vars.ACCESS_AUD }}
       WRANGLER_ENV: dev
     steps:
       - &creds
@@ -373,9 +368,59 @@ jobs:
         working-directory: apps/api
         run: pnpm install --frozen-lockfile
 
+      - &discover
+        name: Descubrir recursos de Cloudflare (D1, Access, Workers)
+        id: discover
+        if: steps.creds.outputs.ok == 'true'
+        run: |
+          # Mapeo de WRANGLER_ENV (dev|production) a los nombres de Terraform (dev|prod)
+          env_label=$( [ "$WRANGLER_ENV" = "dev" ] && echo "dev" || echo "prod" )
+          d1_name="tm-${env_label}"
+          worker=$( [ "$WRANGLER_ENV" = "dev" ] && echo "tm-api-dev" || echo "tm-api" )
+
+          d1_id=$(curl -sf -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database?per_page=100" \
+            | jq -r ".result[]? | select(.name == \"$d1_name\") | .uuid // empty" 2>/dev/null || true)
+
+          subdomain=$(curl -sf -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain" \
+            | jq -r ".result.subdomain // empty" 2>/dev/null || true)
+          api_url=$( [ -n "$subdomain" ] && echo "https://${worker}.${subdomain}.workers.dev" || echo "" )
+
+          team_domain=$(curl -sf -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/access/organizations" \
+            | jq -r ".result.auth_domain // empty" 2>/dev/null || true)
+
+          access_aud=$(curl -sf -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/access/apps?per_page=100" \
+            | jq -r ".result[]? | select(.name == \"trading_maxxing web ($env_label)\") | .aud // empty" 2>/dev/null || true)
+
+          cf_client_id=$(curl -sf -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/access/service_tokens" \
+            | jq -r ".result[]? | select(.name == \"tm-motor-${env_label}\") | .client_id // empty" 2>/dev/null || true)
+
+          {
+            echo "D1_DATABASE_ID=$d1_id"
+            echo "API_URL=$api_url"
+            echo "ACCESS_TEAM_DOMAIN=$team_domain"
+            echo "ACCESS_AUD=$access_aud"
+            echo "CF_ACCESS_CLIENT_ID=$cf_client_id"
+          } >> "$GITHUB_ENV"
+          echo "d1_id=$d1_id" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Recursos descubiertos ($WRANGLER_ENV)"
+            echo "| Recurso | Valor |"
+            echo "|---|---|"
+            echo "| D1 database_id | \`${d1_id:-no encontrado}\` |"
+            echo "| API URL | ${api_url:-desconocida} |"
+            echo "| Access domain | \`${team_domain:-no encontrado}\` |"
+            echo "| Access AUD | \`${access_aud:-no encontrado}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - &d1id
-        name: Id real de la base D1 (si se definió la variable D1_DATABASE_ID)
-        if: steps.creds.outputs.ok == 'true' && env.D1_DATABASE_ID != ''
+        name: Id real de la base D1 (si se descubrió D1_DATABASE_ID)
+        if: steps.creds.outputs.ok == 'true' && steps.discover.outputs.d1_id != ''
         working-directory: apps/api
         run: |
           python3 - <<'PY'
@@ -462,6 +507,8 @@ jobs:
     needs: deploy-dev
     if: needs.deploy-dev.outputs.deployed == 'true'
     uses: ./.github/workflows/uat.yml
+    with:
+      app_url: "https://tm-web-dev.pages.dev"
     secrets: inherit
     permissions:
       contents: read
@@ -493,13 +540,8 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
       CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
       TM_SERVICE_TOKEN: ${{ secrets.TM_SERVICE_TOKEN }}
-      API_URL: ${{ vars.API_URL }}
-      D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
-      ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
-      ACCESS_AUD: ${{ vars.ACCESS_AUD }}
       WRANGLER_ENV: production
     steps:
       - *creds
@@ -507,6 +549,7 @@ jobs:
       - *pnpm
       - *node
       - *install
+      - *discover
       - *d1id
       - *migrate
       - *secret

@@ -222,13 +222,12 @@ jobs:
       cancel-in-progress: false
     outputs:
       deployed: ${{ steps.creds.outputs.ok }}
+      url: ${{ steps.deploy.outputs.url }}
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
       CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
-      WEB_URL: ${{ vars.WEB_URL }}
-      PAGES_PROJECT: ${{ vars.PAGES_PROJECT || 'tm-web-dev' }}
+      PAGES_PROJECT: tm-web-dev
       PAGES_BRANCH: develop
       AMBIENTE: dev
     steps:
@@ -258,6 +257,16 @@ jobs:
         if: steps.creds.outputs.ok == 'true'
         with:
           node-version-file: .nvmrc
+      - &discover
+        name: Descubrir client_id del service token del motor
+        id: discover
+        if: steps.creds.outputs.ok == 'true'
+        run: |
+          env_label=$( [ "$AMBIENTE" = "dev" ] && echo "dev" || echo "prod" )
+          cf_client_id=$(curl -sf -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/access/service_tokens" \
+            | jq -r ".result[]? | select(.name == \"tm-motor-${env_label}\") | .client_id // empty" 2>/dev/null || true)
+          [ -n "$cf_client_id" ] && echo "CF_ACCESS_CLIENT_ID=$cf_client_id" >> "$GITHUB_ENV"
       - &download
         name: Bajar el export del job web
         if: steps.creds.outputs.ok == 'true'
@@ -318,6 +327,8 @@ jobs:
     needs: deploy-dev
     if: needs.deploy-dev.outputs.deployed == 'true'
     uses: ./.github/workflows/uat.yml
+    with:
+      app_url: ${{ needs.deploy-dev.outputs.url || 'https://tm-web-dev.pages.dev' }}
     secrets: inherit
     permissions:
       contents: read
@@ -349,16 +360,15 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
       CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
-      WEB_URL: ${{ vars.WEB_URL }}
-      PAGES_PROJECT: ${{ vars.PAGES_PROJECT || 'tm-web' }}
+      PAGES_PROJECT: tm-web
       PAGES_BRANCH: main
       AMBIENTE: prod
     steps:
       - *creds
       - *checkout
       - *node
+      - *discover
       - *download
       - *deploy
       - *smoke
