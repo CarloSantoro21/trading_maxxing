@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { RequireAuth } from "@/components/auth/RequireAuth";
 import { AppShell } from "@/components/nav/AppShell";
-import { mockApi, type RouteHandler, type Routes } from "@/test/api";
+import { ENGINE_ONLINE, mockApi, type RouteHandler, type Routes } from "@/test/api";
 import { renderWithApi } from "@/test/render";
 import { DashboardView } from "./DashboardView";
 
@@ -192,5 +192,62 @@ describe("BotControls", () => {
     renderDashboard({ [DASHBOARD]: dashboard(), "POST /bots/b1/start": { status: 409, body: { detail: "Sin perfil" } } });
     await userEvent.click(await screen.findByRole("button", { name: "Arrancar" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Sin perfil");
+  });
+});
+
+describe("BotControls sin motor", () => {
+  const OFFLINE = { "GET /engine/status": { ...ENGINE_ONLINE, online: false } };
+  const heartbeat = (component: string, online: boolean) => ({
+    component,
+    status: "ok",
+    version: null,
+    host: null,
+    started_at: null,
+    last_seen_at: "2026-11-21T10:00:00.000Z",
+    age_seconds: online ? 5 : 900,
+    online,
+  });
+  const started: RouteHandler = () => ({
+    body: { bot: { ...bot, status: "running", started_at: "2026-11-03T00:00:00Z" }, command: "start", command_id: "c1" },
+  });
+
+  it("con el bot encendido y el motor apagado dice Encendido (sin motor) y muestra el aviso", async () => {
+    renderDashboard({ [DASHBOARD]: dashboard({ bots: [{ ...bot, status: "running" }] }), ...OFFLINE });
+    expect(await screen.findByText("Encendido (sin motor)")).toBeInTheDocument();
+    expect(screen.queryByText("Operando")).not.toBeInTheDocument();
+    expect(screen.getByTestId("engine-down-banner")).toHaveTextContent("no va a operar: el motor no está encendido ni conectado");
+  });
+
+  it("con el motor en línea dice Operando y no muestra el aviso", async () => {
+    renderDashboard({ [DASHBOARD]: dashboard({ bots: [{ ...bot, status: "running" }] }) });
+    expect(await screen.findByText("Operando")).toBeInTheDocument();
+    await screen.findByText("Motor en línea");
+    expect(screen.queryByTestId("engine-down-banner")).not.toBeInTheDocument();
+  });
+
+  it("si solo falta el engine también avisa (el motor está incompleto)", async () => {
+    renderDashboard({
+      [DASHBOARD]: dashboard({ bots: [{ ...bot, status: "running" }] }),
+      "GET /engine/status": { ...ENGINE_ONLINE, components: [heartbeat("agents", true), heartbeat("engine", false)] },
+    });
+    expect(await screen.findByTestId("engine-down-banner")).toHaveTextContent("falta engine");
+    expect(screen.getByText("Encendido (sin motor)")).toBeInTheDocument();
+  });
+
+  it("al arrancar sin motor pide confirmación y se puede cancelar o encender de todos modos", async () => {
+    const { api } = renderDashboard({ [DASHBOARD]: dashboard(), "POST /bots/b1/start": started, ...OFFLINE });
+    const posts = () => api.actions().filter((c) => c.method === "POST");
+    await screen.findByText("Motor desconectado");
+    await userEvent.click(await screen.findByRole("button", { name: "Arrancar" }));
+    const dialog = screen.getByRole("dialog", { name: "El motor está apagado: tu bot no va a hacer nada" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancelar" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(posts()).toHaveLength(0);
+
+    await userEvent.click(screen.getByRole("button", { name: "Arrancar" }));
+    await userEvent.click(screen.getByRole("button", { name: "Encender de todos modos" }));
+    expect(await screen.findByText("Encendido (sin motor)")).toBeInTheDocument();
+    expect(screen.getByTestId("engine-down-banner")).toBeInTheDocument();
+    expect(posts().map((c) => c.path)).toEqual(["/bots/b1/start"]);
   });
 });

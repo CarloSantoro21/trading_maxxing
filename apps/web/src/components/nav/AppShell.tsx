@@ -2,11 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import useSWR from "swr";
 import { LOGOUT_URL, useMe } from "@/components/auth/RequireAuth";
-import { SLOW_POLL_MS } from "@/components/providers/ApiProvider";
 import { secondaryButtonClass } from "@/components/ui/styles";
-import type { EngineStatus } from "@/lib/api/client";
+import { useEngineStatus } from "@/lib/engine";
 import { appEnv, commitSha } from "@/lib/env";
 import { formatDateTime } from "@/lib/format";
 
@@ -46,22 +44,26 @@ export function EnvBadge() {
 
 /** "Motor en línea / desconectado" según el último latido del motor (GET /api/engine/status). */
 export function EngineIndicator() {
-  const { data, error } = useSWR<EngineStatus>("/engine/status", { refreshInterval: SLOW_POLL_MS });
-  const known = data !== undefined;
-  const online = Boolean(data?.online) && !error;
+  const { data, state } = useEngineStatus();
   // Sin llaves de Binance Testnet el engine ejecuta simulado (fills al precio público).
-  const engine = data?.components.find((c) => c.component === "engine");
-  const sim = online && (engine?.details as { mode?: string } | undefined)?.mode === "sim";
-  const label = !known && !error ? "Motor: consultando…" : online ? (sim ? "Motor en línea (simulado)" : "Motor en línea") : "Motor desconectado";
+  const label =
+    state.kind === "loading"
+      ? "Motor: consultando…"
+      : state.kind === "ready"
+        ? state.sim
+          ? "Motor en línea (simulado)"
+          : "Motor en línea"
+        : state.kind === "partial"
+          ? `Motor incompleto (falta ${state.missing.join(" y ")})`
+          : "Motor desconectado";
+  const dot =
+    state.kind === "ready" ? "bg-emerald-500" : state.kind === "partial" ? "bg-amber-500" : state.kind === "offline" ? "bg-red-500" : "bg-neutral-400";
   const title = data?.last_heartbeat_at
     ? `Último latido: ${formatDateTime(data.last_heartbeat_at)}`
     : "El motor de la Mac no ha mandado latidos";
   return (
     <span aria-live="polite" title={title} data-testid="engine-indicator" className="inline-flex items-center gap-1.5 text-xs text-neutral-600 dark:text-neutral-300">
-      <span
-        aria-hidden="true"
-        className={`h-2 w-2 rounded-full ${online ? "bg-emerald-500" : known || error ? "bg-red-500" : "bg-neutral-400"}`}
-      />
+      <span aria-hidden="true" className={`h-2 w-2 rounded-full ${dot}`} />
       {label}
     </span>
   );

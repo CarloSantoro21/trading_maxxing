@@ -64,8 +64,24 @@ describe("AppShell", () => {
       online: true,
       details: { mode: "sim" },
     };
-    renderShell({ "GET /engine/status": { ...ENGINE_ONLINE, components: [engine] } });
+    const agents = { ...engine, component: "agents", details: undefined };
+    renderShell({ "GET /engine/status": { ...ENGINE_ONLINE, components: [agents, engine] } });
     expect(await screen.findByText("Motor en línea (simulado)")).toBeInTheDocument();
+  });
+
+  it("si solo late una parte del motor lo marca como incompleto", async () => {
+    const beat = (component: string, online: boolean) => ({
+      component,
+      status: "ok",
+      version: null,
+      host: null,
+      started_at: null,
+      last_seen_at: "2026-11-21T10:00:00.000Z",
+      age_seconds: online ? 5 : 900,
+      online,
+    });
+    renderShell({ "GET /engine/status": { ...ENGINE_ONLINE, components: [beat("agents", false), beat("engine", true)] } });
+    expect(await screen.findByText("Motor incompleto (falta agents)")).toBeInTheDocument();
   });
 
   it("indica si el motor está desconectado", async () => {
