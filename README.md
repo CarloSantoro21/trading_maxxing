@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/img/logo.svg" alt="trading_maxxing" width="420" />
+</p>
+
 # trading_maxxing
 
 Proyecto final de Infraestructura para el Desarrollo Continuo (ITESO).
