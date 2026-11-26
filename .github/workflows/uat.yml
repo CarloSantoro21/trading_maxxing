@@ -46,19 +46,29 @@ jobs:
       run:
         working-directory: apps/web
     env:
-      # Un solo origen: Pages sirve el sitio y reenvía /api/* al Worker por service binding.
-      APP_URL: ${{ inputs.app_url || vars.WEB_URL }}
-      CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+      APP_URL: ${{ inputs.app_url }}
       CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       EXPECTED_ENV: dev
       NEXT_TELEMETRY_DISABLED: "1"
     steps:
+      - name: Descubrir client_id del service token (tm-motor-dev)
+        working-directory: .
+        run: |
+          if [ -n "$CLOUDFLARE_API_TOKEN" ] && [ -n "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            cf_client_id=$(curl -sf -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/access/service_tokens" \
+              | jq -r '.result[]? | select(.name == "tm-motor-dev") | .client_id // empty' 2>/dev/null || true)
+            [ -n "$cf_client_id" ] && echo "CF_ACCESS_CLIENT_ID=$cf_client_id" >> "$GITHUB_ENV"
+          fi
+
       - name: Revisar configuración de la UAT
         id: creds
         working-directory: .
         run: |
           missing=()
-          [ -z "$APP_URL" ]                 && missing+=("WEB_URL (variable del environment dev)")
+          [ -z "$APP_URL" ]                 && missing+=("app_url (input del workflow; pasa la URL del front en dev)")
           [ -z "$CF_ACCESS_CLIENT_ID" ]     && missing+=("CF_ACCESS_CLIENT_ID")
           [ -z "$CF_ACCESS_CLIENT_SECRET" ] && missing+=("CF_ACCESS_CLIENT_SECRET")
           if [ ${#missing[@]} -ne 0 ]; then
