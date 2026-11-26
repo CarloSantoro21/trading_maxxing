@@ -30,6 +30,12 @@ FROM ${PYTHON_IMAGE} AS runtime
 RUN useradd --system --uid 10001 --no-create-home app
 WORKDIR /app
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
+# Caché de Hugging Face (pesos de Kronos). El compose monta ahí el volumen hf-cache: si la
+# carpeta no existe en la imagen, Docker crea el volumen con dueño root y `app` no puede
+# descargar el modelo (PermissionError en /app/.cache/huggingface/hub). Al existir con dueño
+# app, el volumen nuevo hereda ese dueño.
+RUN mkdir -p /app/.cache/huggingface && chown -R app:app /app/.cache
+ENV HF_HOME=/app/.cache/huggingface
 ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1
 USER app
 EXPOSE 8001
