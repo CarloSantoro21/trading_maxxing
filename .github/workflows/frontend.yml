@@ -286,7 +286,12 @@ jobs:
             --commit-hash "$GITHUB_SHA" --commit-message "${GITHUB_SHA::7} ($AMBIENTE)" \
             --commit-dirty=true | tee deploy.log
           preview="$(grep -oE 'https://[A-Za-z0-9.-]+\.pages\.dev' deploy.log | tail -1 || true)"
-          url="${WEB_URL:-https://$PAGES_PROJECT.pages.dev}"
+          # El subdominio real lo asigna Cloudflare (si <project>.pages.dev ya existe en otra
+          # cuenta, Pages le agrega un sufijo, p. ej. tm-web-9xy.pages.dev). Lo leemos de la API.
+          subdomain=$(curl -sf -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/$PAGES_PROJECT" \
+            | jq -r ".result.subdomain // empty" 2>/dev/null || true)
+          url="https://${subdomain:-$PAGES_PROJECT.pages.dev}"
           echo "url=${url%/}" >> "$GITHUB_OUTPUT"
           {
             echo "### Front desplegado ($AMBIENTE)"
