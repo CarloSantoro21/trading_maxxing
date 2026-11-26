@@ -82,7 +82,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen">
       <header className="border-b border-neutral-200 bg-white/80 backdrop-blur dark:border-neutral-800 dark:bg-neutral-950/80">
         <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3">
-          <Link href="/dashboard" className="font-semibold tracking-tight">
+          <Link href="/dashboard" className="flex items-center gap-2 font-semibold tracking-tight">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/logo.png" alt="" aria-hidden="true" className="h-8 w-8 rounded-md" />
             trading_maxxing
           </Link>
           <nav aria-label="Principal" className="order-3 w-full lg:order-none lg:w-auto">
