@@ -54,6 +54,7 @@ jobs:
       NEXT_TELEMETRY_DISABLED: "1"
     steps:
       - name: Descubrir client_id del service token (tm-motor-dev)
+        working-directory: .
         run: |
           if [ -n "$CLOUDFLARE_API_TOKEN" ] && [ -n "$CLOUDFLARE_ACCOUNT_ID" ]; then
             cf_client_id=$(curl -sf -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
