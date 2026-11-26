@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/img/logo.svg" alt="trading_maxxing" width="420" />
+  <img src="docs/img/logo.png" alt="trading_maxxing" width="260" />
 </p>
 
 # trading_maxxing
