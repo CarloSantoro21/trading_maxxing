@@ -79,13 +79,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const links = isAdmin ? [...NAV_LINKS, ADMIN_LINK] : NAV_LINKS;
 
   return (
-    <div className="min-h-screen">
-      <header className="border-b border-neutral-200 bg-white/80 backdrop-blur dark:border-neutral-800 dark:bg-neutral-950/80">
+    <div className="min-h-screen bg-neutral-50 dark:bg-neutral-950">
+      <header className="sticky top-0 z-30 border-b border-neutral-200/80 bg-white/70 shadow-sm backdrop-blur-md supports-[backdrop-filter]:bg-white/60 dark:border-neutral-800/80 dark:bg-neutral-950/70 supports-[backdrop-filter]:dark:bg-neutral-950/60">
         <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3">
-          <Link href="/dashboard" className="flex items-center gap-2 font-semibold tracking-tight">
+          <Link
+            href="/dashboard"
+            aria-label="Ir al dashboard"
+            className="group flex items-center gap-2.5 font-semibold tracking-tight transition-opacity hover:opacity-80"
+          >
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/logo.png" alt="" aria-hidden="true" className="h-8 w-8 rounded-md" />
-            trading_maxxing
+            <img
+              src="/logo.png"
+              alt=""
+              aria-hidden="true"
+              className="h-9 w-9 rounded-md shadow-sm ring-1 ring-black/5 transition-transform group-hover:scale-105 dark:ring-white/10"
+            />
+            <span>trading_maxxing</span>
           </Link>
           <nav aria-label="Principal" className="order-3 w-full lg:order-none lg:w-auto">
             <ul className="flex gap-1 overflow-x-auto text-sm">
@@ -96,10 +105,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     <Link
                       href={link.href}
                       aria-current={active ? "page" : undefined}
-                      className={`block rounded-md px-3 py-1.5 whitespace-nowrap ${
+                      className={`block rounded-md px-3 py-1.5 whitespace-nowrap transition-colors ${
                         active
-                          ? "bg-emerald-50 font-semibold text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200"
-                          : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-900"
+                          ? "bg-emerald-50 font-semibold text-emerald-900 ring-1 ring-emerald-200 dark:bg-emerald-950/70 dark:text-emerald-200 dark:ring-emerald-900/70"
+                          : "text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-900 dark:hover:text-neutral-100"
                       }`}
                     >
                       {link.label}
@@ -110,9 +119,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </ul>
           </nav>
           <div className="ml-auto flex flex-wrap items-center gap-3">
-            <EngineIndicator />
-            <EnvBadge />
-            <span className="hidden text-sm text-neutral-500 md:inline">{me.email}</span>
+            <div className="inline-flex items-center gap-2.5 rounded-full border border-neutral-200/70 bg-white/60 px-3 py-1 shadow-sm dark:border-neutral-800/70 dark:bg-neutral-900/60">
+              <EngineIndicator />
+              <span aria-hidden="true" className="h-3.5 w-px bg-neutral-200 dark:bg-neutral-700" />
+              <EnvBadge />
+            </div>
+            <span
+              title={me.email}
+              className="hidden max-w-[180px] truncate text-sm text-neutral-500 md:inline"
+            >
+              {me.email}
+            </span>
             <a href={LOGOUT_URL} className={`${secondaryButtonClass} px-3 py-1.5`}>
               Cerrar sesión
             </a>
